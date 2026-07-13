@@ -11,10 +11,10 @@ from config import SETTINGS_SCHEMA, normalize_project_path, normalize_project_se
 
 class ProjectPathTests(unittest.TestCase):
     def test_normalizes_slashes_and_whitespace(self):
-        self.assertEqual(r"F:\AideLink", normalize_project_path("  F:/AideLink  "))
+        self.assertEqual(r"C:\Projects\AideLink", normalize_project_path("  C:/Projects/AideLink  "))
 
     def test_project_key_ignores_trailing_separator(self):
-        self.assertEqual(project_path_key(r"F:\AideLink"), project_path_key("F:/AideLink/"))
+        self.assertEqual(project_path_key(r"C:\Projects\AideLink"), project_path_key("C:/Projects/AideLink/"))
 
     def test_project_settings_deduplicates_equivalent_paths(self):
         normalized = normalize_project_settings(
@@ -28,7 +28,7 @@ class ProjectPathTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(r"F:\AideLink", normalized["current_project"])
+        self.assertEqual(r"C:\Projects\AideLink", normalized["current_project"])
         self.assertEqual(1, len(normalized["projects"]))
         self.assertEqual("AideLink", normalized["projects"][0]["name"])
 

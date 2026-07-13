@@ -721,7 +721,7 @@ class BridgeApi(
         }
     }
 
-    /** 拉取桥接服务通过 FRP 暴露的公网访问域名（形如 https://ml.cciv.cc），供 App 直连 */
+    /** 拉取桥接服务通过可选隧道暴露的公网访问地址，供 App 直连 */
     suspend fun fetchFrpPublicUrl(): String? {
         return try {
             val resp = client.get("$baseUrl/api/frp/status")
