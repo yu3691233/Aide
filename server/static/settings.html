@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AideLink · 手机设置</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --border: #2a2f38;
+    --text: #e6e8ec;
+    --muted: #8a92a0;
+    --accent: #5b9cff;
+    --accent-hover: #7aaeff;
+    --ok: #46c97a;
+    --warn: #f0a040;
+    --err: #e26a6a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .container { max-width: 760px; margin: 0 auto; padding: 32px 24px 80px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 24px; }
+  h1 { font-size: 22px; margin: 0; }
+  .subtitle { color: var(--muted); font-size: 12px; }
+  .meta-row {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px; margin-bottom: 24px;
+    font-size: 12px; color: var(--muted);
+  }
+  .meta-row strong { color: var(--text); }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  h2 { font-size: 14px; margin: 0 0 12px; color: var(--accent); font-weight: 600; }
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+  label { display: block; margin-bottom: 6px; font-size: 13px; }
+  label .hint { color: var(--muted); font-weight: normal; font-size: 11px; margin-left: 8px; }
+  input[type="text"], input[type="number"], select {
+    width: 100%; background: #0c0e13; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; font-size: 13px;
+    font-family: inherit;
+  }
+  input:focus, select:focus {
+    outline: none; border-color: var(--accent);
+  }
+  .switch-row { display: flex; align-items: center; justify-content: space-between; }
+  .switch-row label { margin-bottom: 0; }
+  .switch { position: relative; width: 40px; height: 22px; cursor: pointer; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch-slider {
+    position: absolute; inset: 0; background: #2a2f38;
+    border-radius: 22px; transition: 0.2s;
+  }
+  .switch-slider::before {
+    content: ""; position: absolute; left: 3px; top: 3px;
+    width: 16px; height: 16px; background: white;
+    border-radius: 50%; transition: 0.2s;
+  }
+  .switch input:checked + .switch-slider { background: var(--accent); }
+  .switch input:checked + .switch-slider::before { transform: translateX(18px); }
+  .actions { display: flex; gap: 10px; margin-top: 20px; }
+  button {
+    background: var(--accent); color: #fff;
+    border: none; border-radius: 6px;
+    padding: 9px 16px; font-size: 13px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  button:hover { background: var(--accent-hover); }
+  button.ghost {
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  button.ghost:hover { color: var(--text); border-color: var(--text); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #status {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--border);
+    padding: 8px 14px; border-radius: 20px; font-size: 12px;
+    opacity: 0; transition: opacity 0.3s; pointer-events: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  }
+  #status.show { opacity: 1; }
+  #status.ok { border-color: var(--ok); color: var(--ok); }
+  #status.err { border-color: var(--err); color: var(--err); }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div>
+      <h1>AideLink · 手机设置</h1>
+      <div class="subtitle">在 PC 端查看并修改手机端设置，改完自动同步到手机</div>
+    </div>
+    <button class="ghost" onclick="loadSettings()">刷新</button>
+  </header>
+
+  <div class="meta-row">
+    <span>状态: <strong id="conn-status">未连接</strong></span>
+    <span>上次同步: <strong id="last-sync">—</strong></span>
+    <span>来源: <strong id="server-url">—</strong></span>
+  </div>
+
+  <section>
+    <h2>目标项目</h2>
+    <div id="project-list" style="margin-bottom: 12px;"></div>
+    <div class="actions" style="gap: 8px;">
+      <input id="project-path-manual" type="text" placeholder="项目文件夹完整路径（可选）" style="min-width:260px;padding:6px 8px">
+      <button type="button" onclick="browseAndAddProject()">📁 添加项目</button>
+      <button onclick="refreshProjectList()">🔄 刷新列表</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>服务器 & 唤醒</h2>
+    <div class="field">
+      <label>AideLink 服务器地址 <span class="hint">手机连接 PC 的 Flask 后端</span></label>
+      <input type="text" id="server_url" placeholder="http://你的电脑IP:5000">
+    </div>
+    <div class="field">
+      <label>电脑 MAC 地址 <span class="hint">用于 Wake-on-LAN 唤醒</span></label>
+      <input type="text" id="wol_mac" placeholder="AA:BB:CC:DD:EE:FF">
+    </div>
+  </section>
+
+  <section>
+    <h2>外观</h2>
+    <div class="field">
+      <label>语言</label>
+      <select id="app_language">
+        <option value="system">跟随系统</option>
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>主题</label>
+      <select id="app_theme">
+        <option value="system">跟随系统</option>
+        <option value="light">浅色</option>
+        <option value="dark">深色</option>
+      </select>
+    </div>
+    <div class="field switch-row">
+      <label>动态取色 (Material You)</label>
+      <label class="switch">
+        <input type="checkbox" id="dynamic_color">
+        <span class="switch-slider"></span>
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <h2>行为</h2>
+    <div class="field switch-row">
+      <label>启用通知</label>
+      <label class="switch">
+        <input type="checkbox" id="notifications_enabled">
+        <span class="switch-slider"></span>
+      </label>
+    </div>
+    <div class="field switch-row">
+      <label>震动反馈</label>
+      <label class="switch">
+        <input type="checkbox" id="haptic_feedback">
+        <span class="switch-slider"></span>
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <h2>聊天监控</h2>
+    <div class="field">
+      <label>监控间隔 (毫秒) <span class="hint">越小越灵敏，越费电</span></label>
+      <input type="number" id="monitor_interval_ms" min="500" max="10000" step="100">
+    </div>
+    <div class="field">
+      <label>监控面板高度 (dp)</label>
+      <input type="number" id="monitor_height_dp" min="200" max="800" step="20">
+    </div>
+  </section>
+
+  <section>
+    <h2>设备管理</h2>
+    <p style="color: var(--muted); font-size: 12px; margin: 0 0 12px;">为连接的设备设置别名，之后可通过别名快速识别设备（如"手机"、"平板"）</p>
+    <div id="devices-list" style="margin-bottom: 12px;">加载中...</div>
+    <div class="field" style="display: flex; gap: 8px; align-items: flex-end;">
+      <div style="flex: 1;">
+        <label>设备</label>
+        <select id="device-select" style="width: 100%;">
+          <option value="">请先刷新设备列表</option>
+        </select>
+      </div>
+      <div style="flex: 1;">
+        <label>别名</label>
+        <input type="text" id="device-alias" placeholder="如：手机、平板">
+      </div>
+      <button onclick="setDeviceAlias()" style="margin-bottom: 0;">设置</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Aide 模型</h2>
+    <div class="field">
+      <label>选择模型 <span class="hint">当消息未派发到 IDE 时使用的 AI 模型</span></label>
+      <select id="xiaomengling_model">
+        <option value="">加载中...</option>
+      </select>
+    </div>
+  </section>
+
+  <div class="actions">
+    <button onclick="saveAll()">保存全部</button>
+    <button class="ghost" onclick="loadSettings()">放弃修改，重新加载</button>
+  </div>
+</div>
+
+<div id="status"></div>
+
+<script>
+const FIELDS = [
+  'server_url', 'wol_mac', 'app_language', 'app_theme',
+  'dynamic_color', 'notifications_enabled', 'haptic_feedback',
+  'monitor_interval_ms', 'monitor_height_dp', 'xiaomengling_model',
+  'project_dir'
+];
+
+function showStatus(text, kind) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.className = 'show ' + (kind || '');
+  setTimeout(() => el.className = '', 2200);
+}
+
+function nowStr() {
+  const d = new Date();
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+async function loadModels() {
+  try {
+    const r = await fetch('/api/active-models');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const models = data.models || [];
+    const select = document.getElementById('xiaomengling_model');
+    select.innerHTML = '';
+    if (models.length === 0) {
+      select.innerHTML = '<option value="">暂无可用模型，请先在管理面板配置 API Key</option>';
+      return;
+    }
+    for (const m of models) {
+      const opt = document.createElement('option');
+      opt.value = m.key;
+      opt.textContent = m.description || m.key;
+      select.appendChild(opt);
+    }
+  } catch (e) {
+    console.error('Failed to load models:', e);
+  }
+}
+
+async function loadSettings() {
+  await loadModels();
+  await loadDevices();
+  try {
+    const r = await fetch('/settings');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const s = data.settings || {};
+    for (const k of FIELDS) {
+      const el = document.getElementById(k);
+      if (!el || s[k] === undefined || s[k] === null) continue;
+      if (el.type === 'checkbox') el.checked = !!s[k];
+      else el.value = s[k];
+    }
+    document.getElementById('conn-status').textContent = '已连接';
+    document.getElementById('last-sync').textContent = nowStr();
+    document.getElementById('server-url').textContent = location.origin;
+    showStatus('已加载 ' + Object.keys(s).length + ' 项设置', 'ok');
+  } catch (e) {
+    document.getElementById('conn-status').textContent = '失败: ' + e.message;
+    showStatus('加载失败: ' + e.message, 'err');
+  }
+}
+
+// ─── 设备管理 ──────────────────────────────────────────────────────────
+
+async function loadDevices() {
+  try {
+    const r = await fetch('/api/devices');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.error);
+    
+    const devices = data.devices || [];
+    const aliases = data.aliases || {};
+    
+    // 更新设备列表显示
+    const listEl = document.getElementById('devices-list');
+    if (devices.length === 0) {
+      listEl.innerHTML = '<div style="color: var(--muted); font-size: 12px;">暂无已连接设备</div>';
+    } else {
+      listEl.innerHTML = devices.map(d => {
+        const alias = d.alias || '未设置';
+        const connType = d.connection_type === 'usb' ? 'USB' : '无线';
+        const ipInfo = d.ip ? `${d.ip}:${d.port || '?'}` : '未知IP';
+        return `<div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);">
+          <div>
+            <strong>${alias}</strong>
+            <span style="color: var(--muted); margin-left: 8px; font-size: 12px;">${d.model || '未知型号'}</span>
+          </div>
+          <div style="font-size: 12px; color: var(--muted);">
+            ${connType} · ${ipInfo}
+            <span style="margin-left: 8px; font-family: monospace; font-size: 11px; color: var(--accent);">${d.id}</span>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    
+    // 更新设备选择下拉框
+    const selectEl = document.getElementById('device-select');
+    selectEl.innerHTML = devices.length === 0 
+      ? '<option value="">暂无设备</option>'
+      : devices.map(d => {
+          const label = d.alias ? `${d.alias} (${d.model || d.id})` : (d.model || d.id);
+          return `<option value="${d.id}">${label}</option>`;
+        }).join('');
+    
+  } catch (e) {
+    console.error('Failed to load devices:', e);
+    document.getElementById('devices-list').innerHTML = `<div style="color: var(--err); font-size: 12px;">加载失败: ${e.message}</div>`;
+  }
+}
+
+async function setDeviceAlias() {
+  const deviceId = document.getElementById('device-select').value;
+  const alias = document.getElementById('device-alias').value.trim();
+  
+  if (!deviceId) {
+    showStatus('请选择设备', 'err');
+    return;
+  }
+  if (!alias) {
+    showStatus('请输入别名', 'err');
+    return;
+  }
+  
+  try {
+    const r = await fetch('/api/devices/alias', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId, alias: alias }),
+    });
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.error);
+    
+    showStatus(`已设置别名 '${alias}'`, 'ok');
+    document.getElementById('device-alias').value = '';
+    await loadDevices();
+  } catch (e) {
+    showStatus('设置失败: ' + e.message, 'err');
+  }
+}
+
+function readForm() {
+  const out = {};
+  for (const k of FIELDS) {
+    const el = document.getElementById(k);
+    if (!el) continue;
+    if (el.type === 'checkbox') out[k] = el.checked;
+    else if (el.type === 'number') out[k] = parseInt(el.value, 10) || 0;
+    else out[k] = el.value;
+  }
+  return out;
+}
+
+async function saveAll() {
+  const payload = readForm();
+  try {
+    const r = await fetch('/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    document.getElementById('last-sync').textContent = nowStr();
+    showStatus('已保存，手机下次启动会自动同步', 'ok');
+  } catch (e) {
+    showStatus('保存失败: ' + e.message, 'err');
+  }
+}
+
+// ============================================================
+// 项目列表管理
+// ============================================================
+
+async function loadProjectList() {
+  try {
+    const r = await fetch('/api/projects');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderProjectList(data.projects || [], data.current_project || '');
+  } catch (e) {
+    console.error('加载项目列表失败:', e);
+  }
+}
+
+function renderProjectList(projects, current) {
+  const container = document.getElementById('project-list');
+  if (!projects.length) {
+    container.innerHTML = '<p style="color:#888;margin:0">暂无项目，请点击"添加项目"选择文件夹</p>';
+    return;
+  }
+  container.innerHTML = projects.map((p, i) => {
+    const isCurrent = p.path === current;
+    const bg = isCurrent ? '#e8f5e9' : '#f5f5f5';
+    const border = isCurrent ? '2px solid #4caf50' : '1px solid #ddd';
+    const badge = isCurrent ? '<span style="color:#4caf50;font-weight:bold">当前</span>' : '';
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;margin-bottom:6px;background:${bg};border:${border};border-radius:6px">
+      <div>
+        <div style="font-weight:500">${p.name || '未命名'} ${badge}</div>
+        <div style="font-size:12px;color:#666;margin-top:2px">${p.path}</div>
+      </div>
+      <div style="display:flex;gap:6px">
+        ${!isCurrent ? `<button onclick="selectProject('${p.path.replace(/\\/g, '\\\\')}')" style="padding:4px 10px;border:1px solid #4caf50;background:#4caf50;color:#fff;border-radius:4px;cursor:pointer;font-size:12px">选择</button>` : ''}
+        <button onclick="deleteProject(${i})" style="padding:4px 10px;border:1px solid #e53935;background:transparent;color:#e53935;border-radius:4px;cursor:pointer;font-size:12px">删除</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function selectProject(path) {
+  try {
+    const r = await fetch('/api/projects/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    showStatus('项目已切换', 'ok');
+    loadProjectList();
+  } catch (e) {
+    showStatus('切换失败: ' + e.message, 'err');
+  }
+}
+
+async function deleteProject(idx) {
+  if (!confirm('确定删除此项目？（任务文件不会被删除）')) return;
+  try {
+    const r = await fetch(`/api/projects/${idx}`, { method: 'DELETE' });
+    if (!r.ok) { const body = await r.json().catch(() => ({})); throw new Error(body.message || ('HTTP ' + r.status)); }
+    showStatus('项目已删除', 'ok');
+    loadProjectList();
+  } catch (e) {
+    showStatus('删除失败: ' + e.message, 'err');
+  }
+}
+
+async function browseAndAddProject() {
+  try {
+    const manual = document.getElementById('project-path-manual')?.value.trim();
+    if (manual) {
+      const direct = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: manual }) });
+      const directResult = await direct.json();
+      if (!direct.ok || !directResult.ok) throw new Error(directResult.message || '项目路径无效');
+      showStatus('项目已添加', 'ok'); loadProjectList(); return;
+    }
+    const r = await fetch('/api/browse-folder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await r.json();
+    let path = data.ok ? data.path : '';
+    if (!path) {
+      path = window.prompt('系统文件夹选择器不可用，请输入项目文件夹的完整路径：', '');
+      if (!path) return;
+    }
+    const r2 = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: path.trim() }),
+    });
+    if (!r2.ok) {
+      const e = await r2.json();
+      const retry = window.prompt((e.message || '添加失败') + '\n请手动输入项目文件夹完整路径：', '');
+      if (retry && retry.trim()) {
+        const retryResponse = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: retry.trim() }) });
+        const retryResult = await retryResponse.json();
+        if (retryResponse.ok && retryResult.ok) { showStatus('项目已添加', 'ok'); loadProjectList(); return; }
+        throw new Error(retryResult.message || '添加失败');
+      }
+      return;
+    }
+    showStatus('项目已添加', 'ok');
+    loadProjectList();
+  } catch (e) {
+    showStatus('添加失败: ' + e.message, 'err');
+  }
+}
+
+function refreshProjectList() { loadProjectList(); }
+
+// 进入页面立即加载
+loadSettings();
+loadProjectList();
+// 每 30 秒自动刷新一次
+setInterval(loadSettings, 30000);
+setInterval(loadProjectList, 30000);
+</script>
+</body>
+</html>

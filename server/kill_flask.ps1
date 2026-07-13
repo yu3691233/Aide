@@ -1,0 +1,1 @@
+"$pids = (Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue).OwningProcess\n$pids += (Get-NetTCPConnection -LocalPort 80 -State Listen -ErrorAction SilentlyContinue).OwningProcess\nforeach ($p in ($pids | Select-Object -Unique)) {\n    Stop-Process -Id $p -Force -ErrorAction SilentlyContinue\n}\n"

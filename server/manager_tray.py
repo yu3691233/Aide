@@ -1,0 +1,658 @@
+import os
+import sys
+import time
+import atexit
+import logging
+import threading
+import subprocess
+import webbrowser
+import tempfile
+from urllib.parse import quote
+from pathlib import Path
+
+from pystray import Icon, MenuItem, Menu
+from PIL import Image, ImageDraw
+
+from manager_utils import BASE_DIR, load_config, save_config, logger, kill_existing_processes, acquire_tray_single_instance
+from manager_process import (
+    is_flask_running, start_flask_service, stop_flask_service,
+    get_service_status, PID_FILE,
+)
+from frp_service import is_frp_running, get_frp_status, start_frp_client, stop_frp_client
+from network_utils import ADB_PATH, get_local_ip
+import requests as _requests
+
+# ============================================================
+# 全局状态
+# ============================================================
+
+tray_icon = None
+
+# 本机更新源；稳定后可切换为远程更新服务。
+LOCAL_UPDATE_DIR = Path(os.environ.get("AIDELINK_UPDATE_DIR", r"Z:\共享\aidelink"))
+REMOTE_UPDATE_URL = os.environ.get("AIDELINK_UPDATE_URL", "https://list.cciv.cc/aidelink")
+REMOTE_OPENLIST_BASE = os.environ.get("AIDELINK_OPENLIST_BASE", "https://list.cciv.cc")
+
+# ============================================================
+# 系统托盘图标
+# ============================================================
+
+def create_tray_icon():
+    candidates = [
+        BASE_DIR / "brand_assets" / "tray-icon.png",
+        BASE_DIR / "brand_assets" / "logo-application-primary-512.png",
+    ]
+    for p in candidates:
+        if p.exists():
+            img = Image.open(p).convert("RGBA")
+            img.thumbnail((64, 64), Image.LANCZOS)
+            return img
+
+    size = 64
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    cx, cy = size // 2, size // 2
+    r = 28
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 217, 61, 255), outline=(244, 163, 0, 255), width=2)
+    draw.ellipse([cx - 12, cy - 10, cx - 4, cy - 2], fill=(50, 50, 50, 255))
+    draw.ellipse([cx + 4, cy - 10, cx + 12, cy - 2], fill=(50, 50, 50, 255))
+    draw.ellipse([cx - 10, cy - 9, cx - 8, cy - 6], fill=(255, 255, 255, 220))
+    draw.ellipse([cx + 6, cy - 9, cx + 8, cy - 6], fill=(255, 255, 255, 220))
+    draw.arc([cx - 14, cy - 2, cx + 14, cy + 16], start=10, end=170, fill=(50, 50, 50, 255), width=2)
+    draw.ellipse([cx - 20, cy + 6, cx - 12, cy + 13], fill=(255, 182, 193, 140))
+    draw.ellipse([cx + 12, cy + 6, cx + 20, cy + 13], fill=(255, 182, 193, 140))
+    return img
+
+
+def refresh_tray_menu():
+    global tray_icon
+    if tray_icon:
+        try:
+            tray_icon.menu = build_tray_menu()
+            status = get_service_status()
+            tray_icon.title = f"AideLink 管理器 — {'运行中' if status['running'] else '已停止'}"
+        except Exception:
+            pass
+
+
+def _tray_start_service():
+    start_flask_service()
+    refresh_tray_menu()
+
+
+def _tray_stop_service():
+    stop_flask_service()
+    refresh_tray_menu()
+
+
+def _tray_restart_service():
+    # 彻底执行一键强杀，并重新拉起服务
+    logger.info("正在执行强杀并重启服务...")
+    try:
+        python_exe = sys.executable
+        start_script = BASE_DIR / "start_services.py"
+        subprocess.Popen(
+            [python_exe, str(start_script)],
+            cwd=str(BASE_DIR),
+            close_fds=True,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == 'nt' else 0
+        )
+        os._exit(0)
+    except Exception as e:
+        logger.error(f"合并强杀重启失败: {e}")
+        # fallback: 仅重启 Flask
+        stop_flask_service()
+        time.sleep(0.5)
+        start_flask_service()
+        refresh_tray_menu()
+
+
+def _find_local_update_package():
+    try:
+        if not LOCAL_UPDATE_DIR.is_dir():
+            return None
+        packages = [p for p in LOCAL_UPDATE_DIR.glob("AideLink-Setup*.exe") if p.is_file()]
+        return max(packages, key=lambda p: p.stat().st_mtime) if packages else None
+    except Exception:
+        return None
+
+
+def _find_remote_update():
+    """Discover the newest installer in the OpenList ``aidelink`` folder."""
+    try:
+        def list_path(path):
+            response = _requests.post(
+                REMOTE_OPENLIST_BASE.rstrip("/") + "/api/fs/list",
+                json={"path": path, "password": "", "page": 1, "per_page": 100,
+                      "refresh": False},
+                timeout=3,
+            )
+            response.raise_for_status()
+            data = response.json().get("data", {})
+            return data.get("content") or []
+
+        root = list_path("/")
+        folder = next((item for item in root if item.get("name", "").lower() == "aidelink" and item.get("is_dir")), None)
+        if not folder:
+            return None
+        files = [item for item in list_path(folder.get("path", ""))
+                 if not item.get("is_dir") and item.get("name", "").lower().startswith("aidelink-setup")
+                 and item.get("name", "").lower().endswith(".exe")]
+        if not files:
+            return None
+        item = max(files, key=lambda value: value.get("modified", ""))
+        path = item.get("path", "").lstrip("/")
+        return {"name": item.get("name"), "url": REMOTE_OPENLIST_BASE.rstrip("/") + "/d/" + quote(path)}
+    except Exception:
+        logger.debug("OpenList 更新源暂不可用", exc_info=True)
+        return None
+
+
+def _get_update_package():
+    local = _find_local_update_package()
+    if local:
+        return local
+    remote = _find_remote_update()
+    if not remote:
+        return None
+    try:
+        update_dir = Path(tempfile.gettempdir()) / "AideLink-update"
+        update_dir.mkdir(parents=True, exist_ok=True)
+        target = update_dir / remote["name"]
+        response = _requests.get(remote["url"], timeout=10, stream=True)
+        response.raise_for_status()
+        with target.open("wb") as output:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    output.write(chunk)
+        return target
+    except Exception:
+        logger.exception("下载 OpenList 更新包失败")
+        return None
+
+
+def _tray_update_local():
+    package = _get_update_package()
+    if not package:
+        logger.warning("本地映射盘和 OpenList 都未找到更新包")
+        return
+    try:
+        subprocess.Popen(
+            [str(package), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            cwd=str(package.parent),
+            creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+            if os.name == "nt" else 0,
+            close_fds=True,
+        )
+        # 安装器 PrepareToInstall 会先停止旧版服务，再覆盖文件。
+        threading.Timer(1.0, on_tray_exit).start()
+    except Exception:
+        logger.exception("启动本机更新包失败: %s", package)
+
+
+def show_main_window():
+    webbrowser.open("http://127.0.0.1:5000")
+
+
+def _tray_toggle_open_browser():
+    try:
+        config = load_config()
+        # 默认值为 True
+        current = config.get("open_browser_on_start", True)
+        config["open_browser_on_start"] = not current
+        save_config(config)
+        refresh_tray_menu()
+    except Exception as e:
+        logger.error(f"修改启动打开浏览器设置失败: {e}")
+
+
+def get_adb_devices():
+    """获取已连接的 ADB 设备列表"""
+    import subprocess
+    devices = []
+    try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
+        result = subprocess.run(
+            [ADB_PATH, "devices"], capture_output=True, text=True, timeout=5,
+            startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        for line in result.stdout.strip().split('\n')[1:]:
+            if '\t' in line:
+                parts = line.split('\t')
+                if len(parts) >= 2 and parts[1] == 'device':
+                    devices.append(parts[0])
+    except Exception:
+        pass
+    return devices
+
+
+def get_device_list():
+    """从 AideLink 服务端获取设备列表（带在线状态和别名）"""
+    import urllib.request, json
+    try:
+        req = urllib.request.Request("http://127.0.0.1:5000/api/devices", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read())
+            if data.get("ok"):
+                return data.get("devices", [])
+    except Exception:
+        pass
+
+    # 兜底从本地配置文件读取，保证离线设备可见且可以点击连接
+    try:
+        aliases_path = BASE_DIR / "state" / "device_aliases.json"
+        if aliases_path.exists():
+            with open(aliases_path, "r", encoding="utf-8") as f:
+                aliases = json.load(f)
+                result = []
+                for alias, info in aliases.items():
+                    result.append({
+                        "device_id": None,
+                        "ip": info.get("ip"),
+                        "online_ip": None,
+                        "adb_port": info.get("port") or 5555,
+                        "alias": alias,
+                        "model": info.get("model", ""),
+                        "is_adb_connected": False,
+                        "is_online": False,
+                        "ips": info.get("ips") or [],
+                    })
+                return result
+    except Exception:
+        pass
+    return []
+
+
+def _enable_adb_for_device(ip, port=5555):
+    """通过 AideLink API 开启无线调试"""
+    import urllib.request, json
+    try:
+        body = json.dumps({"ip": ip, "timeout": 30}).encode()
+        req = urllib.request.Request(
+            "http://127.0.0.1:5000/api/adb/enable-wireless",
+            data=body, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=35) as resp:
+            data = json.loads(resp.read())
+            if data.get("ok"):
+                return True, data
+            return False, data.get("error", "失败")
+    except Exception as e:
+        return False, str(e)
+
+
+def connect_adb_and_copy(ip, port=5555):
+    """尝试 ADB 连接设备，成功则复制到剪贴板"""
+    import subprocess
+    try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
+        target = f"{ip}:{port}"
+        result = subprocess.run(
+            [ADB_PATH, "connect", target], capture_output=True, text=True, timeout=10,
+            startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        output = result.stdout.strip()
+        if "connected" in output.lower() or "already" in output.lower():
+            copy_to_clipboard(f"adb connect {target}")
+            return True, target
+        return False, output
+    except Exception as e:
+        return False, str(e)
+
+
+def copy_to_clipboard(text):
+    """复制文本到剪贴板"""
+    try:
+        import pyperclip
+        pyperclip.copy(text)
+    except Exception:
+        try:
+            import subprocess
+            subprocess.run(['clip'], input=text, text=True, check=True, timeout=3)
+        except Exception:
+            pass
+
+
+def _try_adb_connect(ip, ips=None):
+    """尝试 ADB 连接设备（优先同网段 IP，并发多线程，绝对静默），成功后自动拉起 AideLink"""
+    import concurrent.futures
+    import sys
+    
+    raw_candidates = list(dict.fromkeys(([ip] + (ips or []))))
+    raw_candidates = [i for i in raw_candidates if i]
+
+    server_subnet = _get_server_subnet()
+    if server_subnet:
+        raw_candidates.sort(key=lambda x: 0 if x.rsplit('.', 1)[0] == server_subnet else 1)
+
+    known_port = None
+    try:
+        import json
+        aliases_path = BASE_DIR / "state" / "device_aliases.json"
+        if aliases_path.exists():
+            with open(aliases_path, "r", encoding="utf-8") as f:
+                aliases = json.load(f)
+                for alias_name, info in aliases.items():
+                    known_ips = [info.get("ip")] + (info.get("ips") or [])
+                    if ip in known_ips and info.get("port"):
+                        known_port = int(info.get("port"))
+                        break
+    except Exception:
+        pass
+
+    ports = [5555, 44233, 41157, 46325, 46075, 42829, 38131]
+    if known_port and known_port not in ports:
+        ports.insert(0, known_port)
+
+    targets = []
+    for dip in raw_candidates:
+        for p in ports:
+            targets.append(f"{dip}:{p}")
+
+    connected_target = None
+    lock = threading.Lock()
+
+    def check_connect(target_addr):
+        nonlocal connected_target
+        if connected_target:
+            return
+
+        creationflags = 0
+        if sys.platform == 'win32':
+            creationflags = subprocess.CREATE_NO_WINDOW
+        try:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = subprocess.SW_HIDE
+        except AttributeError:
+            si = None
+
+        try:
+            res = subprocess.run(
+                [ADB_PATH, "connect", target_addr],
+                capture_output=True, text=True, timeout=4,
+                startupinfo=si, creationflags=creationflags
+            )
+            out = res.stdout.lower()
+            if "connected" in out or "already" in out:
+                with lock:
+                    if not connected_target:
+                        connected_target = target_addr
+        except Exception:
+            pass
+
+    # 最大 16 线程并发测试
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        executor.map(check_connect, targets)
+
+    if connected_target:
+        copy_to_clipboard(connected_target)
+        creationflags = 0
+        if sys.platform == 'win32':
+            creationflags = subprocess.CREATE_NO_WINDOW
+        try:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = subprocess.SW_HIDE
+        except AttributeError:
+            si = None
+
+        try:
+            subprocess.run(
+                [ADB_PATH, "-s", connected_target, "shell", "am", "start", "-n",
+                 "cc.aidelink.app/.MainActivity"],
+                capture_output=True, timeout=5, startupinfo=si, creationflags=creationflags
+            )
+        except Exception:
+            pass
+    else:
+        copy_to_clipboard(f"{ip}:5555")
+
+
+def _get_server_subnet():
+    """获取服务端所在子网前缀（如 192.168.1）"""
+    import urllib.request, json
+    try:
+        req = urllib.request.Request("http://127.0.0.1:5000/api/settings", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read())
+            server_url = data.get("server_url", "")
+            host = server_url.split("://")[-1].split(":")[0].split("/")[0]
+            if host:
+                return host.rsplit('.', 1)[0]
+    except Exception:
+        pass
+    return None
+
+
+def build_tray_menu():
+    status = get_service_status()
+    status_text = "✅ 运行中" if status["running"] else "⏹ 已停止"
+    
+    config = load_config()
+    open_browser_on_start = config.get("open_browser_on_start", True)
+    open_browser_check_text = "√ 启动时自动打开网页" if open_browser_on_start else "  启动时自动打开网页"
+
+    devices = get_device_list()
+    adb_devices = get_adb_devices()
+
+    def _copy_handler(t):
+        def h(icon, item):
+            threading.Thread(target=copy_to_clipboard, args=(t,), daemon=True).start()
+        return h
+
+    def _enable_handler(ip):
+        def h(icon, item):
+            def _do_enable():
+                success, res_data = _enable_adb_for_device(ip)
+                if success and isinstance(res_data, dict):
+                    res_ip = res_data.get("ip") or ip
+                    res_port = res_data.get("port") or 5555
+                    copy_to_clipboard(f"{res_ip}:{res_port}")
+                else:
+                    copy_to_clipboard(f"{ip}:5555")
+                refresh_tray_menu()
+            threading.Thread(target=_do_enable, daemon=True).start()
+        return h
+
+    def _connect_handler(ip, ips):
+        def h(icon, item):
+            def _do_connect():
+                # 1. 先通知 App 开启无线调试（SSE 命令 + adb connect fallback）
+                #    覆盖 App 在线但 ADB 未开启的场景
+                success, res_data = _enable_adb_for_device(ip)
+                if success and isinstance(res_data, dict):
+                    res_ip = res_data.get("ip") or ip
+                    res_port = res_data.get("port") or 5555
+                    copy_to_clipboard(f"{res_ip}:{res_port}")
+                    refresh_tray_menu()
+                    return
+                # 2. 通知失败（App 离线/超时），回退到多端口探测
+                #    覆盖 App 未启动但 ADB 已开启的场景，探测成功后自动拉起 App
+                _try_adb_connect(ip, ips)
+                refresh_tray_menu()
+            threading.Thread(target=_do_connect, daemon=True).start()
+        return h
+
+    device_menu_items = []
+    if devices:
+        for d in devices:
+            alias = d.get("alias", "未知")
+            ip = d.get("online_ip") or d.get("ip") or ""
+            model = d.get("model", "")
+            online = d.get("is_online", False)
+            is_adb = d.get("is_adb_connected", False)
+            port = d.get("adb_port") or 5555
+            display = f"📱 {alias}"
+            if model:
+                display += f" ({model})"
+            if online:
+                if is_adb:
+                    display += f" [{ip}:{port}]  ✅ 在线+ADB"
+                    target = d.get("device_id") or f"{ip}:{port}"
+                    device_menu_items.append(MenuItem(display, _copy_handler(target)))
+                else:
+                    display += f" [{ip}]  🟢 在线"
+                    device_menu_items.append(MenuItem(display, _enable_handler(ip)))
+            else:
+                display += f" [{ip}]  ⚪ 离线"
+                all_ips = d.get("ips") or []
+                device_menu_items.append(MenuItem(display, _connect_handler(ip, all_ips)))
+    elif adb_devices:
+        for dev in adb_devices:
+            device_menu_items.append(
+                MenuItem(f"📱 {dev}  ✅ ADB", _copy_handler(dev))
+            )
+    else:
+        device_menu_items.append(MenuItem("  无已连接设备", None, enabled=False))
+
+    frp_status = get_frp_status()
+    frp_text = f"🌐 FRP 穿透  {'✅ 已开启' if frp_status['running'] else '⭕ 未开启'}"
+
+    devspace_running = _get_devspace_status()
+    if devspace_running is None:
+        devspace_text = "🤖 DevSpace  — ⚠️ 服务未运行"
+    else:
+        devspace_text = f"🤖 DevSpace  {'✅ 已开启' if devspace_running else '⭕ 未开启'}"
+    local_update = _find_local_update_package()
+    update_text = "⬆️ 一键更新（OpenList / Z:\\共享\\aidelink）"
+
+    return Menu(
+        MenuItem(f"AideLink 管理器 — {status_text}", None, enabled=False),
+        Menu.SEPARATOR,
+        MenuItem("📊 打开管理面板", lambda: show_main_window(), default=True),
+        MenuItem(open_browser_check_text, _tray_toggle_open_browser),
+        Menu.SEPARATOR,
+        *device_menu_items,
+        Menu.SEPARATOR,
+        MenuItem("🚀 启动服务", _tray_start_service, enabled=not status["running"]),
+        MenuItem("⏹ 停止服务", _tray_stop_service, enabled=status["running"]),
+        MenuItem("🔄 一键强杀重启", _tray_restart_service),
+        MenuItem(update_text, _tray_update_local, enabled=True),
+        Menu.SEPARATOR,
+        MenuItem(frp_text, _tray_toggle_frp),
+        MenuItem(devspace_text, _tray_toggle_devspace),
+        Menu.SEPARATOR,
+        MenuItem("📁 打开数据目录", lambda: os.startfile(str(BASE_DIR))),
+        Menu.SEPARATOR,
+        MenuItem("❌ 退出", lambda: on_tray_exit()),
+    )
+
+
+def _tray_toggle_frp():
+    if is_frp_running():
+        stop_frp_client()
+    else:
+        start_frp_client(force=True)
+
+
+def _get_devspace_status():
+    try:
+        r = _requests.get("http://127.0.0.1:5000/api/devspace/status", timeout=3)
+        j = r.json()
+        return j.get("devspace", {}).get("running", False)
+    except Exception:
+        return None
+
+
+def _tray_toggle_devspace():
+    try:
+        if _get_devspace_status():
+            _requests.post("http://127.0.0.1:5000/api/devspace/stop", timeout=5)
+        else:
+            _requests.post("http://127.0.0.1:5000/api/devspace/start", timeout=10)
+    except Exception as e:
+        logger.error(f"DevSpace 切换失败: {e}")
+    refresh_tray_menu()
+
+
+def on_tray_exit():
+    logger.info("正在退出 AideLink 管理器...")
+    if is_flask_running():
+        logger.info("正在停止 Flask 服务...")
+        stop_flask_service()
+    try:
+        tray_icon.stop()
+    except Exception:
+        pass
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+    os._exit(0)
+
+
+# ============================================================
+# PID 文件管理
+# ============================================================
+
+def write_pid_file():
+    PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    logger.info(f"PID 文件已写入: {PID_FILE} (PID: {os.getpid()})")
+
+
+def cleanup():
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+# ============================================================
+# 主入口
+# ============================================================
+
+def run_manager():
+    if not acquire_tray_single_instance():
+        logger.info("已有 AideLink 托盘实例运行，当前启动请求退出")
+        return
+    write_pid_file()
+    atexit.register(cleanup)
+
+    if not is_flask_running():
+        logger.info("Flask 服务未运行，正在自动启动...")
+        success, message = start_flask_service()
+        logger.info(message)
+    else:
+        logger.info("Flask 服务已在运行中")
+
+    # 根据配置判断是否在启动时打开浏览器
+    config = load_config()
+    if config.get("open_browser_on_start", True):
+        # 延迟一点时间，让 Flask 充分初始化完毕后再打开网页
+        threading.Timer(1.5, show_main_window).start()
+
+    global tray_icon
+    tray_icon = Icon(
+        name="AideLinkManager",
+        icon=create_tray_icon(),
+        title="AideLink 管理器",
+        menu=build_tray_menu(),
+    )
+
+    # 双击或点击默认打开浏览器面板
+    tray_icon.on_click = lambda icon: show_main_window()
+
+    # 定期刷新托盘菜单（更新设备列表）
+    def _auto_refresh():
+        import time
+        time.sleep(30)
+        while True:
+            try:
+                refresh_tray_menu()
+            except Exception:
+                pass
+            time.sleep(30)
+    threading.Thread(target=_auto_refresh, daemon=True).start()
+
+    logger.info("系统托盘已启动，左键双击或右键菜单管理服务")
+    tray_icon.run()
+
+
+if __name__ == "__main__":
+    run_manager()
+

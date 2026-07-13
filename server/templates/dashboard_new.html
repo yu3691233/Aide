@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AideLink - 控制面板</title>
+    {% include 'components/styles.html' %}
+</head>
+<body>
+    <div class="app-layout">
+        {% include 'components/topbar.html' %}
+        
+        <div class="content-area">
+            <div class="main-content">
+                <div class="content-body" id="content-body">
+                    {% include 'components/page_dashboard.html' %}
+                    {% include 'components/page_tasks.html' %}
+                    {% include 'components/page_logs.html' %}
+                    {% include 'components/page_sessions.html' %}
+                    {% include 'components/page_config.html' %}
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    {% include 'components/scripts.html' %}
+</body>
+</html>

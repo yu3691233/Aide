@@ -1,0 +1,49 @@
+# 用户录入的模型数据（含 api_key）—— 不入仓
+aidelink_models.json
+aidelink_settings.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime
+*.log
+*.pid
+flask_new.log
+
+# Local config
+config.json
+frpc_*.toml
+frpc_*.ini
+frpc_run.log
+inject.log
+failure_memory.json
+failure_clusters.json
+evolution_state.json
+evolution_tasks_recovery.json
+workaround_knowledge.json
+task_context.json*
+tasks.json
+task_queue_*.json
+task-*
+chat_history.json
+clipboard_history.json
+phone_in.txt
+
+# Backups
+phone_chat_bridge_backup_*.py
+*.bak
+
+# Build artifacts
+mengling.apk
+test_*.jpg
+test_*.png
+screen_*.png
+window_dump.xml
+
+# Worktrees and task caches
+worktrees/
+.worktrees/
+task-*
+

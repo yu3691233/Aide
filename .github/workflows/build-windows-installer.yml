@@ -1,0 +1,111 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prepare isolated runtime
+        shell: pwsh
+        run: |
+          .\installer\prepare-embedded-runtime.ps1
+
+      - name: Validate release version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $manifestVersion = (Get-Content .\version.json -Raw | ConvertFrom-Json).version
+          $tagVersion = $env:GITHUB_REF_NAME.TrimStart('v')
+          if ($manifestVersion -ne $tagVersion) {
+            throw "版本不一致: version.json=$manifestVersion, tag=$tagVersion"
+          }
+
+      - name: Build and validate staging
+        shell: pwsh
+        run: |
+          .\installer\build-staging.ps1 -Clean -RuntimeSource .\installer\runtime-build
+          .\installer\validate-staging.ps1
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          $version = (Get-Content .\version.json -Raw | ConvertFrom-Json).version
+          & $iscc "/DMyAppVersion=$version" ".\installer\AideLink.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败" }
+
+      - name: Smoke test install and uninstall
+        shell: pwsh
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP "AideLink-install-smoke"
+          if (Test-Path $smoke) { Remove-Item $smoke -Recurse -Force }
+          $setup = (Resolve-Path .\installer\output\AideLink-Setup.exe).Path
+          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$smoke") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "安装器退出码异常: $($p.ExitCode)" }
+          $python = Join-Path $smoke "runtime\python.exe"
+          if (-not (Test-Path $python)) { throw "安装后缺少 embedded Python" }
+          & $python -c "import flask, requests, numpy; print('installed-runtime-ok')"
+          if ($LASTEXITCODE -ne 0) { throw "安装后 Runtime 检查失败" }
+          & $python -m pip check
+          if ($LASTEXITCODE -ne 0) { throw "安装后依赖检查失败" }
+          Start-Process -FilePath (Join-Path $smoke "server\start_services.vbs") -WorkingDirectory (Join-Path $smoke "server")
+          $healthy = $false
+          for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Seconds 1
+            try {
+              $ping = Invoke-RestMethod http://127.0.0.1:5000/ping -TimeoutSec 2
+              if ($ping.status -eq "ok") { $healthy = $true; break }
+            } catch { }
+          }
+          if (-not $healthy) { throw "安装后服务未能在限定时间内启动" }
+          .\installer\verify-install.ps1 -InstallDir $smoke
+          & $python (Join-Path $smoke "server\stop_manager.py") --all --force
+          $uninstaller = Join-Path $smoke "unins000.exe"
+          $u = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($u.ExitCode -ne 0) { throw "卸载器退出码异常: $($u.ExitCode)" }
+
+      - name: Generate installer checksum
+        shell: pwsh
+        run: |
+          $setup = Resolve-Path .\installer\output\AideLink-Setup.exe
+          (Get-FileHash $setup -Algorithm SHA256).Hash | Set-Content .\installer\output\AideLink-Setup.exe.sha256 -NoNewline
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AideLink-Windows-installer
+          path: |
+            installer/output/AideLink-Setup.exe
+            installer/output/AideLink-Setup.exe.sha256
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            .\installer\output\AideLink-Setup.exe `
+            .\installer\output\AideLink-Setup.exe.sha256 `
+            --title "AideLink $env:GITHUB_REF_NAME" `
+            --generate-notes

@@ -1,0 +1,1 @@
+"import pygetwindow as gw\n\nfor i, title in enumerate(gw.getAllTitles()):\n    if title.strip():\n        print(f\"{i}: {title}\")\n"

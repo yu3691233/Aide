@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e6edf3; background: #0d1117; }
+button, textarea, select, input { font: inherit; }
+.topbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #161b22; border-bottom: 1px solid #30363d; }
+.topbar h1 { flex: 1; margin: 0; font-size: 14px; }
+.count { padding: 2px 8px; border-radius: 10px; background: #7c3aed; }
+.ghost { border: 1px solid #30363d; background: #21262d; color: #e6edf3; border-radius: 6px; padding: 5px 9px; cursor: pointer; }
+.hint { padding: 8px 12px; color: #8b949e; border-bottom: 1px solid #21262d; }
+kbd { color: #58a6ff; background: #21262d; border-radius: 3px; padding: 1px 4px; }
+.collected { max-height: 150px; overflow-y: auto; border-bottom: 1px solid #30363d; }
+.item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #21262d; }
+.item:hover, .item.selected { background: #1f2937; }
+.item-title { font-weight: 600; }
+.item-meta { margin-top: 3px; color: #8b949e; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empty { padding: 18px; text-align: center; color: #8b949e; }
+.form { padding: 12px; display: grid; gap: 10px; }
+label { display: grid; gap: 5px; color: #c9d1d9; }
+textarea, select, input { width: 100%; color: #e6edf3; background: #0d1117; border: 1px solid #30363d; border-radius: 7px; padding: 8px; }
+textarea { min-height: 72px; resize: vertical; }
+.location { padding: 9px; border-radius: 7px; background: #161b22; color: #a5d6ff; line-height: 1.5; }
+.primary { border: 0; border-radius: 7px; padding: 9px 12px; color: white; background: #7c3aed; cursor: pointer; font-weight: 600; }
+.primary:disabled { opacity: .55; cursor: default; }
+.result { display: none; padding: 0 12px 16px; }
+.badges { display: flex; gap: 6px; margin-bottom: 8px; }
+.badge { padding: 3px 7px; border-radius: 10px; background: #21262d; color: #a5d6ff; font-size: 11px; }
+.candidates { display: grid; gap: 7px; }
+.candidate { padding: 9px; border: 1px solid #30363d; border-radius: 7px; cursor: pointer; background: #161b22; }
+.candidate.selected { border-color: #7c3aed; background: #21163b; }
+.candidate strong { display: block; margin-bottom: 3px; }
+.candidate small { color: #8b949e; }
+.prompt { margin-top: 9px; padding: 10px; border-radius: 7px; white-space: pre-wrap; background: #161b22; max-height: 230px; overflow-y: auto; line-height: 1.5; }
+.actions { display: flex; gap: 8px; margin-top: 9px; }
+.actions button { flex: 1; }
+.status { color: #8b949e; font-size: 11px; min-height: 14px; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>✨ AI 提示词</h1><span class="count" id="count">0</span><button class="ghost" id="clearBtn">清空</button>
+  </div>
+  <div class="hint"><kbd>Ctrl</kbd> + 点击网页元素，然后在这里直接生成并复制。</div>
+  <div class="collected" id="collectedList"></div>
+  <div class="form">
+    <div class="location" id="componentSummary">请先在网页中选择组件</div>
+    <label>组件名称<input id="componentName" placeholder="例如：任务筛选输入框"></label>
+    <label>任务类型
+      <select id="taskType"><option value="auto">Aide 自动判断</option><option value="bug_fix">问题修复</option><option value="feature_change">功能调整</option><option value="test_plan">测试与计划</option></select>
+    </label>
+    <label>补充几个字<textarea id="userText" placeholder="例如：一段时间后会变红"></textarea></label>
+    <button class="primary" id="generateBtn">生成提示词</button>
+    <div class="status" id="status"></div>
+  </div>
+  <div class="result" id="result">
+    <div class="badges"><span class="badge" id="typeBadge"></span><span class="badge" id="difficultyBadge"></span></div>
+    <div class="candidates" id="candidates"></div>
+    <div class="prompt" id="prompt"></div>
+    <div class="actions"><button class="ghost" id="regenerateBtn">重新生成</button><button class="primary" id="copyBtn">复制提示词</button></div>
+  </div>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

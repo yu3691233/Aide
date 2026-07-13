@@ -1,0 +1,155 @@
+# ============================================
+# AideLink 根目录 .gitignore
+# ============================================
+
+# ----- 运行时产物（Server）-----
+*.log
+*.pid
+flask*.log
+inject.log
+trae_test.log
+pyautogui_error.log
+screenshot_error.log
+tray_error.log
+
+# ----- 运行时状态（Server，应放 state/）-----
+chat_history.json
+clipboard_history.json
+task_context.json*
+tasks.json
+task_queue_*.json
+task-*
+token_usage.json
+evolution_state.json
+evolution_tasks_recovery.json
+screenshot_crops.json
+failure_clusters.json
+phone_in.txt
+server/queues/*.jsonl
+server/state/*.json
+server/manual_ides.json
+server/scanned_ides.json
+server/project_map.json
+server/notification_watcher_state.json
+
+# ----- 临时/构建/上传目录 -----
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+worktrees/
+.worktrees/
+static/uploads/
+state/uploads/
+
+# ----- 测试残留 -----
+test_*.jpg
+test_*.png
+test_*.jpeg
+test_full*.jpg
+test_trae*.jpg
+test_trae*.png
+
+# ----- 一次性脚本产物 -----
+phone_chat_bridge_backup_*.py
+
+# ----- APK / 编译产物 -----
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# ----- Android 构建产物 -----
+.gradle/
+.kotlin/
+build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ----- Android IDE -----
+.idea/
+*.iml
+.DS_Store
+
+# ----- 环境配置（绝不入库）-----
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.keystore
+
+# ----- IDE 配置目录 -----
+.mavis/
+.mimocode/
+.opencode/
+.trae/documents/
+_oc-remote/
+packages/
+
+# ----- 编辑器 -----
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~
+
+# ----- OS -----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ----- 需要长期忽略的调试 / 运行时文件 -----
+server/*.exe
+server/*.bak
+server/_*.py
+server/_*.json
+server/config.json
+server/device_aliases.json
+server/failure_memory.json
+server/ide_registry.json
+server/notification_watcher_config.json
+server/workaround_knowledge.json
+server/state/leases.json
+reconstructed_*.json
+version.json
+
+# ----- 调试截图（应手动移到 docs/screenshots/）-----
+screen_*.png
+window_dump.xml
+
+# ----- 归档/一次性脚本 -----
+MengLing-archive/
+server/scratch/
+*.db
+server/state/*.md
+server/static/uploads/
+server/state/test_task_*.json
+
+# ----- TaskRuntime 自动同步产物（运行期写到项目根目录，不要入库）-----
+/CURRENT_TASK.md
+
+# ----- 可执行文件 -----
+*.exe
+mimo.exe
+mimocode.exe
+
+# ----- 调试文件 -----
+server/*.txt
+server/*.xml
+server/logcat*.txt
+string_*.txt
+build_log*.txt
+
+# ----- Windows installer build output -----
+installer/runtime-build/
+installer/staging/
+installer/output/

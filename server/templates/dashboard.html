@@ -1,0 +1,1397 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>AideLink Manager</title>
+
+<link rel="stylesheet" href="/static/css/dashboard.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+</head>
+
+<body>
+
+
+<div class="app-layout">
+
+  <!-- Topbar -->
+
+  <div class="topbar">
+
+    <div class="topbar-left">
+
+      <div class="topbar-logo"><img src="/static/img/aidelink-logo.png" alt="AideLink" style="width:100%;height:100%;object-fit:contain;"></div>
+
+      <div class="topbar-title-group">
+
+        <span class="topbar-title">AideLink</span>
+
+        <span class="topbar-version" id="topbar-version">加载中...</span>
+
+      </div>
+
+    </div>
+
+    <nav class="topbar-nav">
+
+      <div class="nav-item active" onclick="switchPage('dashboard')">
+
+        <span class="nav-icon">📊</span><span>仪表盘</span>
+
+      </div>
+
+      <div class="nav-item" onclick="switchPage('tasks')">
+
+        <span class="nav-icon">📋</span><span>任务列表</span>
+
+      </div>
+
+      <div class="nav-item" onclick="switchPage('toolbox')">
+
+        <span class="nav-icon">🧰</span><span>工具箱</span>
+
+      </div>
+
+      <div class="nav-item" onclick="switchPage('logs')">
+
+        <span class="nav-icon">📝</span><span>日志</span>
+
+      </div>
+
+      <div class="nav-item" onclick="switchPage('sessions')">
+
+        <span class="nav-icon">💬</span><span>会话</span>
+
+      </div>
+
+      <div class="nav-item" onclick="switchPage('config')">
+
+        <span class="nav-icon">⚙️</span><span>设置</span>
+
+      </div>
+
+      <div class="nav-item" id="btn-debug-mode" onclick="toggleDebugMode()" style="margin-left:8px; color:var(--accent-purple);">
+
+        <span class="nav-icon">🎯</span><span>组件定位</span>
+
+          </div>
+
+        </nav>
+
+      </div> <!-- /topbar -->
+
+
+  <!-- Content Area (horizontal flex with main + side panel) -->
+  <div class="content-area">
+
+
+  <!-- Main -->
+
+  <div class="main-content">
+
+    <div class="content-body" id="content-body">
+
+      <!-- Dashboard Page -->
+
+      <div class="page active" id="page-dashboard">
+
+
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+
+          <span style="font-size:13px;color:var(--text-secondary);">📋 当前版本</span>
+
+          <span id="dashboard-version" style="font-family:monospace;font-size:13px;font-weight:600;color:var(--accent-blue);">加载中...</span>
+
+        </div>
+
+        <div class="status-grid" id="status-cards">
+
+          <!-- JS 填充 -->
+
+        </div>
+
+        <div style="height:24px"></div>
+
+        <div class="card">
+
+          <div class="card-title">快捷操作</div>
+
+          <div class="quick-actions">
+
+            <div class="quick-action" onclick="apiAction('start')">
+
+              <div class="quick-action-icon">🚀</div>
+
+              <div class="quick-action-label">启动服务</div>
+
+              <div class="quick-action-desc">启动 Flask 后端</div>
+
+            </div>
+
+            <div class="quick-action" onclick="apiAction('stop')">
+
+              <div class="quick-action-icon">⏹️</div>
+
+              <div class="quick-action-label">停止服务</div>
+
+              <div class="quick-action-desc">停止 Flask 后端</div>
+
+            </div>
+
+            <div class="quick-action" onclick="apiAction('restart')">
+
+              <div class="quick-action-icon">🔄</div>
+
+              <div class="quick-action-label">一键强杀重启</div>
+
+              <div class="quick-action-desc">强杀服务并重新拉起</div>
+
+            </div>
+
+            <div class="quick-action" onclick="openFlaskUI()">
+
+              <div class="quick-action-icon">🌐</div>
+
+              <div class="quick-action-label">打开应用</div>
+
+              <div class="quick-action-desc">浏览器打开 :5000</div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+        <div style="height:16px"></div>
+
+        <div class="card">
+
+          <div class="card-title">系统资源</div>
+
+          <div id="system-info" class="status-grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+
+            <!-- JS 填充 -->
+
+          </div>
+
+        </div>
+
+        <div style="height:16px"></div>
+
+        <div class="card">
+
+          <div class="card-title">进程信息</div>
+
+          <div id="process-info">
+
+            <p style="color:var(--text-muted)">加载中...</p>
+
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <!-- Toolbox Page -->
+
+      <div class="page" id="page-toolbox">
+
+        <div class="card">
+
+          <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+
+            <span>🧰 开发工具箱</span>
+
+            <button class="btn btn-sm btn-outline" onclick="renderUiDictionary()">🔄 刷新</button>
+
+          </div>
+
+          <div style="margin-top:8px;color:var(--text-secondary);font-size:13px;line-height:1.6;">
+            汇总 Web 与 Android 开发中普遍使用的组件名称和常见英文叫法，不限于 AideLink 已有界面。点击条目可加入右侧提示词生成器。
+          </div>
+
+          <div style="margin-top:12px;display:flex;gap:8px;border-bottom:1px solid var(--border-color);padding-bottom:10px;">
+            <button class="btn btn-sm btn-outline active-tab" id="btn-toolbox-ui" onclick="switchToolboxTab('ui')">通用组件名称清单</button>
+            <button class="btn btn-sm btn-outline" id="btn-toolbox-commands" onclick="switchToolboxTab('commands')">快捷指令</button>
+          </div>
+
+          <div id="toolbox-tab-ui" style="margin-top:16px;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+              <input
+                type="search"
+                class="form-control"
+                style="flex:1;min-width:240px;"
+                placeholder="搜索组件中文名、英文名或用途，例如：抽屉、Picker、加载"
+                oninput="filterUiDictionary(this.value)"
+              >
+              <span id="ui-dictionary-count" style="font-size:12px;color:var(--text-muted);"></span>
+            </div>
+            <div id="ui-dictionary-list">
+              <p style="color:var(--text-muted)">正在加载通用组件名称清单...</p>
+            </div>
+          </div>
+
+          <div id="toolbox-tab-commands" style="display:none;margin-top:16px;">
+            <div style="padding:16px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);color:var(--text-secondary);font-size:13px;">
+              快捷指令中心下一步再做。这里会放构建 APK、安装到手机、重启服务、ADB reconnect、快捷提交等常用动作。
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <!-- Logs Page -->
+
+      <div class="page" id="page-logs">
+
+        <div class="card">
+
+          <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+
+            <span>实时日志</span>
+
+            <div class="btn-group">
+
+              <button class="btn btn-sm btn-outline" onclick="analyzeLogs()">🧚 翻译解析日志</button>
+
+              <button class="btn btn-sm btn-danger" onclick="clearLogs()">🗑️ 清空日志</button>
+
+              <button class="btn btn-sm btn-outline" onclick="copyLogContent()">📋 复制日志</button>
+
+              <button class="btn btn-sm btn-outline" onclick="toggleLogFilter()" id="log-filter-btn">⚠️ 仅显示错误</button>
+
+              <button class="btn btn-sm btn-outline" onclick="toggleLogStream()" id="log-toggle-btn">⏸ 暂停</button>
+
+              <button class="btn btn-sm btn-outline" onclick="loadLogs()">🔄 刷新</button>
+
+            </div>
+
+          </div>
+
+          <div style="margin-top: 12px; display: flex; gap: 8px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
+
+            <button class="btn btn-sm btn-outline active-tab" id="btn-log-desktop" onclick="switchLogSource('desktop')">💻 电脑端日志</button>
+
+            <button class="btn btn-sm btn-outline" id="btn-log-phone" onclick="switchLogSource('phone')">📱 手机端日志</button>
+
+          </div>
+
+          <div class="log-viewer" id="log-viewer" style="margin-top: 12px;">
+
+            加载中...
+
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <!-- Sessions Page -->
+
+      <div class="page" id="page-sessions">
+
+        <div class="card">
+
+          <div class="card-title">IDE 会话列表</div>
+
+          <div class="table-wrapper">
+
+            <table>
+
+              <thead><tr><th>会话 ID</th><th>最后消息</th><th>最后时间</th><th>消息数</th></tr></thead>
+
+              <tbody id="sessions-table"><tr><td colspan="4" style="text-align:center;color:var(--text-muted)">加载中...</td></tr></tbody>
+
+            </table>
+
+          </div>
+
+        </div>
+
+        <div style="height:16px"></div>
+
+        <div class="card">
+
+          <div class="card-title">聊天历史</div>
+
+          <div id="chat-history" style="max-height:400px;overflow-y:auto;font-size:13px">
+
+            加载中...
+
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <!-- Config Page -->
+
+      <div class="page" id="page-config">
+
+
+        <div class="config-tabs" id="config-tabs">
+
+          <button class="config-tab" onclick="switchConfigTab('basic')">🔌 基础设置</button>
+
+          <button class="config-tab" onclick="switchConfigTab('frp')">🌐 FRP 管理</button>
+
+          <button class="config-tab" onclick="switchConfigTab('models')">🧚 模型管理</button>
+
+          <button class="config-tab" onclick="switchConfigTab('ides')">🖥️ IDE 管理</button>
+
+          <button class="config-tab" onclick="switchConfigTab('devices')">📱 设备管理</button>
+
+        </div>
+
+
+        <!-- Tab: 基础设置 -->
+
+        <div class="config-tab-panel active" id="config-tab-basic">
+
+          <div class="card">
+
+            <div class="card-title">🔌 基础服务设置</div>
+
+            <div class="form-grid">
+
+              <div class="form-group">
+
+                <label class="form-label">Flask 监听地址 (flask_host)</label>
+
+                <input type="text" class="form-input" id="cfg-flask-host" value="0.0.0.0">
+
+              </div>
+
+              <div class="form-group">
+
+                <label class="form-label">Flask 监听端口 (flask_port)</label>
+
+                <input type="number" class="form-input" id="cfg-flask-port" value="5000">
+
+              </div>
+
+              <div class="form-group">
+
+                <label class="form-checkbox-label">
+
+                  <input type="checkbox" class="form-checkbox" id="cfg-auto-start">
+
+                  <span>开机自动启动服务</span>
+
+                </label>
+
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">目标项目</label>
+                <div id="project-list-dashboard" style="margin-bottom: 8px;"></div>
+                <div style="display: flex; gap: 8px;">
+                  <input id="project-path-manual-dash" type="text" placeholder="项目完整路径（可选）" style="width:220px;padding:5px 8px">
+                  <button type="button" class="btn btn-sm" onclick="browseAndAddProjectDash()">📁 添加项目</button>
+                  <button class="btn btn-sm" onclick="loadProjectListDash()">🔄 刷新</button>
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+
+
+          <div style="margin-top: 16px; display: flex; justify-content: flex-end;">
+
+            <button class="btn btn-primary" onclick="saveFormConfig()">💾 保存配置并重启服务生效</button>
+
+          </div>
+
+        </div>
+
+
+        <!-- Tab: FRP 管理 -->
+
+        <div class="config-tab-panel" id="config-tab-frp">
+
+          <!-- 第一区：服务器连接 (首次配置向导) -->
+
+          <div class="card">
+
+            <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+
+              <span>🔗 FRP 服务器连接</span>
+
+              <label class="form-checkbox-label" style="margin-top:0">
+
+                <input type="checkbox" class="form-checkbox" id="cfg-frp-enabled" onchange="toggleFrpForm(this.checked)">
+
+                <span style="font-weight:600">启用 FRP 穿透</span>
+
+              </label>
+
+            </div>
+
+            <div id="frp-form-fields">
+
+              <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px 0;">填写你的 FRP 服务器信息，连接后即可创建代理规则，让外网访问你的电脑。</p>
+
+              <div class="form-grid" style="grid-template-columns: 2fr 1fr 2fr;">
+
+                <div class="form-group">
+
+                  <label class="form-label">服务器地址</label>
+
+                  <input type="text" class="form-input" id="cfg-frp-server-addr" placeholder="你的服务器 IP 或域名">
+
+                </div>
+
+                <div class="form-group">
+
+                  <label class="form-label">端口</label>
+
+                  <input type="number" class="form-input" id="cfg-frp-server-port" value="7000">
+
+                </div>
+
+                <div class="form-group">
+
+                  <label class="form-label">连接密钥 (Token)</label>
+
+                  <input type="password" class="form-input" id="cfg-frp-token" placeholder="服务器端设置的密钥，留空则无鉴权">
+
+                </div>
+
+              </div>
+
+              <div style="margin-top:12px;display:flex;justify-content:flex-end;">
+
+                <button class="btn btn-primary" onclick="saveFrpServerConfig()">💾 保存服务器配置</button>
+
+              </div>
+
+            </div>
+
+          </div>
+
+          <!-- 第二区：代理规则管理 -->
+
+          <div class="card" style="margin-top:16px;">
+
+            <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+
+              <span>📋 代理规则</span>
+
+              <div class="btn-group">
+
+                <button class="btn btn-sm btn-outline" onclick="loadFrpProxies()">🔄 刷新</button>
+
+                <button class="btn btn-sm btn-success" onclick="addFrpProxyRow()">➕ 新增规则</button>
+
+                <button class="btn btn-sm btn-primary" onclick="saveFrpProxies()">💾 保存并重启</button>
+
+              </div>
+
+            </div>
+
+            <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px 0;">每条规则把电脑上的某个端口/服务映射到公网。添加后点「保存并重启」生效。</p>
+
+            <div class="table-wrapper" style="margin-top:12px;">
+
+              <table>
+
+                <thead>
+
+                  <tr>
+
+                    <th style="width:15%">规则名称</th>
+
+                    <th style="width:10%">类型</th>
+
+                    <th style="width:15%">本地 IP</th>
+
+                    <th style="width:12%">本地端口</th>
+
+                    <th style="width:28%">公网映射 (域名或端口)</th>
+
+                    <th style="text-align:center;width:10%">操作</th>
+
+                  </tr>
+
+                </thead>
+
+                <tbody id="frp-proxy-table">
+
+                  <tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted)">加载中...</td></tr>
+
+                </tbody>
+
+              </table>
+
+            </div>
+
+          </div>
+
+          <!-- 第三区：一键生成服务端指令 -->
+
+          <div class="card" style="margin-top:16px;">
+
+            <div class="card-title" style="cursor:pointer;user-select:none" onclick="toggleSetupGuide()">
+
+              <span>🚀 一键部署指令（点我展开）</span>
+
+              <span id="guide-toggle-icon" style="font-size:12px;color:var(--text-muted)">▼</span>
+
+            </div>
+
+            <div id="frp-setup-guide" style="display:none;margin-top:12px;">
+
+              <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px 0;">根据上方信息自动生成，在你的电脑终端按顺序粘贴执行即可：</p>
+
+              <div style="background:var(--bg-secondary);border-radius:8px;padding:16px;margin-bottom:12px;">
+
+                <p style="font-weight:600;margin:0 0 8px 0;">① 连接服务器</p>
+
+                <pre id="guide-ssh" style="background:var(--bg-primary);border-radius:6px;padding:12px;font-size:12px;overflow-x:auto;margin:0;white-space:pre-wrap;"></pre>
+
+              </div>
+
+              <div style="background:var(--bg-secondary);border-radius:8px;padding:16px;margin-bottom:12px;">
+
+                <p style="font-weight:600;margin:0 0 8px 0;">② 下载 frps</p>
+
+                <pre id="guide-download" style="background:var(--bg-primary);border-radius:6px;padding:12px;font-size:12px;overflow-x:auto;margin:0;white-space:pre-wrap;"></pre>
+
+              </div>
+
+              <div style="background:var(--bg-secondary);border-radius:8px;padding:16px;">
+
+                <p style="font-weight:600;margin:0 0 8px 0;">③ 写入配置并启动</p>
+
+                <pre id="guide-config" style="background:var(--bg-primary);border-radius:6px;padding:12px;font-size:12px;overflow-x:auto;margin:0;white-space:pre-wrap;"></pre>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <!-- Tab: 模型管理 -->
+
+        <div class="config-tab-panel" id="config-tab-models">
+
+          <div class="card">
+
+            <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+
+              <span>模型管理</span>
+
+              <div style="display:flex;align-items:center;gap:16px;margin-left:auto;">
+
+                <label style="font-size:13px;color:var(--text-secondary);display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;">
+
+                  <input type="checkbox" id="show-unconfigured-models" onchange="loadModels()" style="accent-color:var(--accent-blue);width:16px;height:16px;"> 显示未设置 Key 的模型
+
+                </label>
+
+                <div style="display:inline-flex;align-items:center;gap:6px;">
+
+                  <span style="font-size:13px;color:var(--text-secondary);">默认模型:</span>
+
+                  <select id="default-model-select" class="table-select" style="width: 150px; padding: 4px 8px;" onchange="setDefaultModel(this.value)">
+
+                  </select>
+
+                </div>
+
+              </div>
+
+              <div class="btn-group">
+
+                <button class="btn btn-sm btn-outline" onclick="loadModels()">🔄 刷新</button>
+
+                <button class="btn btn-sm btn-success" onclick="showAddModelDialog()">➕ 添加自定义模型</button>
+
+              </div>
+
+            </div>
+
+            <div class="table-wrapper" style="margin-top:12px;">
+
+              <table>
+
+                <thead>
+
+                  <tr>
+
+                    <th>模型 Key</th>
+
+                    <th>提供商</th>
+
+                    <th>模型 ID</th>
+
+                    <th>描述</th>
+
+                    <th>API Key</th>
+
+                    <th>状态</th>
+
+                    <th>操作</th>
+
+                  </tr>
+
+                </thead>
+
+                <tbody id="models-table">
+
+                  <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted)">加载中...</td></tr>
+
+                </tbody>
+
+              </table>
+
+            </div>
+
+          </div>
+
+          <div class="card" style="margin-top:16px;">
+
+            <div class="card-title">Aide 工作目录</div>
+
+            <div style="display:flex;align-items:center;gap:12px;margin-top:8px;">
+
+              <input type="text" class="form-input" id="mimo-workspace" value="{{ mimo_workspace }}" style="flex:1" readonly>
+
+              <span style="font-size:12px;color:var(--text-muted)">规则文件: .mimo/rules.md</span>
+
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <!-- Tab: IDE 管理 -->
+
+        <div class="config-tab-panel" id="config-tab-ides">
+
+          <div class="card">
+
+            <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+
+              <span>💻 桌面端 IDE 扫描与配置</span>
+
+              <div class="btn-group">
+
+                <button class="btn btn-sm btn-outline" onclick="loadIdes()">🔄 刷新列表</button>
+
+                <button class="btn btn-sm btn-success" onclick="scanIdes()">🔍 自动扫描安装路径</button>
+
+                <button class="btn btn-sm btn-primary" onclick="showAddIdeDialog()">➕ 添加自定义 IDE</button>
+
+              </div>
+
+            </div>
+
+            <div class="table-wrapper" style="margin-top:16px;">
+
+              <table>
+
+                <thead>
+
+                  <tr>
+
+                    <th>IDE 标识 (Key)</th>
+
+                    <th>显示名称 (Name)</th>
+
+                    <th>安装路径 (Path)</th>
+
+                    <th>检测到的版本</th>
+
+                    <th>来源 (Source)</th>
+
+                    <th style="text-align:center;">测试任务</th>
+
+                    <th style="text-align:center;" title="多个 IDE 同时运行时优先进入；全局最多一个">主 IDE</th>
+
+                    <th style="text-align:center;">操作</th>
+
+                  </tr>
+
+                </thead>
+
+                <tbody id="ides-table">
+
+                  <tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted)">正在加载 IDE 列表...</td></tr>
+
+                </tbody>
+
+              </table>
+
+            </div>
+
+          </div>
+
+
+          <div class="card" style="margin-top:16px;">
+
+            <div class="card-title">🌐 OpenCode Web 地址配置</div>
+
+            <p style="font-size:13px;color:var(--text-secondary);margin:0 0 8px 0;">局域网内手机直接用电脑 IP + 端口访问；外网访问请在「FRP 管理」中为该端口创建代理规则。</p>
+
+            <div class="form-grid" style="grid-template-columns:1fr 2fr;margin-top:8px;">
+
+              <div class="form-group">
+
+                <label class="form-label">本地端口</label>
+
+                <input type="number" class="form-input" id="cfg-oc-web-port" value="4096">
+
+              </div>
+
+              <div class="form-group">
+
+                <label class="form-label">访问密码</label>
+
+                <input type="password" class="form-input" id="cfg-oc-web-pwd" placeholder="OpenCode Web 登录密码">
+
+                <span style="font-size:11px;color:var(--text-muted);margin-top:2px;display:block">WebView 打开时自动填入 Basic Auth</span>
+
+              </div>
+
+            </div>
+
+            <div style="display:flex;align-items:center;gap:12px;margin-top:12px;">
+
+              <button class="btn btn-primary" onclick="saveOcWebConfig()">💾 保存配置</button>
+
+              <span id="oc-web-save-result" style="font-size:13px;"></span>
+
+            </div>
+
+          </div>
+
+        </div>
+
+        <!-- Tab: 设备管理 -->
+        <div class="config-tab-panel" id="config-tab-devices">
+          <div class="card">
+            <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+              <span>📱 设备管理</span>
+              <div style="display:flex;gap:8px;">
+                <button class="btn btn-sm btn-outline" id="btn-auto-refresh" onclick="toggleAutoRefresh()">⏱ 自动刷新</button>
+                <button class="btn btn-sm btn-outline" onclick="loadDevices()">🔄 刷新</button>
+              </div>
+            </div>
+            <div id="frp-status-bar" style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--bg-tertiary);border-radius:6px;margin-bottom:12px;font-size:12px;">
+              <span id="frp-status-text">🌐 FRP: 加载中...</span>
+              <button class="btn btn-sm btn-outline" id="btn-frp-toggle" onclick="toggleFrp()">切换</button>
+            </div>
+            <div id="devices-list" style="margin-bottom: 16px;">加载中...</div>
+            <div style="display: flex; gap: 12px; align-items: flex-end; padding:12px; background:var(--bg-tertiary); border-radius:6px;">
+              <div style="flex: 1;">
+                <label class="form-label">选择设备</label>
+                <select class="form-input" id="device-select">
+                  <option value="">请先刷新设备列表</option>
+                </select>
+              </div>
+              <div style="flex: 1;">
+                <label class="form-label">设置别名</label>
+                <input type="text" class="form-input" id="device-alias" placeholder="如：手机、平板">
+              </div>
+              <button class="btn btn-primary" onclick="setDeviceAlias()">设置别名</button>
+            </div>
+          </div>
+        </div>
+
+
+      </div>
+
+
+      <!-- Tasks Page -->
+
+      <div class="page" id="page-tasks">
+
+        <div class="card">
+
+          <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;" onclick="toggleTasksCollapse(event)">
+
+            <span>📋 历史任务与委派列表</span>
+
+            <div style="display:flex; align-items:center; gap:8px;" onclick="event.stopPropagation()">
+
+              <button class="btn btn-sm btn-outline" id="btn-toggle-tasks" onclick="toggleTasksCollapse()" style="padding:4px 8px;font-size:12px;" title="折叠任务列表">▲</button>
+
+              <button class="btn btn-sm btn-primary" onclick="openGlobalPromptPanel('task')" style="background:rgba(88,166,255,0.15); color:var(--accent-blue); border:1px solid rgba(88,166,255,0.3);">➕ 添加任务</button>
+
+              <button class="btn btn-sm btn-outline" onclick="loadTasksList()">🔄 刷新列表</button>
+
+            </div>
+
+          </div>
+
+          
+
+          <div id="tasks-collapse-body">
+
+          <!-- Tabs & Merge Toolbar -->
+
+          <div style="display:flex; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:8px; margin-top:16px; margin-bottom:12px; gap:8px;">
+
+            <button class="btn btn-sm btn-outline active-tab" id="btn-tab-tasks-pending" onclick="switchTasksTab('pending')">⏳ 待处理</button>
+
+            <button class="btn btn-sm btn-outline" id="btn-tab-tasks-completed" onclick="switchTasksTab('completed')">✅ 已完成</button>
+
+            
+
+            <!-- 视图切换 -->
+
+            <div style="display:flex; gap:4px; margin-left:12px; padding-left:12px; border-left:1px solid var(--border-color);">
+
+              <button class="btn btn-sm btn-outline active-tab" id="btn-view-list" onclick="switchTasksView('list')" title="列表视图">📋 列表</button>
+
+              <button class="btn btn-sm btn-outline" id="btn-view-component" onclick="switchTasksView('component')" title="按组件分组">🧩 组件</button>
+
+            </div>
+
+            <button class="btn btn-sm btn-warning" id="btn-merge-tasks" onclick="mergeSameTargetTasks()" style="margin-left:auto;">⛓️ 一键合并同目标任务</button>
+
+          </div>
+
+          
+
+          <!-- Dispatch Toolbar -->
+
+          <div id="tasks-dispatch-toolbar" style="margin-bottom:12px;">
+
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
+
+              <span style="font-size:13px; color:var(--text-secondary);">选中任务派发到:</span>
+
+              <div id="ide-quick-select" style="display:flex; gap:6px; flex-wrap:wrap;">
+
+                <!-- JS 动态生成 IDE 按钮 -->
+
+              </div>
+
+            </div>
+
+            <div style="display:flex; align-items:center; gap:8px;">
+
+              <input type="text" id="git-commit-msg" class="table-input" style="flex:1; padding: 6px 10px;" placeholder="Git 提交日志 (可选)" title="Git 提交日志">
+
+              <button class="btn btn-sm btn-outline" onclick="autoGenerateGitCommitMsg()">🧚 自动生成日志</button>
+
+              <button class="btn btn-sm btn-success" onclick="quickGitCommit()">⚡ 快捷提交 Git</button>
+
+            </div>
+
+          </div>
+
+
+          <div class="table-wrapper">
+
+            <div id="batch-task-toolbar" style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--border-color);margin-bottom:8px;">
+
+              <span id="selected-task-count" style="font-size:12px;color:var(--text-muted);">已选 0 项</span>
+
+              <button class="btn btn-sm btn-success" id="btn-batch-complete" onclick="batchCompleteTasks()" style="display:none;">✅ 批量完成</button>
+
+              <button class="btn btn-sm btn-outline" id="btn-batch-delete" onclick="batchDeleteTasks()" style="display:none;color:var(--accent-red);border-color:rgba(248,81,73,0.3);">🗑️ 批量删除</button>
+
+            </div>
+
+            <table>
+
+              <thead>
+
+                <tr>
+
+                  <th style="width:3%"><input type="checkbox" id="select-all-tasks" onchange="toggleSelectAllTasks(this.checked)"></th>
+
+                  <th style="width:13%">任务</th>
+
+                  <th style="width:18%">涉及组件/文件</th>
+
+                  <th style="width:32%">任务内容</th>
+
+                  <th style="width:16%">状态 / IDE</th>
+
+                  <th style="text-align:center;width:18%">操作</th>
+
+                </tr>
+
+              </thead>
+
+              <tbody id="tasks-table">
+
+                <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted)">正在加载任务列表...</td></tr>
+
+              </tbody>
+
+            </table>
+
+          </div>
+
+
+          <!-- 组件分组视图（默认隐藏） -->
+
+          <div id="tasks-component-view" style="display:none;">
+
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+
+              <span style="font-size:13px; color:var(--text-secondary);">按组件分组显示任务</span>
+
+              <input type="text" id="component-search-input" class="table-input" style="width:200px; padding:6px 10px; font-size:12px;" placeholder="🔍 搜索组件..." oninput="filterComponentView(this.value)">
+
+            </div>
+
+            <div id="component-groups-container" style="display:flex; flex-direction:column; gap:12px;">
+
+              <!-- JS 动态生成组件分组 -->
+
+            </div>
+
+          </div>
+
+        </div> <!-- /tasks-collapse-body -->
+
+        </div> <!-- /task-list-card -->
+
+
+        <!-- Project Map Card on Tasks Page -->
+
+        <div class="card" style="margin-top:16px;">
+
+          <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+
+            <span>🗺️ 项目模块与组件地图</span>
+
+            <div class="btn-group">
+
+              <button class="btn btn-sm btn-outline" id="btn-batch-prompt" onclick="openBatchPromptBuilder()" style="display:none; background:rgba(88,166,255,0.12); color:var(--accent-blue); border:1px solid rgba(88,166,255,0.2);">✍️ 生成选中组件提示词 (<span id="selected-nodes-count">0</span>)</button>
+
+              <button class="btn btn-sm btn-primary" onclick="scanProjectMap(false)">🔄 重新扫描项目</button>
+
+              <button class="btn btn-sm" onclick="scanProjectMap(true)" style="background:rgba(138,146,160,0.15);color:var(--text-secondary);border:1px solid var(--border-color);">🤖 AI 增强扫描</button>
+
+              <button class="btn btn-sm" onclick="openGlobalPromptPanel('map')" style="background:rgba(88,166,255,0.12);color:var(--accent-blue);border:1px solid rgba(88,166,255,0.2);">🤖 AI 提示</button>
+
+            </div>
+
+          </div>
+
+          <div style="margin-top: 12px; display: flex; gap: 16px; flex-wrap: wrap;">
+
+            <div id="project-map-stats" style="font-size: 13px; color: var(--text-secondary);">
+
+              <!-- Stats -->
+
+            </div>
+
+          </div>
+
+          <div style="margin-top: 12px; display: flex; gap: 8px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
+
+            <button class="btn btn-sm btn-outline active-tab" id="btn-map-ui" onclick="switchMapSubTab('ui')">🎨 界面地图</button>
+
+            <button class="btn btn-sm btn-outline" id="btn-map-component" onclick="switchMapSubTab('component')">🧩 组件类型地图</button>
+
+            <button class="btn btn-sm btn-outline" id="btn-map-code" onclick="switchMapSubTab('code')">📂 源码架构与路由</button>
+
+          </div>
+
+
+          <div id="project-map-tree" style="margin-top: 16px; font-size: 14px; max-height: calc(100vh - 480px); overflow-y: auto; padding-right: 8px;">
+
+            <p style="color:var(--text-muted)">正在加载项目地图...</p>
+
+          </div>
+
+          <div id="component-map-container" style="display:none; margin-top: 16px; font-size: 14px; max-height: calc(100vh - 480px); overflow-y: auto; padding-right: 8px;">
+
+            <p style="color:var(--text-muted)">正在加载组件类型地图...</p>
+
+
+        </div>
+
+
+        <!-- Embedded logs card on Tasks Page -->
+
+      </div>
+
+    </div>
+
+  </div>
+
+</div>
+
+
+<div class="toast-container" id="toast-container"></div>
+
+
+<script src="/static/js/core.js"></script>
+<script src="/static/js/dashboard.js"></script>
+<script src="/static/js/logs.js"></script>
+<script src="/static/js/sessions.js"></script>
+<script src="/static/js/config.js?v=20260705b"></script>
+<script src="/static/js/ui-dictionary.js"></script>
+<script src="/static/js/project-map.js"></script>
+<script src="/static/js/debug-mode.js"></script>
+<script src="/static/js/prompt-panel.js"></script>
+<script src="/static/js/frp.js"></script>
+<script src="/static/js/tasks.js"></script>
+<script src="/static/js/qr-modal.js"></script>
+
+<script>
+// 项目列表管理 (dashboard)
+async function loadProjectListDash() {
+  try {
+    const r = await fetch('/api/projects');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderProjectListDash(data.projects || [], data.current_project || '');
+  } catch (e) { console.error('loadProjectListDash:', e); }
+}
+function renderProjectListDash(projects, current) {
+  const el = document.getElementById('project-list-dashboard');
+  if (!el) return;
+  if (!projects.length) { el.innerHTML = '<p style="color:#888;margin:0;font-size:13px">暂无项目</p>'; return; }
+  el.innerHTML = projects.map((p, i) => {
+    const cur = p.path === current;
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;margin-bottom:4px;background:'+(cur?'#1a3a1a':'#1a1d24')+';border:1px solid '+(cur?'#4caf50':'#333')+';border-radius:6px;font-size:13px">'
+      +'<div><b>'+(p.name||'?')+'</b> '+(cur?'<span style="color:#4caf50">当前</span>':'')+'<br><span style="color:#888;font-size:11px">'+p.path+'</span></div>'
+      +'<div style="display:flex;gap:4px">'
+      +(cur?'':'<button class="btn btn-sm" onclick="selectProjectDash(\''+p.path.replace(/\\/g,'\\\\')+'\')" style="font-size:11px;padding:3px 8px">选择</button>')
+      +'<button class="btn btn-sm btn-danger" onclick="deleteProjectDash('+i+')" style="font-size:11px;padding:3px 8px">删除</button>'
+      +'</div></div>';
+  }).join('');
+}
+async function selectProjectDash(path) {
+  try {
+    await fetch('/api/projects/select', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})});
+    loadProjectListDash();
+  } catch(e) { console.error(e); }
+}
+async function deleteProjectDash(idx) {
+  if (!confirm('确定删除？')) return;
+  try {
+    const response = await fetch('/api/projects/'+idx, {method:'DELETE'});
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.ok === false) throw new Error(body.message || '删除失败');
+    loadProjectListDash();
+  } catch(e) { window.alert('删除失败：' + e.message); }
+}
+async function browseAndAddProjectDash() {
+  try {
+    const manual = document.getElementById('project-path-manual-dash')?.value.trim();
+    if (manual) {
+      const direct = await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:manual})});
+      const directResult = await direct.json();
+      if (!direct.ok || !directResult.ok) throw new Error(directResult.message || '项目路径无效');
+      loadProjectListDash(); return;
+    }
+    const r = await fetch('/api/browse-folder', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    const data = await r.json();
+    let path = data.ok ? data.path : '';
+    if (!path) {
+      path = window.prompt('系统文件夹选择器不可用，请输入项目文件夹的完整路径：', '');
+      if (!path) return;
+    }
+    const add = await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:path.trim()})});
+    const result = await add.json();
+    if (!add.ok || !result.ok) {
+      const retry = window.prompt((result.message || '添加项目失败') + '\n请手动输入项目文件夹完整路径：', '');
+      if (retry && retry.trim()) {
+        const retryAdd = await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:retry.trim()})});
+        const retryResult = await retryAdd.json();
+        if (retryAdd.ok && retryResult.ok) { loadProjectListDash(); return; }
+        window.alert(retryResult.message || '添加项目失败');
+      }
+      return;
+    }
+    loadProjectListDash();
+  } catch(e) { console.error(e); window.alert('添加项目失败：' + e.message); }
+}
+document.addEventListener('DOMContentLoaded', loadProjectListDash);
+
+// 首次安装提示：不强制阻塞业务页面，用户可关闭并从设置页继续配置。
+document.addEventListener('DOMContentLoaded', () => {
+  if (localStorage.getItem('aidelink_setup_wizard_done')) return;
+  setTimeout(() => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:20000;display:flex;align-items:center;justify-content:center;padding:20px';
+    overlay.innerHTML = '<div style="background:var(--panel,#20242b);color:var(--text,#fff);max-width:520px;width:100%;padding:26px;border-radius:14px">' +
+      '<h2 style="margin:0 0 12px">欢迎使用 AideLink</h2>' +
+      '<p>首次使用建议依次完成：添加目标项目、检查桌面 IDE、配置手机连接。</p>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px"><button id="setup-wizard-skip" class="btn btn-outline">稍后设置</button><button id="setup-wizard-open" class="btn btn-primary">打开设置</button></div></div>';
+    document.body.appendChild(overlay);
+    const finish = () => { localStorage.setItem('aidelink_setup_wizard_done','1'); overlay.remove(); };
+    overlay.querySelector('#setup-wizard-skip').onclick = finish;
+    overlay.querySelector('#setup-wizard-open').onclick = () => { finish(); document.querySelector('[data-tab="config"]')?.click(); };
+  }, 800);
+});
+</script>
+
+</div> <!-- /content-body -->
+
+</div> <!-- /main-content -->
+
+</div> <!-- /content-area -->
+
+<!-- ========== 全局 AI 提示词生成器侧边栏 ========== -->
+
+<div class="global-prompt-panel" id="global-prompt-panel">
+
+  <div class="global-prompt-header">
+
+    <h3>🤖 AI 提示词生成器</h3>
+
+    <button class="btn btn-sm btn-outline" onclick="closeGlobalPromptPanel()" style="padding:4px 8px;">✕</button>
+
+  </div>
+
+  <div class="global-prompt-body">
+
+    <div style="display:flex; flex-direction:column; gap:12px;">
+
+      <div id="global-prompt-source" style="font-size:12px; color:var(--text-muted); padding:6px 10px; background:var(--bg-tertiary); border-radius:6px;">
+
+        📋 来源：任务列表
+
+      </div>
+
+      <div>
+
+        <label class="form-label">目标文件范围</label>
+
+        <div id="global-prompt-meta" style="font-family:monospace; font-size:12px; background:var(--bg-primary); padding:8px; border-radius:4px; border:1px solid var(--border-color); color:var(--accent-blue); min-height:32px;">
+
+          <span style="color:var(--text-muted);">点击"分析需求"自动识别，或手动输入</span>
+
+        </div>
+
+        <div style="margin-top:6px;">
+
+          <input type="text" id="global-prompt-file-input" class="form-input" style="width:100%; font-size:12px; font-family:monospace;" placeholder="手动输入目标文件路径（如 server/phone_chat_bridge.py）">
+
+        </div>
+
+      </div>
+
+      <div>
+
+        <label class="form-label">组件/类/函数</label>
+
+        <input type="text" id="global-prompt-component-input" class="form-input" style="width:100%; font-size:12px;" placeholder="如: 📋 历史任务与委派列表 / index() / Dashboard 组件">
+
+      </div>
+
+      <div id="global-quick-component-container" style="display:none; flex-direction:column; gap:6px;">
+
+        <label class="form-label" style="color:var(--accent-blue);">📦 快速插入组件（点击插入到需求输入框）：</label>
+
+        <div id="global-quick-component-badges" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;"></div>
+
+      </div>
+
+      <div>
+
+        <label class="form-label">修改类型</label>
+
+        <div style="display:flex; gap:8px;">
+
+          <button class="btn btn-sm btn-outline active-tab" id="global-btn-prompt-type-unspecified" onclick="selectGlobalPromptCategory('unspecified')">— 未指定</button>
+
+          <button class="btn btn-sm btn-outline" id="global-btn-prompt-type-feature" onclick="selectGlobalPromptCategory('feature')">✨ 新增功能</button>
+
+          <button class="btn btn-sm btn-outline" id="global-btn-prompt-type-optimize" onclick="selectGlobalPromptCategory('optimize')">⚡ 功能优化</button>
+
+          <button class="btn btn-sm btn-outline" id="global-btn-prompt-type-bug" onclick="selectGlobalPromptCategory('bug')">🐛 修复bug</button>
+
+        </div>
+
+      </div>
+
+      <div>
+
+        <label class="form-label">您的具体修改需求</label>
+
+        <textarea class="form-input" id="global-prompt-user-req" style="width:100%; height:80px; resize:vertical; font-family:inherit; padding:8px 12px; line-height:1.4;" placeholder="描述您希望实现的功能或修复的问题..." oninput="updateGlobalPromptPreview()"></textarea>
+
+      </div>
+
+      <div style="display:flex; justify-content:center; gap:8px;">
+
+        <button class="btn btn-sm btn-primary" onclick="analyzeGlobalRequirements()" style="padding:8px 20px; font-size:13px;">
+
+          🔍 分析需求
+
+        </button>
+
+        <button class="btn btn-sm btn-outline" onclick="predictGlobalPromptCandidates()" style="padding:8px 20px; font-size:13px; color:var(--accent-purple); border-color:rgba(188,140,255,0.3);">
+
+          🧚 AI 预测
+
+        </button>
+
+      </div>
+
+      <div id="global-prompt-candidates-container" style="display:none;">
+
+        <label class="form-label" style="color:var(--accent-blue);">AI 推荐的需求（点击应用）</label>
+
+        <div id="global-prompt-candidates" style="display:flex; flex-direction:column; gap:6px; margin-top:4px;"></div>
+
+      </div>
+
+      <div>
+
+        <label class="form-label">提示词预览（可直接修改）</label>
+
+        <textarea id="global-prompt-preview" style="width:100%; height:140px; background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:4px; padding:10px; font-size:12px; font-family:monospace; resize:vertical; outline:none;" oninput="onGlobalPromptPreviewManualEdit()"></textarea>
+
+      </div>
+
+    </div>
+
+  </div>
+
+  <div class="global-prompt-footer">
+
+    <button class="btn btn-sm btn-outline" onclick="closeGlobalPromptPanel()">取消</button>
+
+    <button class="btn btn-sm btn-warning" onclick="saveGlobalPromptAsTask()">📋 保存为任务</button>
+
+    <button class="btn btn-sm btn-primary" onclick="copyGlobalPrompt()">📋 复制提示词</button>
+
+  </div>
+
+</div>
+
+</div> <!-- /app-layout -->
+
+
+<!-- 二维码遮罩弹窗 -->
+
+<div id="qr-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); backdrop-filter:blur(10px); z-index:9999; align-items:center; justify-content:center;">
+
+  <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--radius); padding:24px; text-align:center; box-shadow:var(--shadow); width:320px; position:relative; animation:fadeIn 0.2s ease;">
+
+    <span style="position:absolute; top:12px; right:16px; font-size:20px; cursor:pointer; color:var(--text-secondary);" onclick="closeQRModal()">✕</span>
+
+    <h3 style="margin-bottom:16px; font-size:16px; font-weight:600;">手机扫码快速连接</h3>
+
+    <div id="qrcode-canvas" style="background:white; padding:12px; border-radius:8px; display:inline-block; margin-bottom:16px;"></div>
+
+    <div id="qr-url-text" style="font-size:12px; color:var(--text-secondary); word-break:break-all; font-family:monospace;"></div>
+
+    <p style="font-size:11px; color:var(--text-muted); margin-top:8px;">在手机 App 的设置中，点击“扫码连接”扫描此图即可秒连</p>
+
+  </div>
+
+</div>
+
+
+<!-- 日志分析弹窗 -->
+
+<div id="log-analysis-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); backdrop-filter:blur(10px); z-index:9999; align-items:center; justify-content:center;">
+
+  <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--radius); padding:24px; box-shadow:var(--shadow); width:90%; height:90%; max-width:1200px; display:flex; flex-direction:column; justify-content:space-between; position:relative; animation:fadeIn 0.2s ease;">
+
+    <span style="position:absolute; top:12px; right:16px; font-size:20px; cursor:pointer; color:var(--text-secondary);" onclick="closeLogAnalysisModal()">✕</span>
+
+    <h3 style="margin-bottom:16px; font-size:16px; font-weight:600; display:flex; align-items:center; gap:8px;">🧚 Aide 日志深度分析</h3>
+
+    
+
+    <div style="flex:1; overflow-y:auto; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:var(--radius-sm); padding:16px; font-size:13px; line-height:1.6; color:var(--text-primary); white-space:pre-wrap; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;" id="log-analysis-content">
+
+      分析中，请稍候...
+
+
+    <div style="margin-top: 20px; display: flex; justify-content: flex-end;">
+
+      <button class="btn btn-primary" onclick="closeLogAnalysisModal()">关闭</button>
+
+    </div>
+
+  </div>
+
+</div>
+
+
+<script>
+
+let qrCodeInstance = null;
+
+
+function showQRModal(ip) {
+
+  if (!ip || ip === '—') {
+
+    showToast('暂无有效局域网IP', 'error');
+
+    return;
+
+  }
+
+  const url = `http://${ip}:5000`;
+
+  document.getElementById('qr-url-text').textContent = url;
+
+  document.getElementById('qr-modal').style.display = 'flex';
+
+  
+
+  // 清空以前的二维码
+
+  document.getElementById('qrcode-canvas').innerHTML = '';
+
+  
+
+  // 渲染二维码
+
+  qrCodeInstance = new QRCode(document.getElementById('qrcode-canvas'), {
+
+    text: url,
+
+    width: 200,
+
+    height: 200,
+
+    colorDark : "#000000",
+
+    colorLight : "#ffffff",
+
+    correctLevel : QRCode.CorrectLevel.H
+
+  });
+
+}
+
+
+function closeQRModal() {
+
+  document.getElementById('qr-modal').style.display = 'none';
+
+}
+
+</script>
+
+</body>
+
+</html>
+

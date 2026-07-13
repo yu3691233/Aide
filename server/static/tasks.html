@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AideLink · 任务看板</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --border: #2a2f38;
+    --text: #e6e8ec;
+    --muted: #8a92a0;
+    --accent: #5b9cff;
+    --accent-hover: #7aaeff;
+    --ok: #46c97a;
+    --warn: #f0a040;
+    --err: #e26a6a;
+    --card: #1e222a;
+    --card-hover: #252a34;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px; border-bottom: 1px solid var(--border);
+    background: var(--panel); position: sticky; top: 0; z-index: 10;
+  }
+  .header h1 { font-size: 18px; font-weight: 700; }
+  .header .subtitle { font-size: 11px; color: var(--muted); }
+  .btn {
+    background: var(--accent); color: #fff; border: none; border-radius: 6px;
+    padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+    font-family: inherit; transition: background 0.15s;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn.ghost:hover { color: var(--text); border-color: var(--text); }
+  .btn.sm { padding: 4px 10px; font-size: 12px; }
+  .btn.danger { background: var(--err); }
+  .btn.danger:hover { background: #c95555; }
+  .btn.ok { background: var(--ok); }
+  .btn.ok:hover { background: #3ab86a; }
+
+  /* Stats bar */
+  .stats {
+    display: flex; gap: 8px; padding: 12px 16px; overflow-x: auto;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+    position: sticky; top: 53px; z-index: 9;
+  }
+  .stat-chip {
+    display: flex; align-items: center; gap: 4px;
+    padding: 4px 10px; border-radius: 12px; font-size: 12px;
+    font-weight: 600; white-space: nowrap; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card);
+    transition: all 0.15s;
+  }
+  .stat-chip:hover { border-color: var(--accent); }
+  .stat-chip.active { border-color: var(--accent); background: rgba(91,156,255,0.1); }
+  .stat-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+  /* Board */
+  .board { padding: 12px 16px 80px; }
+  .column { margin-bottom: 20px; }
+  .column-header {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 600; color: var(--muted);
+    margin-bottom: 8px; padding: 0 4px;
+  }
+  .column-count {
+    background: var(--card); border-radius: 10px;
+    padding: 1px 7px; font-size: 11px;
+  }
+
+  /* Task card */
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px; margin-bottom: 8px;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .card:hover { background: var(--card-hover); border-color: #3a4050; }
+  .card-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .card-desc {
+    font-size: 12px; color: var(--muted); margin-bottom: 8px;
+    display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .card-meta {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    font-size: 11px; color: var(--muted);
+  }
+  .card-meta .tag {
+    padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;
+  }
+  .tag-type { background: rgba(91,156,255,0.15); color: var(--accent); }
+  .tag-priority-high { background: rgba(226,106,106,0.15); color: var(--err); }
+  .tag-priority-medium { background: rgba(240,160,64,0.15); color: var(--warn); }
+  .tag-priority-low { background: rgba(70,201,122,0.15); color: var(--ok); }
+  .tag-ide { background: rgba(138,146,160,0.15); color: var(--muted); }
+  .card-actions {
+    display: flex; gap: 4px; margin-top: 8px; justify-content: flex-end;
+  }
+
+  /* Modal */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 100; align-items: flex-end; justify-content: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 16px 16px 0 0; width: 100%; max-width: 500px;
+    max-height: 90vh; overflow-y: auto; padding: 20px;
+    animation: slideUp 0.2s ease-out;
+  }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  .modal h2 { font-size: 16px; margin-bottom: 16px; }
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 500; }
+  .field label .hint { color: var(--muted); font-weight: normal; font-size: 11px; }
+  .field input, .field select, .field textarea {
+    width: 100%; background: #0c0e13; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; font-size: 13px; font-family: inherit;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus {
+    outline: none; border-color: var(--accent);
+  }
+  .field textarea { min-height: 80px; resize: vertical; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--border);
+    padding: 8px 14px; border-radius: 20px; font-size: 12px;
+    opacity: 0; transition: opacity 0.3s; pointer-events: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4); z-index: 200;
+  }
+  .toast.show { opacity: 1; }
+  .toast.ok { border-color: var(--ok); color: var(--ok); }
+  .toast.err { border-color: var(--err); color: var(--err); }
+
+  /* Empty state */
+  .empty {
+    text-align: center; padding: 40px 20px; color: var(--muted); font-size: 13px;
+  }
+
+  /* Detail modal */
+  .detail-section { margin-bottom: 12px; }
+  .detail-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .detail-value { font-size: 13px; white-space: pre-wrap; word-break: break-all; }
+  .detail-prompt {
+    background: #0c0e13; border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all;
+    max-height: 200px; overflow-y: auto; font-family: "Cascadia Code", "Fira Code", monospace;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>任务看板</h1>
+    <div class="subtitle">AideLink · 随时记录想法，管理开发任务</div>
+  </div>
+  <button class="btn" onclick="openCreateModal()">+ 新建</button>
+</div>
+
+<div class="search-bar" style="display:flex; gap:8px; padding:12px 16px; background:var(--panel); border-bottom:1px solid var(--border); flex-wrap:wrap; align-items:center;">
+  <input type="text" id="search-input" placeholder="搜索任务标题或内容..." style="flex:1; min-width:200px; padding:8px 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit;">
+  <select id="filter-ide" style="padding:8px 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit;">
+    <option value="">全部 IDE</option>
+    <option value="trae">TRAE</option>
+    <option value="agy">AGY</option>
+    <option value="mimo">MIMO</option>
+    <option value="oc">OC</option>
+  </select>
+  <select id="filter-origin" style="padding:8px 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit;">
+    <option value="">全部来源</option><option value="user">用户任务</option><option value="agent">Agent任务</option>
+  </select>
+  <select id="filter-status" style="padding:8px 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit;">
+    <option value="">全部状态</option>
+    <!-- 动态生成其他状态选项 -->
+  </select>
+  <button class="btn" onclick="clearFilters()" style="padding:8px 12px;">清除</button>
+</div>
+
+<div class="stats" id="stats"></div>
+<div class="board" id="board"></div>
+
+<!-- Create Modal -->
+<div class="modal-overlay" id="createModal">
+  <div class="modal">
+    <h2>新建任务</h2>
+    <div class="field">
+      <label>标题</label>
+      <input type="text" id="newTitle" placeholder="简短描述任务">
+    </div>
+    <div class="field">
+      <label>类型</label>
+      <select id="newType">
+        <option value="feature">🆕 新需求</option>
+        <option value="optimization" selected>⚡ 优化功能</option>
+        <option value="bugfix">🐛 修复 Bug</option>
+        <option value="testing">🧪 测试功能</option>
+        <option value="refactor">♻️ 重构代码</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>优先级</label>
+      <select id="newPriority">
+        <option value="high">🔴 高</option>
+        <option value="medium" selected>🟡 中</option>
+        <option value="low">🟢 低</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>描述 <span class="hint">详细说明要做什么</span></label>
+      <textarea id="newDesc" placeholder="描述任务内容..."></textarea>
+    </div>
+    <div class="field">
+      <label>分配给 <span class="hint">可稍后分配</span></label>
+      <select id="newIde">
+        <option value="">不分配</option>
+        <option value="trae">Trae</option>
+        <option value="agy">Antigravity</option>
+        <option value="oc">OpenCode</option>
+        <option value="mimo">MiMoCode</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>关联文件 <span class="hint">逗号分隔，可选</span></label>
+      <input type="text" id="newFiles" placeholder="ChatScreen.kt, ChatViewModel.kt">
+    </div>
+    <div class="modal-actions">
+      <button class="btn ghost" onclick="closeCreateModal()">取消</button>
+      <button class="btn" onclick="createTask()">创建任务</button>
+    </div>
+  </div>
+</div>
+
+<!-- Detail Modal -->
+<div class="modal-overlay" id="detailModal">
+  <div class="modal" id="detailContent"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+const STATUS_LABELS = {
+  draft: '草稿', queued: '排队中', dispatched: '已派发',
+  running: '执行中', pending_test: '待测试',
+  done: '已完成', failed: '失败', timeout: '超时'
+};
+const STATUS_COLORS = {
+  draft: '#8a92a0', queued: '#5b9cff', dispatched: '#5b9cff',
+  running: '#f0a040', pending_test: '#bc8cff',
+  done: '#46c97a', failed: '#e26a6a', timeout: '#e26a6a'
+};
+const TYPE_LABELS = {
+  feature: '新需求', optimization: '优化', bugfix: 'Bug修复',
+  testing: '测试', refactor: '重构'
+};
+const PRIORITY_LABELS = { high: '高', medium: '中', low: '低' };
+
+let allTasks = [];
+let searchKeyword = '';
+let filterIde = '';
+let filterStatus = '';
+
+function toast(text, kind) {
+  const el = document.getElementById('toast');
+  el.textContent = text;
+  el.className = 'toast show ' + (kind || '');
+  setTimeout(() => el.className = 'toast', 2200);
+}
+
+function timeAgo(iso) {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return '刚刚';
+  if (mins < 60) return mins + ' 分钟前';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + ' 小时前';
+  const days = Math.floor(hrs / 24);
+  return days + ' 天前';
+}
+
+async function loadTasks() {
+  try {
+    // 拼接搜索/筛选查询参数
+    const params = new URLSearchParams();
+    if (searchKeyword) params.set('keyword', searchKeyword);
+    if (filterIde) params.set('target_ide', filterIde);
+    if (filterStatus) params.set('status', filterStatus);
+    const qs = params.toString();
+    const url = API + '/tasks' + (qs ? '?' + qs : '');
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    allTasks = await r.json();
+    render();
+  } catch (e) {
+    toast('加载失败: ' + e.message, 'err');
+  }
+}
+
+// 搜索框输入：防抖 300ms
+function onSearchInput() {
+  clearTimeout(window._searchTimer);
+  window._searchTimer = setTimeout(() => {
+    searchKeyword = document.getElementById('search-input').value.trim();
+    loadTasks();
+  }, 300);
+}
+
+// IDE / 状态下拉变更
+function onFilterChange() {
+  filterIde = document.getElementById('filter-ide').value;
+  filterStatus = document.getElementById('filter-status').value;
+  loadTasks();
+}
+
+// 清除所有筛选
+function clearFilters() {
+  document.getElementById('search-input').value = '';
+  document.getElementById('filter-ide').value = '';
+  document.getElementById('filter-status').value = '';
+  document.getElementById('filter-origin').value = '';
+  searchKeyword = '';
+  filterIde = '';
+  filterStatus = '';
+  loadTasks();
+}
+
+// 动态填充状态下拉选项（保留"全部状态"）
+function initFilterStatusOptions() {
+  const sel = document.getElementById('filter-status');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">全部状态</option>';
+  for (const [status, label] of Object.entries(STATUS_LABELS)) {
+    const opt = document.createElement('option');
+    opt.value = status;
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
+}
+
+function render() {
+  renderStats();
+  renderBoard();
+}
+
+function renderStats() {
+  const counts = {};
+  for (const t of allTasks) {
+    counts[t.status] = (counts[t.status] || 0) + 1;
+  }
+  const el = document.getElementById('stats');
+  el.innerHTML = Object.entries(STATUS_LABELS).map(([s, label]) => {
+    const c = counts[s] || 0;
+    const active = filterStatus === s ? ' active' : '';
+    return `<div class="stat-chip${active}" onclick="toggleFilter('${s}')">
+      <span class="stat-dot" style="background:${STATUS_COLORS[s]}"></span>
+      ${label}(${c})
+    </div>`;
+  }).join('');
+}
+
+function toggleFilter(status) {
+  filterStatus = filterStatus === status ? '' : status;
+  // 同步状态下拉框
+  const sel = document.getElementById('filter-status');
+  if (sel) sel.value = filterStatus;
+  loadTasks();
+}
+
+function renderBoard() {
+  const el = document.getElementById('board');
+  let tasks = allTasks;
+  // 前端实时过滤：按搜索关键词（标题或内容）
+  if (searchKeyword) {
+    const kw = searchKeyword.toLowerCase();
+    tasks = tasks.filter(t =>
+      (t.title || '').toLowerCase().includes(kw) ||
+      (t.text || '').toLowerCase().includes(kw)
+    );
+  }
+  // 前端实时过滤：按 IDE
+  if (filterIde) {
+    tasks = tasks.filter(t => t.target_ide === filterIde);
+  }
+  // 前端实时过滤：按状态
+  if (filterStatus) tasks = tasks.filter(t => t.status === filterStatus);
+  const filterOrigin = document.getElementById('filter-origin')?.value || '';
+  if (filterOrigin) tasks = tasks.filter(t => (t.task_origin || (t.source === 'primary_ide' ? 'agent' : 'user')) === filterOrigin);
+
+  if (tasks.length === 0) {
+    el.innerHTML = '<div class="empty">暂无任务，点击右上角 "+ 新建" 开始</div>';
+    return;
+  }
+
+  const grouped = {};
+  for (const s of Object.keys(STATUS_LABELS)) grouped[s] = [];
+  for (const t of tasks) {
+    const s = t.status || 'draft';
+    if (!grouped[s]) grouped[s] = [];
+    grouped[s].push(t);
+  }
+
+  let html = '';
+  for (const [status, label] of Object.entries(STATUS_LABELS)) {
+    const items = grouped[status] || [];
+    if (items.length === 0 && filterStatus) continue;
+    html += `<div class="column">
+      <div class="column-header">
+        <span class="stat-dot" style="background:${STATUS_COLORS[status]}"></span>
+        ${label}
+        <span class="column-count">${items.length}</span>
+      </div>`;
+    for (const t of items) {
+      html += renderCard(t);
+    }
+    html += '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function renderCard(t) {
+  const typeLabel = TYPE_LABELS[t.metadata?.type] || '';
+  const priClass = 'tag-priority-' + (t.priority || 'medium');
+  const priLabel = PRIORITY_LABELS[t.priority] || '中';
+  const ideLabel = t.target_ide ? t.target_ide.toUpperCase() : '';
+  const origin = t.task_origin || (t.source === 'primary_ide' ? 'agent' : 'user');
+  const files = (t.owned_paths || []).length;
+
+  let actions = '';
+  if (t.status === 'draft' || t.status === 'queued') {
+    actions += `<button class="btn sm ok" onclick="event.stopPropagation();completeTask('${t.task_id}')">完成</button>`;
+    actions += `<button class="btn sm danger" onclick="event.stopPropagation();failTask('${t.task_id}')">失败</button>`;
+  } else if (t.status === 'running') {
+    actions += `<button class="btn sm ok" onclick="event.stopPropagation();completeTask('${t.task_id}')">完成</button>`;
+    actions += `<button class="btn sm danger" onclick="event.stopPropagation();failTask('${t.task_id}')">失败</button>`;
+  } else if (t.status === 'failed' || t.status === 'timeout') {
+    actions += `<button class="btn sm" onclick="event.stopPropagation();retryTask('${t.task_id}')">重试</button>`;
+  }
+  actions += `<button class="btn sm ghost" onclick="event.stopPropagation();deleteTask('${t.task_id}')">删</button>`;
+
+  return `<div class="card" onclick="showDetail('${t.task_id}')">
+    <div class="card-title">${esc(t.title)}</div>
+    ${t.text ? `<div class="card-desc">${esc(t.text)}</div>` : ''}
+    <div class="card-meta">
+      ${typeLabel ? `<span class="tag tag-type">${typeLabel}</span>` : ''}
+      <span class="tag ${origin === 'agent' ? 'tag-type' : ''}">${origin === 'agent' ? '🤖 Agent任务' : '👤 用户任务'}</span>
+      <span class="tag ${priClass}">${priLabel}</span>
+      ${ideLabel ? `<span class="tag tag-ide">${ideLabel}</span>` : ''}
+      ${files > 0 ? `<span>📁 ${files}</span>` : ''}
+      <span>🕐 ${timeAgo(t.created_at)}</span>
+    </div>
+    ${actions ? `<div class="card-actions">${actions}</div>` : ''}
+  </div>`;
+}
+
+function esc(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Create
+function openCreateModal() {
+  document.getElementById('createModal').classList.add('show');
+  document.getElementById('newTitle').focus();
+}
+function closeCreateModal() {
+  document.getElementById('createModal').classList.remove('show');
+  ['newTitle','newDesc','newFiles'].forEach(id => document.getElementById(id).value = '');
+}
+
+async function createTask() {
+  const title = document.getElementById('newTitle').value.trim();
+  const desc = document.getElementById('newDesc').value.trim();
+  const type = document.getElementById('newType').value;
+  const priority = document.getElementById('newPriority').value;
+  const ide = document.getElementById('newIde').value;
+  const files = document.getElementById('newFiles').value.trim();
+
+  if (!title) { toast('请输入标题', 'err'); return; }
+
+  const payload = {
+    title, text: desc || title, priority,
+    target_ide: ide || null,
+    metadata: { type },
+    owned_paths: files ? files.split(',').map(s => s.trim()).filter(Boolean) : [],
+  };
+
+  try {
+    const r = await fetch(API + '/tasks/create', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('任务已创建', 'ok');
+    closeCreateModal();
+    loadTasks();
+  } catch (e) {
+    toast('创建失败: ' + e.message, 'err');
+  }
+}
+
+// Actions
+async function completeTask(id) {
+  try {
+    const r = await fetch(API + '/tasks/' + id + '/complete', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('任务已完成', 'ok');
+    loadTasks();
+  } catch (e) { toast('操作失败: ' + e.message, 'err'); }
+}
+
+async function failTask(id) {
+  try {
+    const r = await fetch(API + '/tasks/' + id + '/fail', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({error:'手动标记失败'}) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('任务已标记失败', 'ok');
+    loadTasks();
+  } catch (e) { toast('操作失败: ' + e.message, 'err'); }
+}
+
+// 重试失败或超时的任务
+async function retryTask(id) {
+  try {
+    const r = await fetch(API + '/tasks/' + id + '/retry', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('任务已重试', 'ok');
+    loadTasks();
+  } catch (e) { toast('重试失败: ' + e.message, 'err'); }
+}
+
+async function deleteTask(id) {
+  if (!confirm('确定删除此任务？')) return;
+  try {
+    const r = await fetch(API + '/tasks/' + id, { method: 'DELETE' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('已删除', 'ok');
+    loadTasks();
+  } catch (e) { toast('删除失败: ' + e.message, 'err'); }
+}
+
+// Detail
+function showDetail(id) {
+  const t = allTasks.find(x => x.task_id === id);
+  if (!t) return;
+  const typeLabel = TYPE_LABELS[t.metadata?.type] || '未分类';
+  const priLabel = PRIORITY_LABELS[t.priority] || '中';
+  const statusLabel = STATUS_LABELS[t.status] || t.status;
+
+  document.getElementById('detailContent').innerHTML = `
+    <h2>${esc(t.title)}</h2>
+    <div class="detail-section">
+      <div class="detail-label">状态</div>
+      <div class="detail-value"><span class="tag" style="background:${STATUS_COLORS[t.status]}22;color:${STATUS_COLORS[t.status]}">${statusLabel}</span>
+      <span class="tag tag-type">${typeLabel}</span>
+      <span class="tag tag-priority-${t.priority||'medium'}">${priLabel}</span></div>
+    </div>
+    ${t.target_ide ? `<div class="detail-section"><div class="detail-label">分配给</div><div class="detail-value">${t.target_ide.toUpperCase()}</div></div>` : ''}
+    <div class="detail-section">
+      <div class="detail-label">描述</div>
+      <div class="detail-value">${esc(t.text || '无')}</div>
+    </div>
+    ${(t.owned_paths||[]).length > 0 ? `<div class="detail-section"><div class="detail-label">关联文件</div><div class="detail-value">${t.owned_paths.join('\n')}</div></div>` : ''}
+    <div class="detail-section">
+      <div class="detail-label">创建时间</div>
+      <div class="detail-value">${t.created_at || '-'}</div>
+    </div>
+    ${t.completed_at ? `<div class="detail-section"><div class="detail-label">完成时间</div><div class="detail-value">${t.completed_at}</div></div>` : ''}
+    ${t.error ? `<div class="detail-section"><div class="detail-label">错误</div><div class="detail-value" style="color:var(--err)">${esc(t.error)}</div></div>` : ''}
+    <div class="modal-actions">
+      <button class="btn ghost" onclick="document.getElementById('detailModal').classList.remove('show')">关闭</button>
+      ${t.status !== 'done' && t.status !== 'failed' ? `
+        <button class="btn ok" onclick="completeTask('${t.task_id}');document.getElementById('detailModal').classList.remove('show')">完成</button>
+        <button class="btn danger" onclick="failTask('${t.task_id}');document.getElementById('detailModal').classList.remove('show')">失败</button>
+      ` : ''}
+    </div>
+  `;
+  document.getElementById('detailModal').classList.add('show');
+}
+
+// Close modals on overlay click
+document.querySelectorAll('.modal-overlay').forEach(el => {
+  el.addEventListener('click', e => { if (e.target === el) el.classList.remove('show'); });
+});
+
+// Init
+initFilterStatusOptions();
+// 绑定搜索框与下拉框事件
+const searchInput = document.getElementById('search-input');
+if (searchInput) searchInput.addEventListener('input', onSearchInput);
+const filterIdeSel = document.getElementById('filter-ide');
+if (filterIdeSel) filterIdeSel.addEventListener('change', onFilterChange);
+const filterStatusSel = document.getElementById('filter-status');
+if (filterStatusSel) filterStatusSel.addEventListener('change', onFilterChange);
+const filterOriginSel = document.getElementById('filter-origin');
+if (filterOriginSel) filterOriginSel.addEventListener('change', onFilterChange);
+loadTasks();
+</script>
+</body>
+</html>
