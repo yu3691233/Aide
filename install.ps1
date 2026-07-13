@@ -17,7 +17,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = "",
-    [string]$RepoUrl = "https://github.com/yuto0118/AideLink.git",
+    [string]$RepoUrl = "https://github.com/yu3691233/Aide.git",
     [int]$Port = 5000,
     [switch]$OpenFirewall,
     [switch]$AutoStart
