@@ -112,7 +112,9 @@ def capture_window_winrt(hwnd, timeout=3.0, client_only=False):
         ready.set()
 
     try:
-        capture = WindowsCapture(window_hwnd=hwnd, cursor_capture=False, draw_border=False)
+        # 部分 Windows 版本不支持主动切换黄色捕获边框；None 交给系统决定，
+        # 否则 windows-capture 2.x 会在 start() 时直接抛异常并退回白图。
+        capture = WindowsCapture(window_hwnd=hwnd, cursor_capture=False, draw_border=None)
         capture.frame_handler = on_frame
         capture.closed_handler = on_closed
         capture.start()
@@ -147,10 +149,15 @@ def capture_window_winrt(hwnd, timeout=3.0, client_only=False):
                 pass
 
 
-def _is_all_black(img):
-    """快速检测图片是否全黑（PrintWindow 对 DirectX 窗口返回空白）"""
-    extrema = img.getextrema()
-    return all(ext[0] == 0 and ext[1] == 0 for ext in extrema)
+def _is_blank_image(img):
+    """检测 PrintWindow 对硬件加速窗口返回的纯黑或纯白空白图。"""
+    if img is None or img.width <= 0 or img.height <= 0:
+        return True
+    # 缩小后检查亮度范围，避免对校准大图逐像素扫描。Electron 窗口失败时
+    # 常见结果不仅是全黑，也可能是几乎纯白的客户区。
+    sample = img.convert("L").resize((32, 32))
+    low, high = sample.getextrema()
+    return high <= 4 or low >= 251
 
 
 def _cleanup(hbitmap, memory_dc, hdc, hwnd):
@@ -226,7 +233,7 @@ def capture_window_client(hwnd):
         if img.mode == 'RGBA':
             img = img.convert('RGB')
 
-        if _is_all_black(img):
+        if _is_blank_image(img):
             print(f"[WARN] capture_window_client: PrintWindow returned blank for hwnd={hwnd}", flush=True)
             return None
 
@@ -299,7 +306,7 @@ def capture_window_full(hwnd):
         if img.mode == 'RGBA':
             img = img.convert('RGB')
 
-        if _is_all_black(img):
+        if _is_blank_image(img):
             print(f"[WARN] capture_window_full: PrintWindow returned blank for hwnd={hwnd}", flush=True)
             return None
 

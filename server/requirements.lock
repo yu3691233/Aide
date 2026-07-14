@@ -11,3 +11,4 @@ paramiko==5.0.0
 watchdog==6.0.0
 requests==2.32.3
 numpy==2.2.6
+windows-capture==2.0.0
