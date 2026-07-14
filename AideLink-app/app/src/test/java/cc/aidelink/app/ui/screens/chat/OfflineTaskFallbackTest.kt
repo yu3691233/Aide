@@ -38,4 +38,11 @@ class OfflineTaskFallbackTest {
         assertFalse(taskStatusMatchesTab("failed", 2))
         assertTrue(taskStatusMatchesTab("done", 2))
     }
+
+    @Test
+    fun successfulDispatchAlwaysMovesToActiveTab() {
+        assertEquals(0, taskTabAfterDispatch(currentTab = 3, success = true))
+        assertEquals(0, taskTabAfterDispatch(currentTab = 2, success = true))
+        assertEquals(3, taskTabAfterDispatch(currentTab = 3, success = false))
+    }
 }

@@ -110,6 +110,10 @@ internal fun targetColor(target: String?): Color {
     return Color(0xFF90A4AE)
 }
 
+internal fun taskTabAfterDispatch(currentTab: Int, success: Boolean): Int {
+    return if (success) 0 else currentTab
+}
+
 @Composable
 private fun TaskThreadPanel(
     task: AideTask,
@@ -358,6 +362,8 @@ fun AideLinkChatScreen(
 
     // 每次进入 ChatScreen 时刷新 IDE 列表（ViewModel 可能因导航存活而未 init）
     LaunchedEffect(Unit) {
+        viewModel.loadProject()
+        viewModel.loadTasks()
         viewModel.loadSelectedIdeList()
         viewModel.loadDesktopIdes()
     }
@@ -712,14 +718,18 @@ fun AideLinkChatScreen(
                         onBatchComplete = viewModel::batchComplete,
                         onBatchDispatch = {
                             if (state.target != AideLinkChatViewModel.Target.AIDELINK) {
-                                viewModel.executeDispatch(state.target.key, state.selectedTaskIds)
+                                viewModel.executeDispatch(state.target.key, state.selectedTaskIds) { success ->
+                                    selectedTaskTab = taskTabAfterDispatch(selectedTaskTab, success)
+                                }
                             } else {
                                 viewModel.showDispatchSelector(state.selectedTaskIds)
                             }
                         },
                         onDispatch = { taskId ->
                             if (state.target != AideLinkChatViewModel.Target.AIDELINK) {
-                                viewModel.executeDispatch(state.target.key, setOf(taskId))
+                                viewModel.executeDispatch(state.target.key, setOf(taskId)) { success ->
+                                    selectedTaskTab = taskTabAfterDispatch(selectedTaskTab, success)
+                                }
                             } else {
                                 viewModel.showDispatchSelector(setOf(taskId))
                             }
@@ -730,7 +740,9 @@ fun AideLinkChatScreen(
                                 if (state.target != AideLinkChatViewModel.Target.AIDELINK) state.target.key else ""
                             }
                             if (dispatchTarget.isNotBlank()) {
-                                viewModel.executeDispatch(dispatchTarget, setOf(taskId))
+                                viewModel.executeDispatch(dispatchTarget, setOf(taskId)) { success ->
+                                    selectedTaskTab = taskTabAfterDispatch(selectedTaskTab, success)
+                                }
                             } else {
                                 viewModel.showDispatchSelector(setOf(taskId))
                             }
@@ -839,7 +851,11 @@ fun AideLinkChatScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.executeDispatch(selectedTarget) }) { Text("派发") }
+                TextButton(onClick = {
+                    viewModel.executeDispatch(selectedTarget) { success ->
+                        selectedTaskTab = taskTabAfterDispatch(selectedTaskTab, success)
+                    }
+                }) { Text("派发") }
             },
             dismissButton = {
                 TextButton(onClick = viewModel::hideDispatchSelector) { Text("取消") }

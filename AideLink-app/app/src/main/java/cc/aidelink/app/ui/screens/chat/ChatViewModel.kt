@@ -2782,9 +2782,9 @@ class AideLinkChatViewModel @Inject constructor(
 
             val currentTarget = _state.value.target.key
 
-            val currentProjectPath = _state.value.currentProjectPath
-
-            runCatching { bridgeApi.fetchTasks(targetIde = null, status = null, project = currentProjectPath.ifBlank { null }) }
+            // 服务端 TaskRuntime 已按当前目标项目选择独立任务文件。
+            // 客户端再传可能过期的 project 会把新项目任务全部二次过滤掉。
+            runCatching { bridgeApi.fetchTasks(targetIde = null, status = null, project = null) }
 
                 .onSuccess { list ->
 
@@ -3349,7 +3349,11 @@ class AideLinkChatViewModel @Inject constructor(
 
 
 
-    fun executeDispatch(targetIde: String, taskIds: Set<String>? = null) {
+    fun executeDispatch(
+        targetIde: String,
+        taskIds: Set<String>? = null,
+        onComplete: ((Boolean) -> Unit)? = null,
+    ) {
 
         val ids = (taskIds ?: _state.value.dispatchTaskIds).toList()
 
@@ -3384,6 +3388,10 @@ class AideLinkChatViewModel @Inject constructor(
                     toastMessage = "派发未成功，任务仍保存在离线任务中",
                 )
 
+            }
+
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                onComplete?.invoke(ok)
             }
 
         }
