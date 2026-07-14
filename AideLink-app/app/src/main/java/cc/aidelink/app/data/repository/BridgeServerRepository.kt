@@ -28,6 +28,16 @@ class BridgeServerRepository @Inject constructor(
     companion object {
         private val BRIDGE_SERVERS_KEY = stringPreferencesKey("bridge_servers")
         private val ACTIVE_SERVER_ID_KEY = stringPreferencesKey("active_bridge_server_id")
+
+        /** 回环地址只代表手机自身，不能作为连接 PC 桥接服务的服务器。 */
+        fun isPhoneLoopbackUrl(url: String): Boolean {
+            val host = runCatching {
+                val value = url.trim()
+                java.net.URI(if (value.contains("://")) value else "http://$value").host
+            }.getOrNull()?.trim()?.trimEnd('.')?.lowercase()
+
+            return host == "localhost" || host == "::1" || host?.startsWith("127.") == true
+        }
     }
 
     private val json = Json {
@@ -42,6 +52,7 @@ class BridgeServerRepository @Inject constructor(
         val serversJson = preferences[BRIDGE_SERVERS_KEY] ?: "[]"
         try {
             json.decodeFromString<List<BridgeServerConfig>>(serversJson)
+                .filterNot { isPhoneLoopbackUrl(it.url) }
         } catch (e: Exception) {
             emptyList()
         }
@@ -68,6 +79,7 @@ class BridgeServerRepository @Inject constructor(
         type: BridgeServerType = BridgeServerType.LOCAL,
         autoConnect: Boolean = false
     ): BridgeServerConfig {
+        require(!isPhoneLoopbackUrl(url)) { "不能将手机本机回环地址保存为 PC 服务器" }
         val server = BridgeServerConfig(
             id = java.util.UUID.randomUUID().toString(),
             name = name,
@@ -88,6 +100,7 @@ class BridgeServerRepository @Inject constructor(
      * 更新服务器
      */
     suspend fun updateServer(server: BridgeServerConfig) {
+        require(!isPhoneLoopbackUrl(server.url)) { "不能将手机本机回环地址保存为 PC 服务器" }
         val currentServers = getAllServers()
         val updatedServers = currentServers.map {
             if (it.id == server.id) server else it

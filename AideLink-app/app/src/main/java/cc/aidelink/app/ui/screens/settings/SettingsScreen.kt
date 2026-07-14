@@ -109,7 +109,7 @@ class AideLinkSettingsViewModel @Inject constructor(
         val cachedIdes = loadCachedIdes()
         val cachedModels = loadCachedModels()
         val savedUrl = settings.getServerUrl()
-        val initialServers = if (savedUrl.isNotBlank()) {
+        val initialServers = if (savedUrl.isNotBlank() && !cc.aidelink.app.data.repository.BridgeServerRepository.isPhoneLoopbackUrl(savedUrl)) {
             listOf(cc.aidelink.app.domain.model.BridgeServerConfig(
                 id = "__current__",
                 name = "当前服务器",
@@ -154,7 +154,10 @@ class AideLinkSettingsViewModel @Inject constructor(
 
             try {
                 val allServers = bridgeServerRepo.getAllServers()
-                if (savedUrl.isNotBlank() && allServers.none { it.url.trimEnd('/') == savedUrl.trimEnd('/') }) {
+                if (savedUrl.isNotBlank() &&
+                    !cc.aidelink.app.data.repository.BridgeServerRepository.isPhoneLoopbackUrl(savedUrl) &&
+                    allServers.none { it.url.trimEnd('/') == savedUrl.trimEnd('/') }
+                ) {
                     val newServer = bridgeServerRepo.addServer(
                         name = "默认服务器",
                         url = savedUrl,
@@ -383,13 +386,21 @@ class AideLinkSettingsViewModel @Inject constructor(
 
     fun addBridgeServer(name: String, url: String, type: cc.aidelink.app.domain.model.BridgeServerType) {
         viewModelScope.launch {
-            bridgeServerRepo.addServer(name, url, type)
+            try {
+                bridgeServerRepo.addServer(name, url, type)
+            } catch (_: IllegalArgumentException) {
+                _state.value = _state.value.copy(scanMessage = "不能添加手机本机地址，请填写电脑的局域网 IP 或公网域名")
+            }
         }
     }
 
     fun updateBridgeServer(server: cc.aidelink.app.domain.model.BridgeServerConfig) {
         viewModelScope.launch {
-            bridgeServerRepo.updateServer(server)
+            try {
+                bridgeServerRepo.updateServer(server)
+            } catch (_: IllegalArgumentException) {
+                _state.value = _state.value.copy(scanMessage = "不能保存手机本机地址，请填写电脑的局域网 IP 或公网域名")
+            }
         }
     }
 

@@ -934,6 +934,10 @@ internal fun AddServerDialog(
                         "http://$cleanedIp:$parsedPort"
                     }
                 }
+                if (cc.aidelink.app.data.repository.BridgeServerRepository.isPhoneLoopbackUrl(finalUrl)) {
+                    ipError = "不能使用手机本机地址，请填写电脑的局域网 IP 或公网域名"
+                    return@TextButton
+                }
                 onConfirm(name.trim(), finalUrl, selectedType)
             }) {
                 Text("确定")
