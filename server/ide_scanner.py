@@ -165,6 +165,23 @@ def _probe_command_exe(command_name):
     return None
 
 
+def _probe_codex_desktop_exe():
+    """查找 Codex 桌面的 ChatGPT.exe，而不是其无界面的 codex.exe 后端。"""
+    try:
+        import psutil
+        for proc in psutil.process_iter(["name", "exe"]):
+            info = proc.info
+            exe = info.get("exe") or ""
+            if (info.get("name") or "").lower() == "chatgpt.exe" and os.path.isfile(exe):
+                return exe
+    except Exception:
+        pass
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    pattern = os.path.join(program_files, "WindowsApps", "OpenAI.Codex_*", "app", "ChatGPT.exe")
+    matches = [path for path in glob.glob(pattern) if os.path.isfile(path)]
+    return sorted(matches, reverse=True)[0] if matches else None
+
+
 def _get_version(exe_path):
     """从PE文件头读取版本信息"""
     try:
@@ -202,6 +219,20 @@ def scan_installed_ides():
     for ide_key, config in registry.items():
         if config.get("type") == "web":
             continue
+        if ide_key == "codex":
+            exe = _probe_codex_desktop_exe()
+            if exe:
+                results.append({
+                    "key": ide_key,
+                    "name": "ChatGPT (Codex)",
+                    "path": exe,
+                    "version": _get_version(exe),
+                    "source": "scan",
+                    "icon": config.get("icon", ""),
+                    "color": config.get("color", "#58A6FF"),
+                })
+                seen_keys.add(ide_key)
+                continue
         scan_paths = config.get("scan_paths", [])
         exe_pattern = config.get("exe_pattern", "")
         if not scan_paths or not exe_pattern:
@@ -227,25 +258,6 @@ def scan_installed_ides():
             else:
                 continue
             break
-    # 某些 WindowsApps / 命令别名类 IDE（例如 Codex）未必能通过目录枚举拿到，
-    # 再用 where.exe 兜底一次，避免“安装了但扫描不到”。
-    for ide_key, config in registry.items():
-        if ide_key in seen_keys or config.get("type") == "web":
-            continue
-        if ide_key != "codex":
-            continue
-        exe = _probe_command_exe("codex")
-        if exe:
-            results.append({
-                "key": ide_key,
-                "name": config.get("name", ide_key),
-                "path": exe,
-                "version": _get_version(exe),
-                "source": "scan",
-                "icon": config.get("icon", ""),
-                "color": config.get("color", "#90A4AE"),
-            })
-            seen_keys.add(ide_key)
     # 一个可执行文件只能对应一个 IDE 条目，避免 TRAE/TRAЕ_CN 等重叠
     # 注册规则把同一路径显示成多个 IDE。CN 文件优先保留 trae_cn，否则保留 trae。
     by_path = {}

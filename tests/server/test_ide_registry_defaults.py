@@ -1,13 +1,23 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import ide_scanner
 from json_utils import safe_read_json, safe_write_json
 
 
 class IdeRegistryDefaultsTests(unittest.TestCase):
+    def test_codex_probe_prefers_chatgpt_desktop_process(self):
+        process = Mock()
+        process.info = {"name": "ChatGPT.exe", "exe": r"C:\Apps\Codex\ChatGPT.exe"}
+        fake_psutil = Mock()
+        fake_psutil.process_iter.return_value = [process]
+        with patch.dict("sys.modules", {"psutil": fake_psutil}), patch(
+            "ide_scanner.os.path.isfile", return_value=True
+        ):
+            self.assertEqual(r"C:\Apps\Codex\ChatGPT.exe", ide_scanner._probe_codex_desktop_exe())
+
     def test_empty_registry_is_initialized_from_defaults(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             registry_file = Path(temp_dir) / "state" / "ide_registry.json"

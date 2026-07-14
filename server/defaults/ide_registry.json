@@ -42,9 +42,9 @@
     "color": "#FFB74D"
   },
   "codex": {
-    "name": "Codex",
-    "scan_paths": ["%LOCALAPPDATA%\\Microsoft\\WindowsApps", "%ProgramFiles%\\WindowsApps\\OpenAI.Codex_*\\app\\resources"],
-    "exe_pattern": "codex.exe",
+    "name": "ChatGPT (Codex)",
+    "scan_paths": ["%ProgramFiles%\\WindowsApps\\OpenAI.Codex_*\\app"],
+    "exe_pattern": "ChatGPT.exe",
     "color": "#58A6FF",
     "aumid": ["OpenAI.Codex_2p2nqsd0c76g0!App"]
   },
