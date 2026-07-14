@@ -34,6 +34,7 @@ Source: "AideLink.ico"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{group}\AideLink"; Filename: "{app}\server\start_services.vbs"; WorkingDir: "{app}\server"; IconFilename: "{app}\AideLink.ico"
 Name: "{userdesktop}\AideLink"; Filename: "{app}\server\start_services.vbs"; WorkingDir: "{app}\server"; IconFilename: "{app}\AideLink.ico"; Tasks: desktopicon
+Name: "{userdesktop}\DevSpace"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\server\start_devspace.ps1"""; WorkingDir: "{app}\server"; IconFilename: "{app}\AideLink.ico"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"

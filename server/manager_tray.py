@@ -513,14 +513,6 @@ def build_tray_menu():
     frp_status = get_frp_status()
     frp_text = f"🌐 FRP 穿透  {'✅ 已开启' if frp_status['running'] else '⭕ 未开启'}"
 
-    devspace_running = _get_devspace_status()
-    if devspace_running is None:
-        devspace_text = "🤖 DevSpace  — ⚠️ 服务未运行"
-    else:
-        devspace_text = f"🤖 DevSpace  {'✅ 已开启' if devspace_running else '⭕ 未开启'}"
-    local_update = _find_local_update_package()
-    update_text = "⬆️ 一键更新（OpenList / Z:\\共享\\aidelink）"
-
     return Menu(
         MenuItem(f"AideLink 管理器 — {status_text}", None, enabled=False),
         Menu.SEPARATOR,
@@ -532,10 +524,8 @@ def build_tray_menu():
         MenuItem("🚀 启动服务", _tray_start_service, enabled=not status["running"]),
         MenuItem("⏹ 停止服务", _tray_stop_service, enabled=status["running"]),
         MenuItem("🔄 一键强杀重启", _tray_restart_service),
-        MenuItem(update_text, _tray_update_local, enabled=True),
         Menu.SEPARATOR,
         MenuItem(frp_text, _tray_toggle_frp),
-        MenuItem(devspace_text, _tray_toggle_devspace),
         Menu.SEPARATOR,
         MenuItem("📁 打开数据目录", lambda: os.startfile(str(BASE_DIR))),
         Menu.SEPARATOR,

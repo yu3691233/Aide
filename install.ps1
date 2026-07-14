@@ -57,6 +57,30 @@ function New-AideLinkDesktopShortcut($installPath, $pythonPath) {
     return $shortcutPath
 }
 
+function New-DevSpaceDesktopShortcut($installPath) {
+    $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+    if (-not $desktop) { throw "无法定位当前用户桌面目录" }
+
+    $shortcutPath = Join-Path $desktop "DevSpace.lnk"
+    $serverDir = Join-Path $installPath "server"
+    $startScript = Join-Path $serverDir "start_devspace.ps1"
+    $powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    $iconPath = Join-Path $installPath "installer\AideLink.ico"
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $powershell
+    $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $startScript
+    $shortcut.WorkingDirectory = $serverDir
+    $shortcut.Description = "启动 DevSpace"
+    $shortcut.IconLocation = if (Test-Path -LiteralPath $iconPath -PathType Leaf) { $iconPath } else { "shell32.dll,238" }
+    $shortcut.Save()
+
+    if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+        throw "DevSpace 桌面快捷方式创建后未找到: $shortcutPath"
+    }
+    return $shortcutPath
+}
+
 function Get-NormalizedPath($path) {
     if (-not $path) { return $null }
     return [IO.Path]::GetFullPath($path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
@@ -312,6 +336,8 @@ if ($AutoStart) {
 Write-Step "[Bonus] 创建桌面快捷方式 ..."
 $shortcutPath = New-AideLinkDesktopShortcut $InstallDir $runtimePython
 Write-OK "桌面快捷方式已创建: $shortcutPath"
+$devSpaceShortcutPath = New-DevSpaceDesktopShortcut $InstallDir
+Write-OK "DevSpace 桌面快捷方式已创建: $devSpaceShortcutPath"
 
 Write-Host ""
 Write-OK "安装完成！"
