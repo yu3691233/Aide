@@ -38,6 +38,7 @@ class DynamicProjectPath(object):
 PROJECT_ROOT = DynamicProjectPath()
 STATE_DIR = BRIDGE_DIR / "state"
 ASSETS_DIR = BRIDGE_DIR / "brand_assets"
+DEFAULTS_DIR = BRIDGE_DIR / "defaults"
 
 HISTORY_FILE = STATE_DIR / "chat_history.json"
 CLIPBOARD_FILE = STATE_DIR / "clipboard_history.json"
@@ -46,6 +47,7 @@ UPLOAD_FOLDER = BRIDGE_DIR / "static" / "uploads"
 SETTINGS_FILE = BRIDGE_DIR / "aidelink_settings.json"
 CONFIG_FILE = BRIDGE_DIR / "config.json"
 REGISTRY_FILE = STATE_DIR / "ide_registry.json"
+DEFAULT_REGISTRY_FILE = DEFAULTS_DIR / "ide_registry.json"
 MANUAL_IDES_FILE = BRIDGE_DIR / "manual_ides.json"
 SCANNED_IDES_FILE = BRIDGE_DIR / "scanned_ides.json"
 IDE_ROLES_FILE = STATE_DIR / "ide_roles.json"

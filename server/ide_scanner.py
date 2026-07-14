@@ -10,7 +10,7 @@ import glob
 import subprocess
 from ctypes import byref, create_string_buffer, c_char_p, c_uint, string_at
 from json_utils import safe_read_json, safe_write_json
-from paths import BRIDGE_DIR as BASE_DIR, REGISTRY_FILE, MANUAL_IDES_FILE, SCANNED_IDES_FILE, IDE_ROLES_FILE, IDE_ALIASES_FILE
+from paths import BRIDGE_DIR as BASE_DIR, REGISTRY_FILE, DEFAULT_REGISTRY_FILE, MANUAL_IDES_FILE, SCANNED_IDES_FILE, IDE_ROLES_FILE, IDE_ALIASES_FILE
 
 
 def _normalize_ide_key(key):
@@ -18,8 +18,15 @@ def _normalize_ide_key(key):
 
 
 def load_registry():
-    """加载 IDE 注册表"""
-    return safe_read_json(REGISTRY_FILE, default={})
+    """加载 IDE 注册表；全新安装时从受版本控制的默认模板初始化。"""
+    registry = safe_read_json(REGISTRY_FILE, default={})
+    if isinstance(registry, dict) and registry:
+        return registry
+    defaults = safe_read_json(DEFAULT_REGISTRY_FILE, default={})
+    if isinstance(defaults, dict) and defaults:
+        save_registry(defaults)
+        return defaults
+    return {}
 
 
 def save_registry(registry):

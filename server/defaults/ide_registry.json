@@ -1,0 +1,56 @@
+{
+  "trae": {
+    "name": "TRAE",
+    "scan_paths": ["%LOCALAPPDATA%\\Programs\\TRAE", "%LOCALAPPDATA%\\Programs\\Trae"],
+    "exe_pattern": "Trae.exe",
+    "color": "#4FC3F7"
+  },
+  "trae_cn": {
+    "name": "TRAE CN",
+    "scan_paths": ["%LOCALAPPDATA%\\Programs\\TRAE CN", "%LOCALAPPDATA%\\Programs\\Trae CN"],
+    "exe_pattern": "Trae CN.exe",
+    "color": "#29B6F6"
+  },
+  "antigravity": {
+    "name": "Antigravity",
+    "scan_paths": ["%LOCALAPPDATA%\\Programs\\antigravity", "%LOCALAPPDATA%\\Programs\\Antigravity"],
+    "exe_pattern": "Antigravity.exe",
+    "color": "#AB47BC"
+  },
+  "cursor": {
+    "name": "Cursor",
+    "scan_paths": ["%LOCALAPPDATA%\\Programs\\cursor", "%LOCALAPPDATA%\\Programs\\Cursor"],
+    "exe_pattern": "Cursor.exe",
+    "color": "#90A4AE"
+  },
+  "vscode": {
+    "name": "Visual Studio Code",
+    "scan_paths": ["%LOCALAPPDATA%\\Programs\\Microsoft VS Code", "%ProgramFiles%\\Microsoft VS Code"],
+    "exe_pattern": "Code.exe",
+    "color": "#2196F3"
+  },
+  "oc": {
+    "name": "OpenCode",
+    "scan_paths": ["%LOCALAPPDATA%\\Programs\\@opencode-aidesktop", "%LOCALAPPDATA%\\Programs\\OpenCode"],
+    "exe_pattern": "OpenCode.exe",
+    "color": "#81C784"
+  },
+  "mimocode": {
+    "name": "MimoCode",
+    "scan_paths": ["%LOCALAPPDATA%\\Programs\\MimoCode", "%ProgramFiles%\\MimoCode"],
+    "exe_pattern": "MimoCode.exe",
+    "color": "#FFB74D"
+  },
+  "codex": {
+    "name": "Codex",
+    "scan_paths": ["%LOCALAPPDATA%\\Microsoft\\WindowsApps", "%ProgramFiles%\\WindowsApps\\OpenAI.Codex_*\\app\\resources"],
+    "exe_pattern": "codex.exe",
+    "color": "#58A6FF",
+    "aumid": ["OpenAI.Codex_2p2nqsd0c76g0!App"]
+  },
+  "oc_web": {
+    "name": "OpenCode Web",
+    "type": "web",
+    "color": "#26A69A"
+  }
+}
