@@ -36,7 +36,7 @@ Name: "{group}\AideLink"; Filename: "{app}\server\start_services.vbs"; WorkingDi
 Name: "{userdesktop}\AideLink"; Filename: "{app}\server\start_services.vbs"; WorkingDir: "{app}\server"; IconFilename: "{app}\AideLink.ico"; Tasks: desktopicon
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; Flags: unchecked
+Name: "desktopicon"; Description: "创建桌面快捷方式"
 
 [Run]
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\server\start_services.vbs"""; WorkingDir: "{app}\server"; Description: "启动 AideLink"; Flags: nowait postinstall skipifsilent

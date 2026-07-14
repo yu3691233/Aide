@@ -29,6 +29,34 @@ function Write-Step($msg) { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $msg" -
 function Write-OK($msg)   { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [OK] $msg" -ForegroundColor Green }
 function Write-Err($msg)  { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [ERR] $msg" -ForegroundColor Red }
 
+function New-AideLinkDesktopShortcut($installPath, $pythonPath) {
+    $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+    if (-not $desktop) { throw "无法定位当前用户桌面目录" }
+
+    $shortcutPath = Join-Path $desktop "AideLink.lnk"
+    $serverDir = Join-Path $installPath "server"
+    $startScript = Join-Path $serverDir "start_services.py"
+    $pythonwPath = Join-Path (Split-Path -Parent $pythonPath) "pythonw.exe"
+    if (-not (Test-Path -LiteralPath $pythonwPath -PathType Leaf)) {
+        $pythonwPath = $pythonPath
+    }
+
+    $iconPath = Join-Path $installPath "installer\AideLink.ico"
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $pythonwPath
+    $shortcut.Arguments = ('"{0}"' -f $startScript)
+    $shortcut.WorkingDirectory = $serverDir
+    $shortcut.Description = "启动 AideLink 桌面服务"
+    $shortcut.IconLocation = if (Test-Path -LiteralPath $iconPath -PathType Leaf) { $iconPath } else { "shell32.dll,238" }
+    $shortcut.Save()
+
+    if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+        throw "桌面快捷方式创建后未找到: $shortcutPath"
+    }
+    return $shortcutPath
+}
+
 function Get-NormalizedPath($path) {
     if (-not $path) { return $null }
     return [IO.Path]::GetFullPath($path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
@@ -280,6 +308,10 @@ if ($AutoStart) {
     Register-ScheduledTask -TaskName "AideLink Bridge" -Action $action -Trigger $trigger -Force
     Write-OK "开机自启已注册"
 }
+
+Write-Step "[Bonus] 创建桌面快捷方式 ..."
+$shortcutPath = New-AideLinkDesktopShortcut $InstallDir $runtimePython
+Write-OK "桌面快捷方式已创建: $shortcutPath"
 
 Write-Host ""
 Write-OK "安装完成！"
