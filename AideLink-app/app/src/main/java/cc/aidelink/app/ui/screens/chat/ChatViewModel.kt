@@ -94,6 +94,10 @@ internal fun shouldFallbackToOfflineTaskCache(bridgeOnline: Boolean, serverTaskC
     return !bridgeOnline || !serverTaskCreated
 }
 
+internal fun normalizeTaskTarget(targetKey: String?): String {
+    return targetKey?.takeUnless { it == AideLinkChatViewModel.Target.AIDELINK.key }.orEmpty()
+}
+
 
 
 @HiltViewModel
@@ -3086,7 +3090,8 @@ class AideLinkChatViewModel @Inject constructor(
 
             val isOnline = cc.aidelink.app.data.repository.ConnectionState.bridgeOnline.value
 
-            val target = targetIde ?: if (_state.value.target != Target.AIDELINK) _state.value.target.key else ""
+            val requestedTarget = targetIde ?: _state.value.target.key
+            val target = normalizeTaskTarget(requestedTarget)
 
             try {
 

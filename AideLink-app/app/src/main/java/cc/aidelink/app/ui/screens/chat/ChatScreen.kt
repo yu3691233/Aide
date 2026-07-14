@@ -290,7 +290,7 @@ fun AideLinkChatScreen(
     } else {
         null
     }
-    var showTaskList by remember { mutableStateOf(true) }
+    var showTaskList by remember { mutableStateOf(false) }
     var showClipboardSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState()
     val monitorHeightDp = state.monitorHeightDp.dp
@@ -299,6 +299,10 @@ fun AideLinkChatScreen(
     val showMonitorPanel = state.monitorActive
     val activeTask = remember(state.tasks, state.activeTaskId) {
         state.activeTaskId?.let { id -> state.tasks.find { it.task_id == id } }
+    }
+
+    LaunchedEffect(state.target.key) {
+        showTaskList = state.target != AideLinkChatViewModel.Target.AIDELINK
     }
 
     val filteredMessages = remember(state.messages, state.target) {
@@ -452,7 +456,10 @@ fun AideLinkChatScreen(
                         showTaskList = false
                         viewModel.send(isTaskListMode = false)
                     },
-                    onSendToTaskList = { viewModel.send(isTaskListMode = true) },
+                    onSendToTaskList = {
+                        showTaskList = true
+                        viewModel.send(isTaskListMode = true)
+                    },
                     onUploadImage = { path ->
                         viewModel.uploadImage(path)
                     },
@@ -626,7 +633,7 @@ fun AideLinkChatScreen(
                         onEdit = { viewModel.startTaskEdit(activeTask.task_id) },
                         modifier = Modifier.fillMaxSize(),
                     )
-                } else if (state.target == AideLinkChatViewModel.Target.AIDELINK || !showTaskList) {
+                } else if (!showTaskList) {
                     // 显示对话气泡
                     when {
                         state.loading && filteredMessages.isEmpty() -> {
@@ -689,7 +696,7 @@ fun AideLinkChatScreen(
                         loading = state.tasksLoading,
                         batchMode = state.batchMode,
                         selectedTaskIds = state.selectedTaskIds,
-                        currentTarget = state.target.key,
+                        currentTarget = if (state.target == AideLinkChatViewModel.Target.AIDELINK) "" else state.target.key,
                         onComplete = viewModel::completeTask,
                         onFail = viewModel::failTask,
                         onDelete = viewModel::deleteTask,

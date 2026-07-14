@@ -202,14 +202,12 @@ fun ChatInputBar(
                         expanded = menuExpanded,
                         onDismissRequest = { menuExpanded = false }
                     ) {
-                        if (currentTarget != AideLinkChatViewModel.Target.AIDELINK) {
-                            DropdownMenuItem(
-                                text = { Text("🔄 刷新任务") },
-                                leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
-                                onClick = { onRefreshTasks(); menuExpanded = false }
-                            )
-                            HorizontalDivider()
-                        }
+                        DropdownMenuItem(
+                            text = { Text("🔄 刷新任务") },
+                            leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                            onClick = { onRefreshTasks(); menuExpanded = false }
+                        )
+                        HorizontalDivider()
                         if (currentTarget == AideLinkChatViewModel.Target.AIDELINK) {
                             DropdownMenuItem(
                                 text = { Text("➕ 新开会话") },
@@ -395,18 +393,16 @@ fun ChatInputBar(
                     }
                 } else if (!isFocused) {
                     // 没有点击对话框时：右侧发送按钮隐藏，将顶部的任务和对话切换按钮移下来
-                    if (currentTarget != AideLinkChatViewModel.Target.AIDELINK) {
-                        IconButton(
-                            onClick = onToggleTaskList,
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (showTaskList) Icons.Default.Chat else Icons.Default.FormatListBulleted,
-                                contentDescription = "切换视图",
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    IconButton(
+                        onClick = onToggleTaskList,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (showTaskList) Icons.Default.Chat else Icons.Default.FormatListBulleted,
+                            contentDescription = "切换视图",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 } else {
                     // 点击对话框后：隐藏切换按钮，显示为 AI 优化 + 发送 + 添加到任务列表
@@ -457,7 +453,8 @@ fun ChatInputBar(
                         }
 
                         // 添加到任务列表按钮
-                        if (currentTarget != AideLinkChatViewModel.Target.AIDELINK && !taskThreadMode) {
+                        // 任务是显式动作，不依赖目标或网络状态；普通发送仍保持为聊天。
+                        if (!taskThreadMode) {
                             IconButton(
                                 onClick = {
                                     onSendToTaskList()

@@ -148,7 +148,11 @@ object OfflineTaskCache {
         var synced = 0
         for (task in pending) {
             try {
-                val ok = bridgeApi.createTask(text = task.message, title = task.title, targetIde = task.targetIde)
+                val ok = bridgeApi.createTask(
+                    text = task.message,
+                    title = task.title,
+                    targetIde = task.targetIde.ifBlank { null },
+                )
                 if (ok) {
                     markSynced(context, task.id)
                     synced++
