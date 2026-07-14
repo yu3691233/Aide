@@ -271,7 +271,6 @@ internal fun LazyListScope.tabConnectionItems(
         Button(onClick = {
             viewModel.save(serverUrl)
             viewModel.saveXiaomenglingModel(xiaomenglingModel)
-            viewModel.saveDesktopIde(desktopIde, "")
             viewModel.saveDesktopIdeList(desktopIdeList)
         }, modifier = Modifier.fillMaxWidth().height(48.dp),
             shape = RoundedCornerShape(12.dp)) { Text("保存设置", fontWeight = FontWeight.Bold) }
@@ -341,9 +340,15 @@ internal fun LazyListScope.tabAiItems(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2,
                                 overflow = TextOverflow.Ellipsis)
                         }
+                        TextButton(onClick = { viewModel.requestIdeCalibration(ide.key) }) { Text("校准监控") }
+                        TextButton(onClick = { viewModel.installIdeMcp(ide.key) }) { Text("安装 MCP") }
+                        TextButton(onClick = { viewModel.removeIde(ide.key) }) { Text("删除", color = Color(0xFFE5534B)) }
                     }
                 }
-                OutlinedButton(onClick = { viewModel.refreshIdes() }, modifier = Modifier.fillMaxWidth()) { Text("刷新 IDE 列表") }
+                OutlinedButton(onClick = { viewModel.addIdeFromDesktop() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("添加 IDE（电脑端选择）")
+                }
+                OutlinedButton(onClick = { viewModel.refreshIdes() }, modifier = Modifier.fillMaxWidth()) { Text("刷新") }
             }
         }
     }

@@ -84,6 +84,47 @@ def list_window_candidates():
     return candidates[:100]
 
 
+def recommend_candidate(ide_key, candidates=None):
+    """根据 IDE 配置为绑定弹窗推荐候选窗口，不直接保存绑定。"""
+    if candidates is None:
+        candidates = list_window_candidates()
+    key = (ide_key or "").strip().lower()
+    target_path = ""
+    target_name = ""
+    try:
+        import ide_scanner
+        for ide in ide_scanner.get_all_ides():
+            if (ide.get("key") or "").strip().lower() == key:
+                target_path = os.path.normcase(os.path.abspath(ide.get("path") or ""))
+                target_name = os.path.basename(target_path).lower()
+                break
+    except Exception:
+        pass
+
+    scored = []
+    for item in candidates:
+        exe_path = os.path.normcase(os.path.abspath(item.get("exe_path") or ""))
+        exe_name = _normalize(item.get("exe_name"))
+        score = 0
+        reasons = []
+        if target_path and exe_path == target_path:
+            score += 100
+            reasons.append("可执行文件路径一致")
+        elif target_name and exe_name == target_name:
+            score += 75
+            reasons.append("可执行文件名称一致")
+        if item.get("width", 0) >= 800 and item.get("height", 0) >= 500:
+            score += 5
+        scored.append((score, item, reasons))
+    scored.sort(key=lambda value: (value[0], value[1].get("width", 0) * value[1].get("height", 0)), reverse=True)
+    if not scored or scored[0][0] <= 0:
+        return None
+    score, candidate, reasons = scored[0]
+    confidence = "high" if score >= 100 else "medium"
+    return {"hwnd": candidate.get("hwnd"), "score": score, "confidence": confidence,
+            "reasons": reasons, "title": candidate.get("title", "")}
+
+
 def _normalize(value):
     return (value or "").strip().lower()
 
@@ -151,6 +192,41 @@ def bind_window_by_hwnd(ide_key, hwnd):
     if not candidate:
         return None
     return candidate if save_binding(ide_key, candidate) else None
+
+
+def auto_bind_foreground_window(ide_key):
+    """绑定当前前台窗口；仅在其进程路径与 IDE 配置一致时自动保存。"""
+    key = (ide_key or "").strip().lower()
+    if not key:
+        return None, "缺少 IDE 标识符"
+    hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    if not hwnd:
+        return None, "当前没有前台窗口"
+    candidate = None
+    for item in list_window_candidates():
+        if int(item.get("hwnd") or 0) == hwnd:
+            candidate = item
+            break
+    if not candidate:
+        return None, "当前前台窗口不是可绑定的桌面窗口"
+
+    target_path = ""
+    try:
+        import ide_scanner
+        for ide in ide_scanner.get_all_ides():
+            if (ide.get("key") or "").strip().lower() == key:
+                target_path = os.path.normcase(os.path.abspath(ide.get("path") or ""))
+                break
+    except Exception:
+        pass
+    actual_path = os.path.normcase(os.path.abspath(candidate.get("exe_path") or ""))
+    target_name = os.path.basename(target_path).lower() if target_path else ""
+    actual_name = _normalize(candidate.get("exe_name"))
+    if not target_path or (actual_path != target_path and actual_name != target_name):
+        return None, "前台窗口所属程序与目标 IDE 不匹配"
+    if not save_binding(key, candidate):
+        return None, "窗口绑定保存失败"
+    return candidate, "已根据激活的 IDE 窗口自动绑定"
 
 
 def find_bound_window(ide_key, windows=None):

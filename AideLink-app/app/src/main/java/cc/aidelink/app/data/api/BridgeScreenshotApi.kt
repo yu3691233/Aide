@@ -120,11 +120,12 @@ class BridgeScreenshotApi(private val client: HttpClient, private val baseUrl: S
     suspend fun saveCropConfig(
         target: String, left: Int, right: Int, top: Int, bottom: Int,
         monitor: String? = null, dialogPosition: String? = null,
-        calibWidth: Int? = null, calibHeight: Int? = null
+        calibWidth: Int? = null, calibHeight: Int? = null,
+        focusInputEnabled: Boolean? = null, inputPoint: cc.aidelink.app.domain.model.bridge.InputPoint? = null
     ): Boolean {
         return try {
             val resp = client.post("$baseUrl/screenshot/crop-config") {
-                setBody(CropSaveRequest(target, left, right, top, bottom, monitor, dialogPosition, calibWidth, calibHeight))
+                setBody(CropSaveRequest(target, left, right, top, bottom, monitor, dialogPosition, calibWidth, calibHeight, focusInputEnabled, inputPoint))
                 contentType(ContentType.Application.Json)
             }
             resp.status.isSuccess()

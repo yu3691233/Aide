@@ -286,6 +286,20 @@ fun AideLinkChatScreen(
     viewModel: AideLinkChatViewModel = hiltViewModel(),
 ) {
     val state = viewModel.state.collectAsStateWithLifecycle().value
+
+    LaunchedEffect(initialTarget, state.targetInitialized) {
+        if (state.targetInitialized && initialTarget != null && state.target.key != initialTarget) {
+            val targetEnum = AideLinkChatViewModel.Target.entries.find { it.key == initialTarget }
+            if (targetEnum != null) viewModel.setTarget(targetEnum, persist = false)
+        }
+    }
+
+    if (!state.targetInitialized || (initialTarget != null && state.target.key != initialTarget)) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
+    }
     val listState = rememberLazyListState()
     val context = LocalContext.current
     val activity = context as? ComponentActivity
@@ -332,6 +346,7 @@ fun AideLinkChatScreen(
     val lifecycleState by lifecycle.currentStateAsState()
     DisposableEffect(lifecycleState, viewModel) {
         if (lifecycleState == Lifecycle.State.RESUMED) {
+            viewModel.consumePendingCalibrationRequest()
             viewModel.setMonitorScreenVisible(true)
             viewModel.onResumeRefresh()
         } else {
@@ -339,15 +354,6 @@ fun AideLinkChatScreen(
         }
         onDispose {
             viewModel.setMonitorScreenVisible(false)
-        }
-    }
-
-    LaunchedEffect(initialTarget) {
-        if (initialTarget != null) {
-            val targetEnum = AideLinkChatViewModel.Target.entries.find { it.key == initialTarget }
-            if (targetEnum != null) {
-                viewModel.setTarget(targetEnum)
-            }
         }
     }
 
@@ -830,7 +836,8 @@ fun AideLinkChatScreen(
     if (state.showDispatchDialog) {
         val skipKeys = setOf("aide", "assistant")
         val dispatchTargets = remember(state.desktopIdes) {
-            AideLinkChatViewModel.Target.entries
+            state.desktopIdes
+                .map { ide -> AideLinkChatViewModel.Target(ide.key, ide.name, ide.icon, ide.color) }
                 .filter { it.key !in skipKeys }
                 .sortedBy { it.key }
         }
@@ -995,6 +1002,9 @@ fun AideLinkChatScreen(
             onRemove = viewModel::removeDesktopIde,
             onStart = viewModel::startIde,
             onStop = viewModel::stopIde,
+            onInstallMcp = viewModel::installMcp,
+            onBindWindow = viewModel::bindIdeWindowAndCalibrate,
+            onCalibrate = viewModel::openIdeCalibration,
             onDismiss = { viewModel.setShowDesktopIdeDialog(false) }
         )
     }
@@ -1003,6 +1013,7 @@ fun AideLinkChatScreen(
     // 只在 dialogUncroppedImage 加载完成后显示对话框，避免从 monitorImage 切换导致的跳动
     if (showLiveMonitorDialog && state.dialogUncroppedImage != null) {
         ZoomableLiveMonitorDialog(
+            ideName = state.target.label,
             image = state.dialogUncroppedImage!!,
             isEditing = state.dialogCropSource != null,
             cropSource = state.dialogCropSource,
@@ -1015,6 +1026,11 @@ fun AideLinkChatScreen(
             originalWidth = state.originalImageWidth,
             originalHeight = state.originalImageHeight,
             dialogPosition = state.dialogPosition,
+            focusInputEnabled = state.focusInputEnabled,
+            inputPoint = state.inputPoint,
+            onInputPointChange = viewModel::setInputPoint,
+            onFocusInputEnabledChange = viewModel::setFocusInputEnabled,
+            onBindWindow = { viewModel.bindIdeWindowAndCalibrate(state.target.key) },
             onDialogPositionChange = viewModel::setDialogPosition,
             onAdjustInterval = viewModel::adjustMonitorInterval,
             onSetInterval = viewModel::setMonitorInterval,

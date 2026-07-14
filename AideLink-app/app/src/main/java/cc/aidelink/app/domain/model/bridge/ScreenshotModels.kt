@@ -3,6 +3,14 @@ package cc.aidelink.app.domain.model.bridge
 import kotlinx.serialization.Serializable
 
 @Serializable
+data class InputPoint(
+    val x: Float = 0f,
+    val y: Float = 0f,
+    val width: Float = 0.01f,
+    val height: Float = 0.01f,
+)
+
+@Serializable
 data class CropConfig(
     val left: Int = 0,
     val right: Int = 0,
@@ -11,6 +19,8 @@ data class CropConfig(
     val dialog_position: String = "center",
     val calib_width: Int = 0,
     val calib_height: Int = 0,
+    val focus_input_enabled: Boolean = false,
+    val input_region: InputPoint? = null,
 )
 
 @Serializable
@@ -32,6 +42,8 @@ data class CropSaveRequest(
     val dialog_position: String? = null,
     val calib_width: Int? = null,
     val calib_height: Int? = null,
+    val focus_input_enabled: Boolean? = null,
+    val input_region: InputPoint? = null,
 )
 
 @Serializable

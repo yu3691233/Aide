@@ -141,9 +141,7 @@ class AideLinkSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val ides = bridgeApi.fetchDesktopIdes()
-                val currentIde = _state.value.desktopIde
-                val validIde = if (ides.isNotEmpty() && ides.none { it.key == currentIde }) ides.first().key else currentIde
-                _state.value = _state.value.copy(availableIdes = ides, desktopIde = validIde)
+                _state.value = _state.value.copy(availableIdes = ides)
                 saveCachedIdes(ides)
             } catch (_: Exception) {}
             try {
@@ -375,10 +373,9 @@ class AideLinkSettingsViewModel @Inject constructor(
     fun refreshIdes() {
         viewModelScope.launch {
             try {
-                val ides = bridgeApi.scanIdes()
-                val currentIde = _state.value.desktopIde
-                val validIde = if (ides.isNotEmpty() && ides.none { it.key == currentIde }) ides.first().key else currentIde
-                _state.value = _state.value.copy(availableIdes = ides, desktopIde = validIde)
+                // 设置页只显示当前连接电脑已经登记的 IDE；扫描由电脑端管理页显式触发。
+                val ides = bridgeApi.fetchDesktopIdes()
+                _state.value = _state.value.copy(availableIdes = ides)
             } catch (e: Exception) {
             }
         }
@@ -391,6 +388,41 @@ class AideLinkSettingsViewModel @Inject constructor(
             } catch (_: IllegalArgumentException) {
                 _state.value = _state.value.copy(scanMessage = "不能添加手机本机地址，请填写电脑的局域网 IP 或公网域名")
             }
+        }
+    }
+
+    fun addIdeFromDesktop() {
+        viewModelScope.launch {
+            val rawPath = bridgeApi.browsePath("从电脑选择 IDE 入口") ?: return@launch
+            // 某些桥接/JSON 链路可能把反斜杠转义成两个，保存前统一归一化。
+            val path = rawPath.replace("\\\\", "\\")
+            // Windows 路径从电脑端返回，Android 的 java.io.File 不会把反斜杠
+            // 识别为目录分隔符，必须手动兼容两种分隔符。
+            val fileName = path.substringAfterLast('/').substringAfterLast('\\')
+            val base = fileName.substringBeforeLast('.', fileName).ifBlank { "ide" }
+            val key = base.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').ifBlank { "ide" }
+            val ok = bridgeApi.saveManualIde(cc.aidelink.app.domain.model.bridge.DesktopIde(key = key, name = base, path = path))
+            if (ok) refreshIdes()
+        }
+    }
+
+    fun bindIdeWindow(ide: String) {
+        viewModelScope.launch { bridgeApi.autoBindIdeWindow(ide) }
+    }
+
+    fun requestIdeCalibration(ide: String) {
+        appContext.getSharedPreferences("aidelink_navigation", Context.MODE_PRIVATE)
+            .edit().putString("pending_calibration_ide", ide).apply()
+        onNavigateBack?.invoke()
+    }
+
+    fun installIdeMcp(ide: String) {
+        viewModelScope.launch { bridgeApi.installMcp(ide) }
+    }
+
+    fun removeIde(ide: String) {
+        viewModelScope.launch {
+            if (bridgeApi.removeManualIde(ide)) refreshIdes()
         }
     }
 
@@ -425,9 +457,7 @@ class AideLinkSettingsViewModel @Inject constructor(
                     _state.value = _state.value.copy(serverUrl = server.url, isLan = isLanUrl(server.url))
                     try {
                         val ides = bridgeApi.fetchDesktopIdes()
-                        val currentIde = _state.value.desktopIde
-                        val validIde = if (ides.isNotEmpty() && ides.none { it.key == currentIde }) ides.first().key else currentIde
-                        _state.value = _state.value.copy(availableIdes = ides, desktopIde = validIde)
+                        _state.value = _state.value.copy(availableIdes = ides)
                     } catch (_: Exception) {}
                     try {
                         val models = bridgeApi.fetchActiveModels()

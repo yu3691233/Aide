@@ -18,6 +18,17 @@ class IdeRegistryDefaultsTests(unittest.TestCase):
         ):
             self.assertEqual(r"C:\Apps\Codex\ChatGPT.exe", ide_scanner._probe_codex_desktop_exe())
 
+    def test_codex_probe_recovers_process_path_when_info_exe_is_unavailable(self):
+        process = Mock()
+        process.info = {"name": "ChatGPT.exe", "exe": ""}
+        process.exe.return_value = r"C:\Apps\Codex\ChatGPT.exe"
+        fake_psutil = Mock()
+        fake_psutil.process_iter.return_value = [process]
+        with patch.dict("sys.modules", {"psutil": fake_psutil}), patch(
+            "ide_scanner.os.path.isfile", return_value=True
+        ):
+            self.assertEqual(r"C:\Apps\Codex\ChatGPT.exe", ide_scanner._probe_codex_desktop_exe())
+
     def test_empty_registry_is_initialized_from_defaults(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             registry_file = Path(temp_dir) / "state" / "ide_registry.json"

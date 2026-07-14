@@ -370,6 +370,7 @@ function renderIdesTable(ides) {
     const tr = document.createElement('tr');
 
     const isManual = ide.source === 'manual';
+    const isRemovable = isManual || ide.source === 'scan';
 
     const sourceLabel = isManual ? '<span class="badge badge-success">手动</span>' : '<span class="badge badge-success" style="background:rgba(88,166,255,0.15);color:var(--accent-blue);">扫描</span>';
 
@@ -377,7 +378,7 @@ function renderIdesTable(ides) {
 
     tr.innerHTML = `
 
-      <td style="font-weight:600;">${ide.key}</td>
+      <td style="font-weight:600;">${escapeHtml(ide.exe_key || ide.key)}</td>
 
       <td>
         <div style="font-weight:500;">${escapeHtml(ide.name || ide.key)}</div>
@@ -415,7 +416,7 @@ function renderIdesTable(ides) {
 
           <button class="btn btn-sm btn-outline" onclick="editIdePath('${ide.key}', '${ide.name.replace(/'/g, "\\'")}', '${(ide.path || "").replace(/'/g, "\\'").replace(/\\/g, "\\\\")}')">✏️ 修改路径</button>
 
-          ${isManual ? `<button class="btn btn-sm btn-danger" onclick="deleteIde('${ide.key}')">🗑️ 删除</button>` : ''}
+          ${isRemovable ? `<button class="btn btn-sm btn-danger" onclick="deleteDesktopIde('${ide.key}')">🗑️ 删除</button>` : ''}
 
           <button class="btn btn-sm btn-outline" onclick="installMcpForIde('${ide.key}')" title="将 AideLink MCP 配置自动注入此 IDE">🔌 安装MCP</button>
 
@@ -575,20 +576,30 @@ async function toggleIdePrimaryRole(ideKey, enabled) {
 document.addEventListener('DOMContentLoaded', () => { loadConfig().catch(() => {}); });
 
 async function openIdeWindowBinding(ideKey, ideName, autoCalibrateAfter) {
-  // 自定义添加流程：若 IDE 未运行，先启动再读窗口
-  if (autoCalibrateAfter) {
-    const launchRes = await apiCall('/api/launch-ide', 'POST', { key: ideKey });
-    if (launchRes && launchRes.success) {
-      showToast(launchRes.message || (ideName + ' 启动中...'), 'info');
-      // 等待 IDE 进程启动并创建窗口
-      await new Promise(r => setTimeout(r, 2500));
-    }
-    // 绑定窗口前先最大化，方便用户识别目标窗口
-    showToast('正在最大化 ' + (ideName || ideKey) + '...', 'info');
-    await apiCall('/window/maximize', 'POST', { target: ideKey });
-    await new Promise(r => setTimeout(r, 800));
+  // 绑定前统一启动并最大化，确保候选列表对应当前 IDE 主窗口。
+  const launchRes = await apiCall('/api/launch-ide', 'POST', { key: ideKey });
+  if (launchRes && launchRes.success) {
+    showToast(launchRes.message || (ideName + ' 启动中...'), 'info');
+    // 等待 IDE 进程启动并创建窗口
+    await new Promise(r => setTimeout(r, 2500));
+  }
+  showToast('正在最大化 ' + (ideName || ideKey) + '...', 'info');
+  await apiCall('/window/maximize', 'POST', { target: ideKey });
+  await new Promise(r => setTimeout(r, 800));
+  // 自定义 IDE 优先使用“启动/激活/最大化后”的前台窗口自动绑定。
+  // 只有前台窗口无法证明属于目标 exe 时，才退回候选列表让用户选择。
+  const autoBind = await apiCall('/api/ide-window-bindings/auto', 'POST', { key: ideKey });
+  if (autoBind && autoBind.success) {
+    showToast('已自动绑定 ' + (autoBind.binding?.title || ideName || ideKey), 'success');
+    if (autoCalibrateAfter) setTimeout(() => askCalibrationAfterBinding(ideKey), 400);
+    return;
   }
   await _openIdeWindowBindingDialog(ideKey, ideName, autoCalibrateAfter);
+}
+
+function askCalibrationAfterBinding(ideKey) {
+  const shouldCalibrate = window.confirm('窗口已绑定成功。是否现在校准截图区域，以便手机端监控？');
+  if (shouldCalibrate) startCalibration(ideKey);
 }
 
 async function _openIdeWindowBindingDialog(ideKey, ideName, autoCalibrateAfter) {
@@ -601,6 +612,7 @@ async function _openIdeWindowBindingDialog(ideKey, ideName, autoCalibrateAfter) 
 
   const windows = res.windows || [];
   const binding = res.binding || null;
+  const recommendation = res.recommendation || null;
   const preferredIndex = binding ? windows.findIndex(win => {
     const sameExe = binding.exe_name && binding.exe_name.toLowerCase() === (win.exe_name || '').toLowerCase();
     const sameProcess = binding.process_name && binding.process_name.toLowerCase() === (win.process_name || '').toLowerCase();
@@ -612,12 +624,14 @@ async function _openIdeWindowBindingDialog(ideKey, ideName, autoCalibrateAfter) 
   // 标记：绑定保存后是否自动进入校准（仅自定义添加 IDE 时为 true）
   overlay.dataset.autoCalibrate = autoCalibrateAfter ? '1' : '';
 
+  const recommendedHwnd = recommendation ? String(recommendation.hwnd) : '';
   const rows = windows.map((win, index) => {
     const processLabel = win.process_name || win.exe_name || '未知进程';
     const isLikelyCurrent = binding && binding.exe_name && binding.exe_name.toLowerCase() === (win.exe_name || '').toLowerCase();
-    return '<label style="display:grid;grid-template-columns:32px minmax(220px,2fr) minmax(130px,1fr) 120px;gap:10px;align-items:center;padding:10px;border-bottom:1px solid var(--border-color);cursor:pointer;background:' + (isLikelyCurrent ? 'rgba(88,166,255,0.10)' : 'transparent') + ';">' +
-      '<input type="radio" name="ide-window-candidate" value="' + win.hwnd + '" ' + (index === (preferredIndex >= 0 ? preferredIndex : 0) ? 'checked' : '') + ' />' +
-      '<div><div style="font-weight:600;word-break:break-all;">' + escapeHtml(win.title) + '</div><div style="font-size:11px;color:var(--text-muted);">HWND ' + win.hwnd + (isLikelyCurrent ? ' · 当前绑定候选' : '') + '</div></div>' +
+    const isRecommended = recommendedHwnd && String(win.hwnd) === recommendedHwnd;
+    return '<label style="display:grid;grid-template-columns:32px minmax(220px,2fr) minmax(130px,1fr) 120px;gap:10px;align-items:center;padding:10px;border-bottom:1px solid var(--border-color);cursor:pointer;background:' + (isRecommended ? 'rgba(46,160,67,0.14)' : (isLikelyCurrent ? 'rgba(88,166,255,0.10)' : 'transparent')) + ';">' +
+      '<input type="radio" name="ide-window-candidate" value="' + win.hwnd + '" ' + ((isRecommended || (!recommendedHwnd && index === (preferredIndex >= 0 ? preferredIndex : 0))) ? 'checked' : '') + ' />' +
+      '<div><div style="font-weight:600;word-break:break-all;">' + escapeHtml(win.title) + '</div><div style="font-size:11px;color:var(--text-muted);">HWND ' + win.hwnd + (isRecommended ? ' · 系统推荐' : (isLikelyCurrent ? ' · 当前绑定候选' : '')) + '</div></div>' +
       '<div style="font-family:monospace;font-size:12px;word-break:break-all;">' + escapeHtml(processLabel) + '</div>' +
       '<div style="font-size:12px;">' + win.width + ' × ' + win.height + '</div>' +
     '</label>';
@@ -630,7 +644,8 @@ async function _openIdeWindowBindingDialog(ideKey, ideName, autoCalibrateAfter) 
   overlay.innerHTML = '<div style="background:var(--panel);border:1px solid var(--border-color);border-radius:12px;width:min(900px,96vw);max-height:90vh;overflow:auto;padding:20px;">' +
     '<h3 style="margin:0 0 8px 0;">🪟 绑定 ' + escapeHtml(ideName || ideKey) + ' 窗口</h3>' +
     '<p style="font-size:13px;color:var(--text-secondary);margin:0 0 6px 0;">选择当前已经打开的 IDE 主窗口。保存后监控会优先按进程和窗口类别匹配，即使以后标题变化也能继续工作。</p>' +
-    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">' + bindingSummary + '</div>' +
+    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">' + bindingSummary + '</div>' +
+    (recommendation ? '<div style="font-size:12px;color:#3fb950;background:rgba(46,160,67,0.12);padding:8px;border-radius:6px;margin-bottom:12px;">系统推荐：' + escapeHtml(recommendation.title || '候选窗口') + '（' + escapeHtml((recommendation.reasons || []).join('、') || '匹配当前 IDE') + '），请确认后保存。</div>' : '<div style="font-size:12px;color:var(--text-muted);padding:8px;background:rgba(139,148,158,0.10);border-radius:6px;margin-bottom:12px;">暂未识别到明确的 IDE 窗口，请从列表中确认。</div>') +
     '<div id="ide-window-list" style="border:1px solid var(--border-color);border-radius:8px;overflow:hidden;max-height:55vh;overflow-y:auto;">' +
       (rows || '<div style="padding:24px;text-align:center;color:var(--text-muted);">没有找到可见桌面窗口，请先打开目标 IDE，然后点击"刷新窗口"。</div>') +
     '</div>' +
@@ -660,18 +675,21 @@ async function _refreshIdeWindowList(btn, ideKey, ideName) {
     const saveBtn = overlay.querySelector('.btn-primary');
     const windows = res.windows || [];
     const binding = res.binding || null;
+    const recommendation = res.recommendation || null;
     const preferredIndex = binding ? windows.findIndex(win => {
       const sameExe = binding.exe_name && binding.exe_name.toLowerCase() === (win.exe_name || '').toLowerCase();
       const sameProcess = binding.process_name && binding.process_name.toLowerCase() === (win.process_name || '').toLowerCase();
       const sameTitle = binding.title && binding.title.toLowerCase() === (win.title || '').toLowerCase();
       return (sameExe || sameProcess) && sameTitle;
     }) : -1;
+    const recommendedHwnd = recommendation ? String(recommendation.hwnd) : '';
     const rows = windows.map((win, index) => {
       const processLabel = win.process_name || win.exe_name || '未知进程';
       const isLikelyCurrent = binding && binding.exe_name && binding.exe_name.toLowerCase() === (win.exe_name || '').toLowerCase();
-      return '<label style="display:grid;grid-template-columns:32px minmax(220px,2fr) minmax(130px,1fr) 120px;gap:10px;align-items:center;padding:10px;border-bottom:1px solid var(--border-color);cursor:pointer;background:' + (isLikelyCurrent ? 'rgba(88,166,255,0.10)' : 'transparent') + ';">' +
-        '<input type="radio" name="ide-window-candidate" value="' + win.hwnd + '" ' + (index === (preferredIndex >= 0 ? preferredIndex : 0) ? 'checked' : '') + ' />' +
-        '<div><div style="font-weight:600;word-break:break-all;">' + escapeHtml(win.title) + '</div><div style="font-size:11px;color:var(--text-muted);">HWND ' + win.hwnd + (isLikelyCurrent ? ' · 当前绑定候选' : '') + '</div></div>' +
+      const isRecommended = recommendedHwnd && String(win.hwnd) === recommendedHwnd;
+      return '<label style="display:grid;grid-template-columns:32px minmax(220px,2fr) minmax(130px,1fr) 120px;gap:10px;align-items:center;padding:10px;border-bottom:1px solid var(--border-color);cursor:pointer;background:' + (isRecommended ? 'rgba(46,160,67,0.14)' : (isLikelyCurrent ? 'rgba(88,166,255,0.10)' : 'transparent')) + ';">' +
+        '<input type="radio" name="ide-window-candidate" value="' + win.hwnd + '" ' + ((isRecommended || (!recommendedHwnd && index === (preferredIndex >= 0 ? preferredIndex : 0))) ? 'checked' : '') + ' />' +
+        '<div><div style="font-weight:600;word-break:break-all;">' + escapeHtml(win.title) + '</div><div style="font-size:11px;color:var(--text-muted);">HWND ' + win.hwnd + (isRecommended ? ' · 系统推荐' : (isLikelyCurrent ? ' · 当前绑定候选' : '')) + '</div></div>' +
         '<div style="font-family:monospace;font-size:12px;word-break:break-all;">' + escapeHtml(processLabel) + '</div>' +
         '<div style="font-size:12px;">' + win.width + ' × ' + win.height + '</div>' +
       '</label>';
@@ -700,8 +718,8 @@ async function saveIdeWindowBinding(ideKey, button) {
     const autoCalibrate = overlay.dataset.autoCalibrate === '1';
     overlay.remove();
     if (autoCalibrate) {
-      // 自动串联：绑定保存后进入校准（延迟以等窗口状态稳定）
-      setTimeout(() => startCalibration(ideKey), 400);
+      // 绑定不再强制进入校准，由用户决定是否立即配置手机监控。
+      setTimeout(() => askCalibrationAfterBinding(ideKey), 400);
     }
   } else {
     showToast(res ? res.message : '保存绑定失败', 'error');
@@ -734,18 +752,12 @@ async function startCalibration(ideKey) {
       showToast(launchRes ? launchRes.message : 'IDE 启动失败', 'error');
       return;
     }
+    // 自定义 IDE 的运行状态可能暂时无法用旧 key 命中；启动成功后直接
+    // 给窗口创建留出时间，后续最大化接口会再次验证真实窗口。
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    running = true;
   }
-  const deadline = Date.now() + (running ? 5000 : 30000);
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 500));
-    status = await apiCall('/api/launch-ide-status');
-    running = !!(status && status.success && (status.running || []).includes(ideKey));
-    if (running) break;
-  }
-  if (!running) {
-    showToast('IDE 启动超时，请确认 IDE 已打开后重试', 'error');
-    return;
-  }
+  if (!running) return;
   showToast('正在最大化 IDE...', 'info');
   const prepared = await apiCall('/api/calibrate-maximize', 'POST', { key: ideKey, prepare_only: true });
   if (!prepared || !prepared.success) {
@@ -874,11 +886,11 @@ function showCalibrationDialog(ideKey, data) {
         '<b>派发任务前点击输入框聚焦</b>' +
       '</label>' +
       '<div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">' +
-        '<span style="font-size:12px;color:var(--text-muted);">拖框用途:</span>' +
+        '<span style="font-size:12px;color:var(--text-muted);">校准用途:</span>' +
         '<button type="button" class="btn btn-sm btn-primary" id="calib-mode-crop">截图区域</button>' +
-        '<button type="button" class="btn btn-sm btn-outline" id="calib-mode-input" ' + (focusEnabled ? '' : 'disabled') + '>输入框区域</button>' +
+        '<button type="button" class="btn btn-sm btn-outline" id="calib-mode-input" ' + (focusEnabled ? '' : 'disabled') + '>输入框位置</button>' +
         '<span id="calib-focus-status" style="font-size:11px;color:' + (inputRegion ? 'var(--accent-green)' : 'var(--text-muted)') + ';">' +
-          (inputRegion ? '已标记输入框，可重新拖框调整' : '勾选后切换到“输入框区域”并在截图上拖框') +
+          (inputRegion ? '已记录输入框点击位置，可重新点击调整' : '勾选后切换到“输入框位置”并点击输入框') +
         '</span>' +
       '</div>' +
     '</div>' +
@@ -891,7 +903,7 @@ function showCalibrationDialog(ideKey, data) {
 
       '<div id="calib-rect" style="position:absolute;border:2px solid #58a6ff;background:rgba(88,166,255,0.15);display:none;pointer-events:none;"></div>' +
 
-      '<div id="calib-input-rect" style="position:absolute;border:2px solid #3fb950;background:rgba(63,185,80,0.18);display:none;pointer-events:none;"></div>' +
+      '<div id="calib-input-rect" style="position:absolute;border:2px solid #3fb950;background:rgba(63,185,80,0.35);display:none;pointer-events:none;width:14px;height:14px;border-radius:50%;transform:translate(-7px,-7px);"></div>' +
 
     '</div>' +
 
@@ -1025,22 +1037,19 @@ function showCalibrationDialog(ideKey, data) {
 
   }
 
-  function updateInputRegionFromRect(x1, y1, x2, y2) {
+  function updateInputRegionFromPoint(x, y) {
     const dispW = imgEl.clientWidth, dispH = imgEl.clientHeight;
-    const left = Math.max(0, Math.min(x1, x2));
-    const top = Math.max(0, Math.min(y1, y2));
-    const right = Math.min(dispW, Math.max(x1, x2));
-    const bottom = Math.min(dispH, Math.max(y1, y2));
-    if (right - left < 4 || bottom - top < 4) return;
+    const px = Math.max(0, Math.min(dispW, x));
+    const py = Math.max(0, Math.min(dispH, y));
     const region = {
-      x: left / dispW,
-      y: top / dispH,
-      width: (right - left) / dispW,
-      height: (bottom - top) / dispH
+      x: px / dispW,
+      y: py / dispH,
+      width: 0.01,
+      height: 0.01
     };
     overlay.dataset.inputRegion = JSON.stringify(region);
     const status = dialog.querySelector('#calib-focus-status');
-    status.textContent = '已标记输入框，可重新拖框调整';
+    status.textContent = '已记录输入框点击位置，可重新点击调整';
     status.style.color = 'var(--accent-green)';
   }
 
@@ -1049,8 +1058,6 @@ function showCalibrationDialog(ideKey, data) {
     inputRectEl.style.display = 'block';
     inputRectEl.style.left = (inputRegion.x * imgEl.clientWidth) + 'px';
     inputRectEl.style.top = (inputRegion.y * imgEl.clientHeight) + 'px';
-    inputRectEl.style.width = (inputRegion.width * imgEl.clientWidth) + 'px';
-    inputRectEl.style.height = (inputRegion.height * imgEl.clientHeight) + 'px';
   }
 
   function showSavedRegions() {
@@ -1064,6 +1071,16 @@ function showCalibrationDialog(ideKey, data) {
 
 
   overlayEl.addEventListener('mousedown', function(e) {
+
+    if (selectionMode === 'input') {
+      const rect = imgEl.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      updateInputRegionFromPoint(x, y);
+      inputRectEl.style.display = 'block';
+      inputRectEl.style.left = x + 'px';
+      inputRectEl.style.top = y + 'px';
+      return;
+    }
 
     dragging = true;
 
@@ -1125,8 +1142,7 @@ function showCalibrationDialog(ideKey, data) {
 
     const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
 
-    if (selectionMode === 'input') updateInputRegionFromRect(startX, startY, cx, cy);
-    else updateCropFromRect(startX, startY, cx, cy);
+    updateCropFromRect(startX, startY, cx, cy);
 
   });
 
@@ -1157,7 +1173,7 @@ async function saveCalibration(ideKey, monitorName, clientW, clientH) {
   let inputRegion = null;
   try { inputRegion = overlay && overlay.dataset.inputRegion ? JSON.parse(overlay.dataset.inputRegion) : null; } catch (e) {}
   if (focusInputEnabled && !inputRegion) {
-    showToast('请先切换到“输入框区域”，在截图上标记输入框', 'error');
+    showToast('请先切换到“输入框位置”，在截图上点击输入框', 'error');
     return;
   }
 
@@ -1314,16 +1330,17 @@ async function scanIdes() {
 }
 
 function showAddIdeDialog() {
-  // 弹窗：先选 exe 路径，自动从文件名提取默认 name/key，允许修改后确认
+  // 弹窗：优先从桌面选择 IDE 快捷方式/入口，系统自动解析真实 exe。
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
   overlay.innerHTML = '<div style="background:var(--panel);border:1px solid var(--border-color);border-radius:12px;padding:20px;width:min(560px,96vw);">' +
     '<h3 style="margin:0 0 12px 0;">➕ 添加自定义 IDE</h3>' +
-    '<div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">先选择 IDE 可执行文件，系统会自动从文件名提取默认标识，你可以修改后确认。</div>' +
-    '<label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">可执行文件路径 (exe)</label>' +
+    '<div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">请选择桌面上的 IDE 快捷方式或应用入口，系统会自动解析真实程序并填充信息。</div>' +
+    '<label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">IDE 入口</label>' +
     '<div style="display:flex;gap:8px;margin-bottom:12px;">' +
       '<input id="add-ide-path" type="text" placeholder="点击右侧按钮选择 exe..." style="flex:1;padding:8px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px;" readonly />' +
-      '<button class="btn btn-sm btn-primary" id="add-ide-browse" style="white-space:nowrap;">📁 选择应用</button>' +
+      '<button class="btn btn-sm btn-primary" id="add-ide-browse" style="white-space:nowrap;">📁 用户桌面</button>' +
+      '<button class="btn btn-sm btn-outline" id="add-ide-browse-public" style="white-space:nowrap;">🌐 公共桌面</button>' +
     '</div>' +
     '<div style="display:flex;gap:12px;margin-bottom:12px;">' +
       '<div style="flex:1;">' +
@@ -1348,16 +1365,19 @@ function showAddIdeDialog() {
   const confirmBtn = overlay.querySelector('#add-ide-confirm');
   const cancelBtn = overlay.querySelector('#add-ide-cancel');
   const browseBtn = overlay.querySelector('#add-ide-browse');
+  const publicBrowseBtn = overlay.querySelector('#add-ide-browse-public');
 
   function close() { overlay.remove(); }
   cancelBtn.onclick = close;
   overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
 
-  browseBtn.onclick = async function() {
-    browseBtn.disabled = true;
-    browseBtn.textContent = '选择中...';
+  async function browseIde(startDir, button, label) {
+    button.disabled = true;
+    button.textContent = '选择中...';
     try {
-      const res = await apiCall('/api/browse-path', 'POST', { title: '选择 IDE 可执行文件' });
+      const payload = { title: label };
+      if (startDir) payload.start_dir = startDir;
+      const res = await apiCall('/api/browse-path', 'POST', payload);
       if (res && res.ok && res.path) {
         pathInput.value = res.path;
         // 从 exe 文件名提取默认 name 和 key（如 WorkBuddy.exe → WorkBuddy / workbuddy）
@@ -1375,10 +1395,12 @@ function showAddIdeDialog() {
     } catch (e) {
       showToast('网络错误: ' + e.message, 'error');
     } finally {
-      browseBtn.disabled = false;
-      browseBtn.textContent = '📁 选择应用';
+      button.disabled = false;
+      button.textContent = label.includes('公共') ? '🌐 公共桌面' : '📁 用户桌面';
     }
-  };
+  }
+  browseBtn.onclick = () => browseIde('', browseBtn, '从用户桌面选择 IDE 入口');
+  publicBrowseBtn.onclick = () => browseIde('C:\\Users\\Public\\Desktop', publicBrowseBtn, '从公共桌面选择 IDE 入口');
 
   confirmBtn.onclick = async function() {
     const path = pathInput.value.trim();
@@ -1528,6 +1550,17 @@ async function deleteIde(key) {
 
   }
 
+}
+
+async function deleteDesktopIde(key) {
+  if (!confirm(`确定要删除本机 IDE 条目 [${key}] 吗？删除后可重新扫描恢复。`)) return;
+  const res = await apiCall('/api/desktop-ides/' + encodeURIComponent(key), 'DELETE');
+  if (res && res.ok) {
+    showToast('IDE 条目已删除', 'success');
+    loadIdes();
+  } else {
+    showToast('删除失败: ' + (res ? res.message : '未知错误'), 'error');
+  }
 }
 
 let _deviceAutoRefreshTimer = null;

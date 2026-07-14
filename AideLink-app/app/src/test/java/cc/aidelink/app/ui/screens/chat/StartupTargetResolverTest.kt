@@ -9,13 +9,13 @@ class StartupTargetResolverTest {
     private val selected = setOf("oc", "codex")
 
     @Test
-    fun selectsTheOnlyRunningDesktopIdeBeforeInitialRender() {
+    fun preservesSavedTargetWhenAnotherIdeIsTheOnlyRunningOne() {
         val processes = listOf(
             DesktopIde(key = "oc", running = false),
             DesktopIde(key = "codex", running = true),
         )
 
-        assertEquals("codex", resolveStartupTargetKey("oc", processes, selected))
+        assertEquals("oc", resolveStartupTargetKey("oc", processes, selected))
     }
 
     @Test
@@ -29,23 +29,23 @@ class StartupTargetResolverTest {
     }
 
     @Test
-    fun selectsRunningPrimaryIdeWhenMultipleIdesAreRunning() {
+    fun primaryRunningIdeDoesNotOverrideSavedTarget() {
         val processes = listOf(
             DesktopIde(key = "oc", running = true),
             DesktopIde(key = "codex", running = true, is_primary = true),
         )
 
-        assertEquals("codex", resolveStartupTargetKey("oc", processes, selected))
+        assertEquals("oc", resolveStartupTargetKey("oc", processes, selected))
     }
 
     @Test
-    fun ignoresPrimaryIdeWhenItIsNotRunning() {
+    fun stoppedSavedTargetIsStillPreserved() {
         val processes = listOf(
             DesktopIde(key = "oc", running = true),
             DesktopIde(key = "codex", running = false, is_primary = true),
         )
 
-        assertEquals("oc", resolveStartupTargetKey("codex", processes, selected))
+        assertEquals("codex", resolveStartupTargetKey("codex", processes, selected))
     }
 
     @Test

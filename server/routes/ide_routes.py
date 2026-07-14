@@ -26,12 +26,14 @@ def api_window_binding_candidates():
     if not key:
         return jsonify({"success": False, "message": "缺少 IDE 标识符"}), 400
     try:
-        from window_binding import get_binding, list_window_candidates
+        from window_binding import get_binding, list_window_candidates, recommend_candidate
+        windows = list_window_candidates()
         return jsonify({
             "success": True,
             "key": key,
             "binding": get_binding(key),
-            "windows": list_window_candidates(),
+            "windows": windows,
+            "recommendation": recommend_candidate(key, windows),
         })
     except Exception as exc:
         return jsonify({"success": False, "message": f"读取窗口列表失败: {exc}"}), 500
@@ -54,6 +56,20 @@ def api_window_binding():
     if not candidate:
         return jsonify({"success": False, "message": "窗口已关闭或绑定保存失败，请刷新后重试"}), 409
     return jsonify({"success": True, "message": f"已将 {key} 绑定到 {candidate['title']}", "binding": candidate})
+
+
+@ide_bp.route("/api/ide-window-bindings/auto", methods=["POST"])
+def api_auto_window_binding():
+    """将已激活/最大化的目标 IDE 前台窗口直接绑定。"""
+    data = request.get_json(silent=True) or {}
+    key = data.get("key", "").strip().lower()
+    if not key:
+        return jsonify({"success": False, "message": "缺少 IDE 标识符"}), 400
+    from window_binding import auto_bind_foreground_window
+    candidate, message = auto_bind_foreground_window(key)
+    if not candidate:
+        return jsonify({"success": False, "message": message}), 409
+    return jsonify({"success": True, "message": message, "binding": candidate})
 
 
 @ide_bp.route("/api/ide-window-bindings/test", methods=["POST"])
@@ -821,6 +837,18 @@ def api_calibrate_maximize():
         import time
 
         win = se._find_target_window(key)
+        # 首次校准可能尚未有持久化绑定：使用窗口候选推荐自动建立绑定，
+        # 否则手机端切换显示器时只能无声失败。
+        if not win:
+            try:
+                from window_binding import list_window_candidates, recommend_candidate, bind_window_by_hwnd
+                candidates = list_window_candidates()
+                recommendation = recommend_candidate(key, candidates)
+                if recommendation and recommendation.get("hwnd"):
+                    bind_window_by_hwnd(key, int(recommendation["hwnd"]))
+                    win = se._find_target_window(key)
+            except Exception:
+                pass
         if not win:
             return jsonify({"success": False, "message": "找不到 IDE 窗口，请先打开该 IDE 并绑定窗口"})
 

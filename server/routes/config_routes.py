@@ -122,7 +122,10 @@ def get_desktop_ides():
     # 只有 web 型条目时，说明本地桌面 IDE 缓存可能是空的；
     # 这时补一次真实扫描，避免页面只剩 MiniMax Code。
     has_desktop_ide = any(ide.get("type") != "web" for ide in ides)
-    if not has_desktop_ide:
+    # 已有扫描缓存（即使用户刚删除后为空）时不要立即重新扫描，
+    # 否则删除的 IDE 会在页面刷新时立刻回来。
+    scanned_cache_exists = os.path.exists(str(ide_scanner.SCANNED_IDES_FILE))
+    if not has_desktop_ide and not scanned_cache_exists:
         ides = ide_scanner.scan_installed_ides()
     return jsonify({"ides": ides})
 
@@ -152,7 +155,8 @@ def add_manual_ide():
     path = data.get("path", "").strip()
     if not key or not name:
         return jsonify({"ok": False, "message": "缺少 key 或 name"}), 400
-    ide = {"key": key, "name": name, "path": path, "source": "manual"}
+    exe_key = ide_scanner._generic_exe_key(path) if path else key
+    ide = {"key": key, "name": name, "path": path, "exe_key": exe_key, "source": "manual"}
     ide_scanner.add_manual_ide(ide)
     return jsonify({"ok": True, "message": "已保存"})
 
@@ -165,6 +169,16 @@ def delete_manual_ide():
         return jsonify({"ok": False, "message": "缺少 key"}), 400
     ide_scanner.remove_manual_ide(key)
     return jsonify({"ok": True, "message": "已删除"})
+
+@config_bp.route('/api/desktop-ides/<key>', methods=['DELETE'])
+def delete_desktop_ide(key):
+    """删除扫描/手动 IDE 的本地条目，不删除内置注册表模板。"""
+    import ide_scanner
+    key = (key or "").strip()
+    if not key:
+        return jsonify({"ok": False, "message": "缺少 key"}), 400
+    removed = ide_scanner.remove_scanned_ide(key) or bool(ide_scanner.remove_manual_ide(key))
+    return jsonify({"ok": True, "removed": removed, "message": "已删除本地 IDE 条目"})
 
 
 @config_bp.route('/api/desktop-ides/rename', methods=['POST'])
@@ -185,10 +199,34 @@ def rename_desktop_ide_key():
 # Browse Path (Windows native file dialog)
 # ============================================================
 
+def _resolve_windows_shortcut(path):
+    """将桌面 .lnk 解析为真实目标；解析失败时保留原路径。"""
+    if not path.lower().endswith(".lnk"):
+        return path
+    try:
+        import subprocess
+        escaped = path.replace("'", "''")
+        script = "$s=New-Object -ComObject WScript.Shell; $s.CreateShortcut('" + escaped + "').TargetPath"
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        target = (result.stdout or "").strip()
+        if target and os.path.isfile(target):
+            return target
+    except Exception:
+        pass
+    return path
+
 @config_bp.route('/api/browse-path', methods=['POST'])
 def browse_path():
     if os.name != 'nt':
         return jsonify({"ok": False, "message": "仅 Windows 支持"}), 400
+    data = request.json or {}
+    title = data.get("title") or "选择文件"
+    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+    start_dir = data.get("start_dir") or (desktop if os.path.isdir(desktop) else os.path.expanduser("~"))
     # Embeddable Python does not ship tkinter. Use the native Windows picker
     # and hide the helper console window.
     try:
@@ -199,19 +237,16 @@ def browse_path():
         ps = ("Add-Type -AssemblyName System.Windows.Forms; "
               "$d=New-Object System.Windows.Forms.OpenFileDialog; "
               f"$d.Title={title!r}; $d.InitialDirectory={start_dir!r}; "
-              "$d.Filter='应用程序|*.exe;*.cmd;*.bat|所有文件|*.*'; "
+              "$d.Filter='IDE入口|*.lnk;*.exe;*.cmd;*.bat|所有文件|*.*'; "
               "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){$d.FileName}")
         try:
             si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", ps], capture_output=True, text=True, timeout=120, startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW)
             path = (result.stdout or "").strip()
-            return jsonify({"ok": bool(path), "path": path, "cancelled": not bool(path), "message": "未选择文件" if not path else ""})
+            resolved = _resolve_windows_shortcut(path) if path else path
+            return jsonify({"ok": bool(path), "path": resolved, "selected_path": path, "cancelled": not bool(path), "message": "未选择文件" if not path else ""})
         except Exception as exc:
             return jsonify({"ok": False, "message": f"无法打开 Windows 文件选择器: {exc}"}), 500
-
-    data = request.json or {}
-    title = data.get("title") or "选择文件"
-    start_dir = data.get("start_dir") or os.path.expanduser("~")
 
     try:
         root = tk.Tk()
@@ -220,7 +255,7 @@ def browse_path():
         path = filedialog.askopenfilename(
             title=title,
             initialdir=start_dir,
-            filetypes=[("可执行文件", "*.exe *.cmd *.bat"), ("所有文件", "*.*")],
+            filetypes=[("IDE入口", "*.lnk *.exe *.cmd *.bat"), ("所有文件", "*.*")],
         )
         try:
             root.destroy()
@@ -228,7 +263,8 @@ def browse_path():
             pass
         if not path:
             return jsonify({"ok": False, "cancelled": True, "message": "用户取消"})
-        return jsonify({"ok": True, "path": path, "message": "已选择"})
+        resolved = _resolve_windows_shortcut(path)
+        return jsonify({"ok": True, "path": resolved, "selected_path": path, "message": "已选择"})
     except Exception as e:
         return jsonify({"ok": False, "message": f"打开对话框失败: {e}"}), 500
 

@@ -27,6 +27,9 @@ fun DesktopIdeManagerDialog(
     onRemove: (String) -> Unit,
     onStart: (String) -> Unit,
     onStop: (String) -> Unit,
+    onInstallMcp: (String) -> Unit,
+    onBindWindow: (String) -> Unit,
+    onCalibrate: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var showAdd by remember { mutableStateOf(false) }
@@ -44,7 +47,7 @@ fun DesktopIdeManagerDialog(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    OutlinedButton(onClick = onRefresh) { Text("刷新 IDE 列表") }
+                    OutlinedButton(onClick = onRefresh) { Text("刷新") }
                 }
                 Spacer(modifier = Modifier.height(12.dp))
                 if (ides.isEmpty()) {
@@ -83,6 +86,8 @@ fun DesktopIdeManagerDialog(
                                 ) {
                                     Text(if (isRunning) "停止" else "启动", style = MaterialTheme.typography.labelMedium)
                                 }
+                                TextButton(onClick = { onCalibrate(ide.key) }) { Text("校准监控") }
+                                TextButton(onClick = { onInstallMcp(ide.key) }) { Text("安装 MCP") }
                             }
                         }
                     }

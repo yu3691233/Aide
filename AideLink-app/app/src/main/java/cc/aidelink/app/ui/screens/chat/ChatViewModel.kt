@@ -31,6 +31,7 @@ import cc.aidelink.app.domain.model.bridge.DesktopIde
 import cc.aidelink.app.domain.model.bridge.ProjectNode
 
 import cc.aidelink.app.domain.model.bridge.AideTask
+import cc.aidelink.app.domain.model.bridge.InputPoint
 
 import cc.aidelink.app.data.repository.ConnectionState
 
@@ -81,13 +82,9 @@ internal fun resolveStartupTargetKey(savedKey: String, processes: List<DesktopId
     if (selectedIdeKeys.isEmpty()) return AideLinkChatViewModel.Target.AIDELINK.key
     // savedKey 不在用户选择的列表里，fallback 到 AIDELINK
     val validSaved = if (savedKey != AideLinkChatViewModel.Target.AIDELINK.key && savedKey in selectedIdeKeys) savedKey else AideLinkChatViewModel.Target.AIDELINK.key
-    val runningIdes = processes?.filter { it.running && it.key != AideLinkChatViewModel.Target.AIDELINK.key }
-        ?: return validSaved
-    val primaryRunning = runningIdes.firstOrNull { it.is_primary && it.key in selectedIdeKeys }
-    if (primaryRunning != null) return primaryRunning.key
-    // 自动切换到运行中的 IDE 时，检查是否在用户选择的 IDE 列表里
-    val candidate = runningIdes.singleOrNull()?.key
-    return if (candidate != null && candidate in selectedIdeKeys) candidate else validSaved
+    // 启动时只恢复用户上次选择的目标，不根据运行中的 IDE 轮流抢占目标，
+    // 避免 Aide → ChatGPT → OpenCode 的连续跳转。
+    return validSaved
 }
 
 internal fun shouldFallbackToOfflineTaskCache(bridgeOnline: Boolean, serverTaskCreated: Boolean): Boolean {
@@ -129,7 +126,8 @@ class AideLinkChatViewModel @Inject constructor(
 
             val MIMOCODE = Target("mimo", "MiMoCode", "", "#FFB74D")
 
-            val CODEX = Target("codex", "Codex", "", "#58A6FF")
+            // 当前桌面入口实际显示为 ChatGPT；保留 codex key 仅用于兼容历史配置。
+            val CODEX = Target("codex", "ChatGPT", "", "#58A6FF")
 
 
 
@@ -149,7 +147,11 @@ class AideLinkChatViewModel @Inject constructor(
 
                 get() {
                     val fixed = listOf(AIDELINK, TRAE, ANTIGRAVITY, OPENCODE, OPENCODE_WEB, MIMOCODE, CODEX)
-                    return fixed + _dynamic.filterNot { dyn -> fixed.any { it.key == dyn.key } }
+                    // 扫描到的桌面 IDE 名称优先，避免 codex/ChatGPT 等固定兼容 key
+                    // 在主界面和校准页显示过时的内置名称。
+                    val dynamicByKey = _dynamic.associateBy { it.key }
+                    return fixed.map { dynamicByKey[it.key] ?: it } +
+                        _dynamic.filterNot { dyn -> fixed.any { it.key == dyn.key } }
                 }
 
 
@@ -179,6 +181,8 @@ class AideLinkChatViewModel @Inject constructor(
         val input: String = "",
 
         val target: Target = Target.AIDELINK,
+
+        val targetInitialized: Boolean = false,
 
         val sending: Boolean = false,
 
@@ -215,6 +219,10 @@ class AideLinkChatViewModel @Inject constructor(
         val calibHeight: Int = 0,
 
         val dialogPosition: String = "center",
+
+        val focusInputEnabled: Boolean = false,
+
+        val inputPoint: InputPoint? = null,
 
         val monitorCropMode: Boolean = true,
 
@@ -425,6 +433,16 @@ class AideLinkChatViewModel @Inject constructor(
 
             val lastIdeKey = runCatching { settingsRepository.getDesktopIdeRaw() }.getOrDefault(Target.AIDELINK.key)
             val savedIdeKeys = settingsRepository.getDesktopIdeList().toSet()
+            val locallyRestoredKey = if (lastIdeKey == Target.AIDELINK.key || lastIdeKey in savedIdeKeys) {
+                lastIdeKey
+            } else {
+                Target.AIDELINK.key
+            }
+            // 本地目标恢复不应等待 IDE/进程网络请求，否则首屏会先显示错误目标或长时间空白。
+            _state.value = _state.value.copy(
+                target = Target.fromKey(locallyRestoredKey),
+                targetInitialized = true,
+            )
             // 网络请求加 3 秒超时，避免服务端不可达时阻塞 init
             val (startupIdes, startupProcesses) = coroutineScope {
                 val idesRequest = async { runCatching { bridgeApi.getDesktopIdes() }.getOrNull() }
@@ -438,7 +456,12 @@ class AideLinkChatViewModel @Inject constructor(
             startupIdes?.let { ides ->
                 Target.setDynamicTargets(ides.map { Target(it.key, it.name, it.icon, it.color) })
             }
-            val startupTargetKey = resolveStartupTargetKey(lastIdeKey, startupProcesses, savedIdeKeys)
+            // 启动目标只恢复用户上次选择，不再根据当前运行中的 IDE 推断。
+            val startupTargetKey = if (lastIdeKey == Target.AIDELINK.key || lastIdeKey in savedIdeKeys) {
+                lastIdeKey
+            } else {
+                Target.AIDELINK.key
+            }
             val targetEnum = Target.fromKey(startupTargetKey)
 
             if (startupProcesses != null) {
@@ -446,9 +469,7 @@ class AideLinkChatViewModel @Inject constructor(
                 _state.value = _state.value.copy(
                     ideRunningMap = startupProcesses.associate { it.key to it.running },
                 )
-                if (startupTargetKey != lastIdeKey) {
-                    runCatching { settingsRepository.setDesktopIde(startupTargetKey) }
-                }
+                // 仅同步运行状态，不修改用户保存的目标 IDE。
             }
 
 
@@ -462,6 +483,8 @@ class AideLinkChatViewModel @Inject constructor(
             _state.value = _state.value.copy(
 
                 target = targetEnum,
+
+                targetInitialized = true,
 
                 monitorIntervalMs = settingsRepository.getMonitorIntervalMsRaw(),
 
@@ -500,6 +523,10 @@ class AideLinkChatViewModel @Inject constructor(
                             calibHeight = activeConfig.calib_height,
 
                             dialogPosition = activeConfig.dialog_position,
+
+                            focusInputEnabled = activeConfig.focus_input_enabled,
+
+                            inputPoint = activeConfig.input_region,
 
                         )
 
@@ -555,6 +582,15 @@ class AideLinkChatViewModel @Inject constructor(
                 loadQuickReplies()
 
                 loadMimoWebUrl()
+
+                val pendingIde = appContext.getSharedPreferences("aidelink_navigation", android.content.Context.MODE_PRIVATE)
+                    .getString("pending_calibration_ide", null)
+                if (!pendingIde.isNullOrBlank()) {
+                    appContext.getSharedPreferences("aidelink_navigation", android.content.Context.MODE_PRIVATE)
+                        .edit().remove("pending_calibration_ide").apply()
+                    _state.value = _state.value.copy(target = Target.fromKey(pendingIde))
+                    setShowLiveMonitorDialog(true)
+                }
 
             }
 
@@ -712,7 +748,11 @@ class AideLinkChatViewModel @Inject constructor(
 
 
 
-    fun setTarget(target: Target) {
+    fun setTarget(target: Target, persist: Boolean = true) {
+
+        // 校准弹窗打开期间锁定当前 IDE，避免主界面恢复上次目标时
+        // 用另一个 IDE 的裁剪配置覆盖已经读取到的校准数据。
+        if (_state.value.showLiveMonitorDialog && target.key != _state.value.target.key) return
 
         val wasActive = _state.value.monitorActive
 
@@ -722,7 +762,7 @@ class AideLinkChatViewModel @Inject constructor(
 
         viewModelScope.launch(Dispatchers.IO) {
 
-            if (target != Target.AIDELINK) {
+            if (persist) {
                 runCatching { settingsRepository.setDesktopIde(target.key) }
             }
 
@@ -1806,6 +1846,16 @@ class AideLinkChatViewModel @Inject constructor(
 
 
 
+    /** Consume a calibration request created from Settings when this screen resumes. */
+    fun consumePendingCalibrationRequest() {
+        val prefs = appContext.getSharedPreferences("aidelink_navigation", android.content.Context.MODE_PRIVATE)
+        val pendingIde = prefs.getString("pending_calibration_ide", null)
+        if (pendingIde.isNullOrBlank()) return
+        prefs.edit().remove("pending_calibration_ide").apply()
+        _state.value = _state.value.copy(target = Target.fromKey(pendingIde))
+        setShowLiveMonitorDialog(true)
+    }
+
     fun setShowLiveMonitorDialog(show: Boolean) {
 
         if (show) {
@@ -1895,6 +1945,10 @@ class AideLinkChatViewModel @Inject constructor(
 
                                 dialogPosition = activeConfig?.dialog_position ?: "center",
 
+                                focusInputEnabled = activeConfig?.focus_input_enabled ?: false,
+
+                                inputPoint = activeConfig?.input_region,
+
                                 dialogUncroppedImage = bitmap.asImageBitmap(),
 
                                 originalImageWidth = origW,
@@ -1969,6 +2023,14 @@ class AideLinkChatViewModel @Inject constructor(
 
             val targetKey = _state.value.target.key
 
+            // 显示器切换不仅换截图来源，也把 IDE 窗口移动并最大化到目标显示器。
+            // 若绑定尚未落盘，先尝试将当前前台 IDE 绑定，避免移动接口因无 hwnd 直接返回。
+            runCatching { bridgeApi.autoBindIdeWindow(targetKey) }
+            val moved = runCatching { bridgeApi.moveAndMaximizeForCalibration(targetKey, monitorName) }.getOrDefault(false)
+            if (!moved) {
+                _state.value = _state.value.copy(toastMessage = "IDE 未切换到目标显示器，请先绑定窗口")
+            }
+
             val bytes = bridgeApi.screenshotFull(target = null, monitor = monitorName)
 
             if (bytes != null) {
@@ -2018,6 +2080,10 @@ class AideLinkChatViewModel @Inject constructor(
                     calibHeight = cfg.calib_height,
 
                     dialogPosition = cfg.dialog_position,
+
+                    focusInputEnabled = cfg.focus_input_enabled,
+
+                    inputPoint = cfg.input_region,
 
                 )
 
@@ -2244,6 +2310,8 @@ class AideLinkChatViewModel @Inject constructor(
                     monitor = _state.value.selectedMonitor,
 
                     dialogPosition = _state.value.dialogPosition,
+                    focusInputEnabled = _state.value.focusInputEnabled,
+                    inputPoint = _state.value.inputPoint,
 
                 )
 
@@ -2321,7 +2389,9 @@ class AideLinkChatViewModel @Inject constructor(
 
                 bridgeApi.saveCropConfig(target, safeL, safeR, safeT, safeB, mon,
 
-                    dialogPosition = pos, calibWidth = cw, calibHeight = ch)
+                    dialogPosition = pos, calibWidth = cw, calibHeight = ch,
+                    focusInputEnabled = _state.value.focusInputEnabled,
+                    inputPoint = _state.value.inputPoint)
 
             }
 
@@ -2537,22 +2607,9 @@ class AideLinkChatViewModel @Inject constructor(
 
 
 
-                    if (!_initialRunningAutoSwitchDone) {
-
-                        _initialRunningAutoSwitchDone = true
-                        val savedKey = runCatching { settingsRepository.getDesktopIdeRaw() }
-                            .getOrDefault(Target.AIDELINK.key)
-                        val selectedKeys = settingsRepository.getDesktopIdeList().toSet()
-                        val resolvedKey = resolveStartupTargetKey(savedKey, processes, selectedKeys)
-                        val matchingTarget = Target.fromKey(resolvedKey)
-
-                        if (_state.value.target != matchingTarget) {
-                            withContext(Dispatchers.Main) {
-                                setTarget(matchingTarget)
-                            }
-                        }
-
-                    }
+                    // 刷新运行状态只更新状态，不抢占用户当前页面的目标 IDE。
+                    // 否则从设置返回时会出现 Aide -> ChatGPT -> OpenCode 的连续跳转。
+                    _initialRunningAutoSwitchDone = true
 
                 }
 
@@ -3118,6 +3175,49 @@ class AideLinkChatViewModel @Inject constructor(
 
         }
 
+    }
+
+    fun installMcp(ide: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { bridgeApi.installMcp(ide) }.getOrDefault(false)
+            _state.value = _state.value.copy(toastMessage = if (ok) "MCP 安装成功：$ide" else "MCP 安装失败：$ide")
+        }
+    }
+
+    fun bindIdeWindow(ide: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { bridgeApi.autoBindIdeWindow(ide) }.getOrDefault(false)
+            _state.value = _state.value.copy(toastMessage = if (ok) "窗口绑定成功：$ide" else "窗口绑定失败，请先激活 IDE 窗口")
+        }
+    }
+
+    fun bindIdeWindowAndCalibrate(ide: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { bridgeApi.autoBindIdeWindow(ide) }.getOrDefault(false)
+            if (ok) {
+                _state.value = _state.value.copy(toastMessage = "窗口绑定成功，正在进入校准：$ide")
+                withContext(Dispatchers.Main) { openIdeCalibration(ide) }
+            } else {
+                _state.value = _state.value.copy(toastMessage = "窗口绑定失败，请先激活 IDE 窗口")
+            }
+        }
+    }
+
+    fun openIdeCalibration(ide: String) {
+        val target = Target.fromKey(ide)
+        _state.value = _state.value.copy(target = target)
+        setShowLiveMonitorDialog(true)
+    }
+
+    fun setInputPoint(x: Float, y: Float) {
+        _state.value = _state.value.copy(
+            inputPoint = InputPoint(x.coerceIn(0f, 0.99f), y.coerceIn(0f, 0.99f)),
+            focusInputEnabled = true,
+        )
+    }
+
+    fun setFocusInputEnabled(enabled: Boolean) {
+        _state.value = _state.value.copy(focusInputEnabled = enabled)
     }
 
     fun createOfflineTaskFromInput() {

@@ -16,6 +16,7 @@ except Exception:
         pass
 
 import threading
+import sys
 from ctypes import wintypes
 from PIL import Image
 
@@ -24,6 +25,19 @@ user32 = ctypes.windll.user32
 
 PW_CLIENTONLY = 1
 DIB_RGB_COLORS = 0
+
+
+def _capture_border_setting():
+    """返回窗口捕获边框策略：支持隐藏时关闭，否则交给系统默认。"""
+    # GraphicsCaptureSession.IsBorderRequired 在 Windows 11 可用；Windows 10
+    # 上强制传 False 可能导致捕获初始化失败，因此保守回退为 None。
+    try:
+        version = sys.getwindowsversion()
+        if version.major >= 10 and version.build >= 22000:
+            return False
+    except Exception:
+        pass
+    return None
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -125,9 +139,10 @@ def capture_window_winrt(hwnd, timeout=3.0, client_only=False):
         ready.set()
 
     try:
-        # 部分 Windows 版本不支持主动切换黄色捕获边框；None 交给系统决定，
-        # 否则 windows-capture 2.x 会在 start() 时直接抛异常并退回白图。
-        capture = WindowsCapture(window_hwnd=hwnd, cursor_capture=False, draw_border=None)
+        # Windows 11 支持隐藏捕获边框；Windows 10 保持 None，避免不支持该
+        # 属性时初始化失败。若当前运行库仍不接受 False，下面统一回退 None。
+        border_setting = _capture_border_setting()
+        capture = WindowsCapture(window_hwnd=hwnd, cursor_capture=False, draw_border=border_setting)
         capture.frame_handler = on_frame
         capture.closed_handler = on_closed
         capture.start()

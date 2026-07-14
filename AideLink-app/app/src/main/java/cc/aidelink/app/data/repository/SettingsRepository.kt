@@ -76,6 +76,7 @@ class SettingsRepository @Inject constructor(
         /** SharedPreferences key for desktop IDE list (multi-select) */
         private const val DESKTOP_IDE_LIST_PREFS = "desktop_ide_list_prefs"
         private const val DESKTOP_IDE_SINGLE_PREFS = "desktop_ide_single_prefs"
+        private const val DESKTOP_IDE_SINGLE_KEY = "current_ide"
 
         /** SharedPreferences name used for synchronous locale reads in attachBaseContext. */
         private const val LOCALE_PREFS = "locale_prefs"
@@ -163,14 +164,21 @@ class SettingsRepository @Inject constructor(
     // ── Desktop IDE ──────────────────────────────────────────
     private val DEFAULT_DESKTOP_IDE = BridgeDefaults.DEFAULT_DESKTOP_IDE
 
-    suspend fun getDesktopIdeRaw(): String =
-        dataStore.data.first()[DESKTOP_IDE_KEY] ?: DEFAULT_DESKTOP_IDE
+    suspend fun getDesktopIdeRaw(): String {
+        val syncPrefs = context.getSharedPreferences(DESKTOP_IDE_SINGLE_PREFS, Context.MODE_PRIVATE)
+        syncPrefs.getString(DESKTOP_IDE_SINGLE_KEY, null)?.takeIf { it.isNotBlank() }?.let { return it }
+        val legacy = dataStore.data.first()[DESKTOP_IDE_KEY] ?: DEFAULT_DESKTOP_IDE
+        syncPrefs.edit().putString(DESKTOP_IDE_SINGLE_KEY, legacy).commit()
+        return legacy
+    }
 
     fun getDesktopIde(): String = runCatching {
         kotlinx.coroutines.runBlocking { getDesktopIdeRaw() }
     }.getOrDefault(DEFAULT_DESKTOP_IDE)
 
     suspend fun setDesktopIde(ide: String) {
+        context.getSharedPreferences(DESKTOP_IDE_SINGLE_PREFS, Context.MODE_PRIVATE)
+            .edit().putString(DESKTOP_IDE_SINGLE_KEY, ide).commit()
         dataStore.edit { it[DESKTOP_IDE_KEY] = ide }
     }
 

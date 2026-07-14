@@ -32,6 +32,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.put
 import cc.aidelink.app.domain.model.bridge.*
 
@@ -472,11 +473,13 @@ class BridgeApi(
                 parameter("target", target)
                 monitor?.let { parameter("monitor", it) }
             }
-            if (!resp.status.isSuccess()) return null
-            val body = resp.bodyAsText()
-            runCatching {
-                json.decodeFromString<ActiveCropConfigResponse>(body).config
-            }.getOrNull()
+            if (!resp.status.isSuccess()) return null
+            val body = resp.bodyAsText()
+            runCatching {
+                json.decodeFromString<ActiveCropConfigResponse>(body).config
+            }.onFailure {
+                android.util.Log.e("AideLinkCalibration", "crop config parse failed", it)
+            }.getOrNull()
         } catch (e: Exception) {
             null
         }
@@ -491,11 +494,13 @@ class BridgeApi(
         monitor: String? = null,
         dialogPosition: String? = null,
         calibWidth: Int? = null,
-        calibHeight: Int? = null,
+        calibHeight: Int? = null,
+        focusInputEnabled: Boolean? = null,
+        inputPoint: cc.aidelink.app.domain.model.bridge.InputPoint? = null,
     ): Boolean = try {
         val resp = client.post("$baseUrl/screenshot/crop") {
             contentType(ContentType.Application.Json)
-            setBody(CropSaveRequest(target, left, right, top, bottom, monitor, dialogPosition, calibWidth, calibHeight))
+            setBody(CropSaveRequest(target, left, right, top, bottom, monitor, dialogPosition, calibWidth, calibHeight, focusInputEnabled, inputPoint))
         }
         resp.status.isSuccess()
     } catch (e: Exception) {
@@ -886,7 +891,7 @@ class BridgeApi(
 
     // ─── IDE 远程启动/停止 ─────────────────────────────────────
 
-    suspend fun startIde(ide: String): Boolean = try {
+    suspend fun startIde(ide: String): Boolean = try {
         val resp = client.post("$baseUrl/ide/$ide/start")
         resp.status.isSuccess()
     } catch (e: Exception) {
@@ -1065,6 +1070,31 @@ class BridgeApi(
         } catch (e: Exception) {
             AppVersionResponse(ok = false, error = e.message ?: "网络错误")
         }
+    }
+
+    suspend fun installMcp(ide: String): Boolean = ideApi.installMcp(ide)
+    suspend fun autoBindIdeWindow(ide: String): Boolean = ideApi.autoBindWindow(ide)
+
+    suspend fun moveAndMaximizeForCalibration(ide: String, monitor: String): Boolean = try {
+        // 使用 BridgeApi 当前连接地址，避免子 API 在切换电脑后仍持有初始化时的旧 baseUrl。
+        val resp = client.post("${baseUrl.trimEnd('/')}/api/calibrate-maximize") {
+            setBody(kotlinx.serialization.json.buildJsonObject {
+                put("key", ide)
+                put("monitor_name", monitor)
+                put("prepare_only", true)
+            })
+            contentType(ContentType.Application.Json)
+        }
+        val responseText = resp.bodyAsText()
+        if (!resp.status.isSuccess()) {
+            false
+        } else {
+            val body = json.parseToJsonElement(responseText).jsonObject
+            body["success"]?.jsonPrimitive?.booleanOrNull == true
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("AideLinkCalibration", "move request failed", e)
+        false
     }
 
     suspend fun adbSelfInstall(port: Int = 0): AdbInstallResponse {

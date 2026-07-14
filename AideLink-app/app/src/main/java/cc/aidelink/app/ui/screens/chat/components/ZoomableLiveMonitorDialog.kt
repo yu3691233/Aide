@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import cc.aidelink.app.domain.model.bridge.MonitorInfo
+import cc.aidelink.app.domain.model.bridge.InputPoint
 import cc.aidelink.app.ui.screens.chat.AideLinkChatViewModel
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -60,12 +61,14 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Switch
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.ui.text.font.FontWeight
 
 @Composable
 fun ZoomableLiveMonitorDialog(
+    ideName: String = "IDE",
     image: ImageBitmap,
     isEditing: Boolean,
     cropSource: AideLinkChatViewModel.DialogCropSource?,
@@ -78,6 +81,11 @@ fun ZoomableLiveMonitorDialog(
     originalWidth: Int,
     originalHeight: Int,
     dialogPosition: String = "center",
+    focusInputEnabled: Boolean = false,
+    inputPoint: InputPoint? = null,
+    onInputPointChange: (Float, Float) -> Unit = { _, _ -> },
+    onFocusInputEnabledChange: (Boolean) -> Unit = {},
+    onBindWindow: () -> Unit = {},
     onDialogPositionChange: (String) -> Unit = {},
     onAdjustInterval: (Long) -> Unit,
     onSetInterval: (Long) -> Unit,
@@ -92,6 +100,7 @@ fun ZoomableLiveMonitorDialog(
 ) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+    var inputCalibration by remember { mutableStateOf(false) }
     val scaleFactorX = if (originalWidth > 0) image.width.toFloat() / originalWidth.toFloat() else 1f
     val scaleFactorY = if (originalHeight > 0) image.height.toFloat() / originalHeight.toFloat() else 1f
 
@@ -130,6 +139,8 @@ fun ZoomableLiveMonitorDialog(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
                     ) {
+                        Text(ideName, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 10.dp))
                         IconButton(
                             onClick = { onAdjustInterval(-monitorAdjustStep(intervalMs)) },
                             modifier = Modifier.size(32.dp)
@@ -210,6 +221,30 @@ fun ZoomableLiveMonitorDialog(
                             )
                         }
                     }
+                    if (inputCalibration) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .pointerInput(Unit) {
+                                    detectTapGestures { point ->
+                                        onInputPointChange(
+                                            (point.x / size.width).coerceIn(0f, 0.99f),
+                                            (point.y / size.height).coerceIn(0f, 0.99f)
+                                        )
+                                        inputCalibration = false
+                                    }
+                                }
+                        )
+                    }
+                    if (focusInputEnabled && inputPoint != null) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            drawCircle(
+                                color = Color(0xFF3FB950),
+                                radius = 8f,
+                                center = Offset(inputPoint.x * size.width, inputPoint.y * size.height)
+                            )
+                        }
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -260,7 +295,36 @@ fun ZoomableLiveMonitorDialog(
                                     )
                                 }
                             }
+                            Spacer(modifier = Modifier.weight(1f))
+                            Text("位置", color = Color.White, fontSize = 10.sp)
+                            mapOf("left" to "左", "center" to "中", "right" to "右").forEach { (pos, label) ->
+                                FilterChip(
+                                    selected = dialogPosition == pos,
+                                    onClick = { onDialogPositionChange(pos) },
+                                    label = { Text(label, fontSize = 10.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = Color(0xFF58A6FF),
+                                        selectedLabelColor = Color.White,
+                                        containerColor = Color.White.copy(alpha = 0.15f),
+                                        labelColor = Color.White
+                                    ),
+                                    modifier = Modifier.height(26.dp)
+                                )
+                            }
                         }
+
+                    }
+                }
+
+                if (!windowFound) Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("绑定窗口", color = Color.White, fontSize = 11.sp)
+                    Button(onClick = onBindWindow, modifier = Modifier.height(32.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF58A6FF))) {
+                        Text("绑定", fontSize = 11.sp)
                     }
                 }
 
@@ -276,26 +340,28 @@ fun ZoomableLiveMonitorDialog(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // 对话框位置选择
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("对话框位置", color = Color.White, fontSize = 11.sp)
-                            mapOf("left" to "靠左", "center" to "居中", "right" to "靠右").forEach { (pos, label) ->
-                                FilterChip(
-                                    selected = dialogPosition == pos,
-                                    onClick = { onDialogPositionChange(pos) },
-                                    label = { Text(label, fontSize = 11.sp) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = Color(0xFF58A6FF),
-                                        selectedLabelColor = Color.White,
-                                        containerColor = Color.White.copy(alpha = 0.15f),
-                                        labelColor = Color.White
-                                    )
+                            Text(
+                                text = if (focusInputEnabled && inputPoint != null) "输入框点击：已设置" else "输入框点击：未设置",
+                                color = if (focusInputEnabled && inputPoint != null) Color(0xFF3FB950) else Color.White,
+                                fontSize = 11.sp
+                            )
+                            Button(
+                                onClick = { inputCalibration = true },
+                                modifier = Modifier.height(34.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF3FB950),
+                                    contentColor = Color.Black
                                 )
+                            ) {
+                                Text(if (inputCalibration) "请点击截图中的输入框" else "校准输入框", fontSize = 11.sp)
                             }
+                            Text("派发前点击", color = Color.White, fontSize = 10.sp)
+                            Switch(checked = focusInputEnabled, onCheckedChange = onFocusInputEnabledChange)
                         }
 
                         // 左右边距 RangeSlider

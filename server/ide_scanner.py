@@ -10,7 +10,7 @@ import glob
 import subprocess
 from ctypes import byref, create_string_buffer, c_char_p, c_uint, string_at
 from json_utils import safe_read_json, safe_write_json
-from paths import BRIDGE_DIR as BASE_DIR, REGISTRY_FILE, DEFAULT_REGISTRY_FILE, MANUAL_IDES_FILE, SCANNED_IDES_FILE, IDE_ROLES_FILE, IDE_ALIASES_FILE
+from paths import BRIDGE_DIR as BASE_DIR, REGISTRY_FILE, DEFAULT_REGISTRY_FILE, MANUAL_IDES_FILE, SCANNED_IDES_FILE, DISABLED_IDES_FILE, IDE_ROLES_FILE, IDE_ALIASES_FILE
 
 
 def _normalize_ide_key(key):
@@ -171,14 +171,29 @@ def _probe_codex_desktop_exe():
         import psutil
         for proc in psutil.process_iter(["name", "exe"]):
             info = proc.info
+            if (info.get("name") or "").lower() != "chatgpt.exe":
+                continue
             exe = info.get("exe") or ""
-            if (info.get("name") or "").lower() == "chatgpt.exe" and os.path.isfile(exe):
+            if not exe:
+                try:
+                    exe = proc.exe()
+                except Exception:
+                    pass
+            if exe and os.path.isfile(exe):
                 return exe
     except Exception:
         pass
-    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
-    pattern = os.path.join(program_files, "WindowsApps", "OpenAI.Codex_*", "app", "ChatGPT.exe")
-    matches = [path for path in glob.glob(pattern) if os.path.isfile(path)]
+    roots = {
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramW6432", r"C:\Program Files"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Packages"),
+    }
+    patterns = [
+        os.path.join(root, "WindowsApps", "OpenAI.Codex_*", "app", "ChatGPT.exe")
+        for root in roots if root
+    ]
+    patterns.append(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "ChatGPT", "ChatGPT.exe"))
+    matches = [path for pattern in patterns for path in glob.glob(pattern) if os.path.isfile(path)]
     return sorted(matches, reverse=True)[0] if matches else None
 
 
@@ -211,12 +226,28 @@ def _get_version(exe_path):
         return None
 
 
+def _generic_exe_key(exe_path):
+    """基于真实执行文件名生成通用标识，供展示和后续迁移使用。"""
+    stem = os.path.splitext(os.path.basename(exe_path or ""))[0].lower()
+    key = "".join(ch if ch.isalnum() else "_" for ch in stem).strip("_")
+    return key or "ide"
+
+
+def _exe_display_name(exe_path):
+    """扫描结果使用真实 exe 文件名作为显示名。"""
+    stem = os.path.splitext(os.path.basename(exe_path or ""))[0].strip()
+    return stem or "IDE"
+
+
 def scan_installed_ides():
     """扫描本机已安装的 IDE，返回列表并持久化缓存"""
     registry = load_registry()
     results = []
     seen_keys = set()
+    disabled = set(safe_read_json(DISABLED_IDES_FILE, default=[]))
     for ide_key, config in registry.items():
+        if ide_key in disabled:
+            continue
         if config.get("type") == "web":
             continue
         if ide_key == "codex":
@@ -226,6 +257,7 @@ def scan_installed_ides():
                     "key": ide_key,
                     "name": "ChatGPT (Codex)",
                     "path": exe,
+                    "exe_key": _generic_exe_key(exe),
                     "version": _get_version(exe),
                     "source": "scan",
                     "icon": config.get("icon", ""),
@@ -246,8 +278,9 @@ def scan_installed_ides():
                 if exe:
                     results.append({
                         "key": ide_key,
-                        "name": config.get("name", ide_key),
+                        "name": _exe_display_name(exe),
                         "path": exe,
+                        "exe_key": _generic_exe_key(exe),
                         "version": _get_version(exe),
                         "source": "scan",
                         "icon": config.get("icon", ""),
@@ -286,6 +319,9 @@ def save_manual_ides(ides):
 def add_manual_ide(ide):
     """添加一个手动配置的 IDE"""
     ides = load_manual_ides()
+    disabled = set(safe_read_json(DISABLED_IDES_FILE, default=[]))
+    disabled.discard(ide.get("key"))
+    safe_write_json(DISABLED_IDES_FILE, sorted(disabled))
     for i, existing in enumerate(ides):
         if existing.get("key") == ide.get("key"):
             ides[i] = ide
@@ -302,6 +338,20 @@ def remove_manual_ide(key):
     ides = [i for i in ides if i.get("key") != key]
     save_manual_ides(ides)
     return True
+
+
+def remove_scanned_ide(key):
+    """删除扫描缓存中的 IDE；不会修改内置注册表规则。"""
+    key = _normalize_ide_key(key)
+    scanned = _load_scanned()
+    kept = [item for item in scanned if _normalize_ide_key(item.get("key")) != key]
+    changed = len(kept) != len(scanned)
+    if changed:
+        _save_scanned(kept)
+        disabled = set(safe_read_json(DISABLED_IDES_FILE, default=[]))
+        disabled.add(key)
+        safe_write_json(DISABLED_IDES_FILE, sorted(disabled))
+    return changed
 
 
 def _load_scanned():
@@ -498,6 +548,8 @@ def get_all_ides():
             })
         elif key in scanned_map:
             entry = scanned_map[key].copy()
+            if entry.get("path"):
+                entry["name"] = _exe_display_name(entry["path"])
             entry["icon"] = config.get("icon", entry.get("icon", ""))
             entry["color"] = config.get("color", entry.get("color", "#90A4AE"))
             result.append(entry)
@@ -511,6 +563,9 @@ def get_all_ides():
     registry_keys = set(registry.keys())
     for s in scanned:
         if s["key"] not in registry_keys:
+            if s.get("path"):
+                s = s.copy()
+                s["name"] = _exe_display_name(s["path"])
             result.append(s)
 
     # 手动配置中不在注册表和扫描结果里的

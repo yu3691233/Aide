@@ -58,6 +58,36 @@ class BridgeIdeApi(private val client: HttpClient, private val baseUrl: String) 
         false
     }
 
+    suspend fun installMcp(key: String): Boolean = try {
+        val resp = client.post("$baseUrl/api/ide/install-mcp") {
+            setBody(mapOf("key" to key))
+            contentType(ContentType.Application.Json)
+        }
+        resp.status.isSuccess()
+    } catch (e: Exception) {
+        false
+    }
+
+    suspend fun autoBindWindow(key: String): Boolean = try {
+        val resp = client.post("$baseUrl/api/ide-window-bindings/auto") {
+            setBody(mapOf("key" to key))
+            contentType(ContentType.Application.Json)
+        }
+        resp.status.isSuccess()
+    } catch (e: Exception) { false }
+
+    suspend fun moveAndMaximizeForCalibration(key: String, monitor: String): Boolean = try {
+        val resp = client.post("$baseUrl/api/calibrate-maximize") {
+            setBody(kotlinx.serialization.json.buildJsonObject {
+                put("key", kotlinx.serialization.json.JsonPrimitive(key))
+                put("monitor_name", kotlinx.serialization.json.JsonPrimitive(monitor))
+                put("prepare_only", kotlinx.serialization.json.JsonPrimitive(true))
+            })
+            contentType(ContentType.Application.Json)
+        }
+        resp.status.isSuccess()
+    } catch (e: Exception) { false }
+
     suspend fun startIde(ide: String): Boolean = try {
         val resp = client.post("$baseUrl/ide/$ide/start")
         resp.status.isSuccess()

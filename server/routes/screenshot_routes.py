@@ -265,7 +265,9 @@ def screenshot_crop():
                 monitor_name,
                 dialog_position=dialog_pos,
                 calib_width=data.get("calib_width"),
-                calib_height=data.get("calib_height")
+                calib_height=data.get("calib_height"),
+                focus_input_enabled=data.get("focus_input_enabled"),
+                input_region=data.get("input_region")
             )
             return jsonify({"ok": True, "config": config, "monitor": monitor_name})
         except Exception as e:
@@ -513,7 +515,9 @@ def screenshot_crop_config():
                 monitor_name,
                 dialog_position=data.get("dialog_position"),
                 calib_width=data.get("calib_width"),
-                calib_height=data.get("calib_height")
+                calib_height=data.get("calib_height"),
+                focus_input_enabled=data.get("focus_input_enabled"),
+                input_region=data.get("input_region")
             )
             return jsonify({"ok": True, "target": target, "monitor": monitor_name, "config": config})
 

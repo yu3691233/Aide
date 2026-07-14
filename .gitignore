@@ -29,6 +29,7 @@ server/queues/*.jsonl
 server/state/*.json
 server/manual_ides.json
 server/scanned_ides.json
+server/disabled_ides.json
 server/project_map.json
 server/notification_watcher_state.json
 
