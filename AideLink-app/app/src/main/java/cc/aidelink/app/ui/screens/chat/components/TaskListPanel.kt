@@ -642,36 +642,40 @@ fun TaskCard(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = statusColor.copy(alpha = 0.08f)
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = " $statusText ",
-                            color = statusColor,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                        )
-                    }
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = statusColor.copy(alpha = 0.08f)
+                        ) {
+                            Text(
+                                text = " $statusText ",
+                                color = statusColor,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                            )
+                        }
 
-                    // 状态右边显示任务标题（由后台异步生成，可能为空）
-                    val displayTitle = task.title?.takeIf { it.isNotBlank() }
-                    if (displayTitle != null) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = displayTitle,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
+                        // 标题异步出现前后都占用同一左侧区域，避免尾部 IDE 标签跳位。
+                        val displayTitle = task.title?.takeIf { it.isNotBlank() }
+                        if (displayTitle != null) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = displayTitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
-
-                    Spacer(modifier = Modifier.weight(1f))
 
                     task.target_ide?.let { ide ->
+                        Spacer(modifier = Modifier.width(8.dp))
                         val badgeColors = getIdeBadgeColors(ide)
                         Surface(
                             shape = RoundedCornerShape(4.dp),
