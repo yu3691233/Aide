@@ -724,6 +724,17 @@ fun AideLinkChatScreen(
                                 viewModel.showDispatchSelector(setOf(taskId))
                             }
                         },
+                        onSyncOfflineTask = { taskId ->
+                            val savedTarget = state.tasks.firstOrNull { it.task_id == taskId }?.target_ide.orEmpty()
+                            val dispatchTarget = savedTarget.ifBlank {
+                                if (state.target != AideLinkChatViewModel.Target.AIDELINK) state.target.key else ""
+                            }
+                            if (dispatchTarget.isNotBlank()) {
+                                viewModel.executeDispatch(dispatchTarget, setOf(taskId))
+                            } else {
+                                viewModel.showDispatchSelector(setOf(taskId))
+                            }
+                        },
                         onOpenTask = { taskId -> viewModel.openTaskThread(taskId) },
                         onEditTask = { taskId -> viewModel.startTaskEdit(taskId) },
                         onConfirm = viewModel::confirmTask,

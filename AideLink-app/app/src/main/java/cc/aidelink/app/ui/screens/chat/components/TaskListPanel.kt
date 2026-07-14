@@ -62,7 +62,7 @@ internal fun taskStatusMatchesTab(status: String, tab: Int): Boolean {
     return when (tab) {
         0 -> normalized !in setOf("done", "failed", "pending_test") && normalized !in offlineTaskStatuses
         1 -> normalized == "pending_test"
-        2 -> normalized in setOf("done", "failed")
+        2 -> normalized == "done"
         3 -> normalized in offlineTaskStatuses
         else -> true
     }
@@ -87,6 +87,7 @@ fun TaskListPanel(
     onBatchComplete: () -> Unit,
     onBatchDispatch: () -> Unit,
     onDispatch: (String) -> Unit,
+    onSyncOfflineTask: (String) -> Unit,
     onOpenTask: (String) -> Unit,
     onEditTask: (String) -> Unit,
     onConfirm: (String) -> Unit = {},
@@ -340,6 +341,7 @@ fun TaskListPanel(
                         onFail = onFail,
                         onDelete = onDelete,
                         onDispatch = onDispatch,
+                        onSyncOfflineTask = onSyncOfflineTask,
                         onOpenTask = onOpenTask,
                         onEditTask = onEditTask,
                         onLongPress = onLongPress,
@@ -364,6 +366,7 @@ fun SwipeableTaskCard(
     onFail: (String) -> Unit,
     onDelete: (String) -> Unit,
     onDispatch: (String) -> Unit,
+    onSyncOfflineTask: (String) -> Unit,
     onOpenTask: (String) -> Unit,
     onEditTask: (String) -> Unit,
     onLongPress: (String) -> Unit,
@@ -483,6 +486,7 @@ fun SwipeableTaskCard(
                 onFail = onFail,
                 onDelete = onDelete,
                 onDispatch = onDispatch,
+                onSyncOfflineTask = onSyncOfflineTask,
                 onOpenTask = onOpenTask,
                 onConfirm = onConfirm,
                 onPromptBuilder = onPromptBuilder,
@@ -503,6 +507,7 @@ fun TaskCard(
     onFail: (String) -> Unit,
     onDelete: (String) -> Unit,
     onDispatch: (String) -> Unit = {},
+    onSyncOfflineTask: (String) -> Unit = {},
     onOpenTask: (String) -> Unit = {},
     onConfirm: (String) -> Unit = {},
     onPromptBuilder: (String) -> Unit = {},
@@ -563,9 +568,11 @@ fun TaskCard(
                         if (batchMode) {
                             onToggleSelect(task.task_id)
                         } else {
-                            // 待派发/排队中状态点击直接派发，其他状态进入会话
+                            // 离线任务点击时同步并派发，不进入任务会话。
                             val s = task.status.lowercase()
-                            if (s == "pending_dispatch" || s == "queued") {
+                            if (s in offlineTaskStatuses) {
+                                onSyncOfflineTask(task.task_id)
+                            } else if (s == "pending_dispatch" || s == "queued") {
                                 onDispatch(task.task_id)
                             } else {
                                 onOpenTask(task.task_id)

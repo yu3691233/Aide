@@ -10,7 +10,7 @@ import kotlinx.serialization.json.Json
 import java.util.UUID
 
 /**
- * 离线任务缓存：在无网络时保存任务，连接恢复后自动同步到服务器。
+ * 离线任务缓存：服务端未成功接收/派发时保存任务，由用户点击后同步并派发。
  * 存储在 SharedPreferences 中，按任务 ID 去重。
  */
 object OfflineTaskCache {
@@ -110,6 +110,14 @@ object OfflineTaskCache {
         return loadAll(context)
     }
 
+    fun getPending(context: Context, taskId: String): CachedTask? {
+        return loadAll(context).firstOrNull { it.id == taskId && !it.synced }
+    }
+
+    fun containsPending(context: Context, taskId: String): Boolean {
+        return getPending(context, taskId) != null
+    }
+
     /**
      * 标记任务已同步
      */
@@ -160,5 +168,26 @@ object OfflineTaskCache {
             } catch (_: Exception) {}
         }
         synced
+    }
+
+    /**
+     * 用户点击离线任务时，上传并立即尝试派发。只有服务端明确返回成功才移除本地副本。
+     */
+    suspend fun syncAndDispatch(
+        context: Context,
+        taskId: String,
+        targetIde: String,
+        bridgeApi: cc.aidelink.app.data.api.BridgeApi,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val task = getPending(context, taskId) ?: return@withContext false
+        if (targetIde.isBlank()) return@withContext false
+        val ok = bridgeApi.createTask(
+            text = task.message,
+            title = task.title,
+            targetIde = targetIde,
+            autoDispatch = true,
+        )
+        if (ok) remove(context, taskId)
+        ok
     }
 }

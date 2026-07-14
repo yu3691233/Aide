@@ -35,5 +35,7 @@ class OfflineTaskFallbackTest {
         assertFalse(taskStatusMatchesTab("pending_upload", 0))
         assertFalse(taskStatusMatchesTab("draft", 0))
         assertTrue(taskStatusMatchesTab("queued", 0))
+        assertFalse(taskStatusMatchesTab("failed", 2))
+        assertTrue(taskStatusMatchesTab("done", 2))
     }
 }

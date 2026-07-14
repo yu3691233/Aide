@@ -1139,13 +1139,18 @@ class BridgeApi(
         }
     }
 
-    suspend fun createTask(text: String, title: String? = null, targetIde: String? = null): Boolean {
+    suspend fun createTask(
+        text: String,
+        title: String? = null,
+        targetIde: String? = null,
+        autoDispatch: Boolean = false,
+    ): Boolean {
         return try {
             val body = buildJsonObject {
                 put("text", text)
                 title?.let { put("title", it) }
                 targetIde?.let { put("target_ide", it) }
-                put("auto_dispatch", false)
+                put("auto_dispatch", autoDispatch)
                 put("app_version", cc.aidelink.app.BuildConfig.VERSION_NAME)
             }
             val resp = client.post("$baseUrl/api/tasks/create") {
@@ -1174,7 +1179,11 @@ class BridgeApi(
 
             }
 
-            resp.status.isSuccess()
+            if (!resp.status.isSuccess()) return false
+            val payload = runCatching { json.parseToJsonElement(resp.bodyAsText()).jsonObject }.getOrNull()
+            payload?.get("ok")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                ?: payload?.get("success")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                ?: true
 
         } catch (e: Exception) {
 

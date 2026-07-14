@@ -572,11 +572,9 @@ class AideLinkChatViewModel @Inject constructor(
 
                 _state.value = _state.value.copy(bridgeOnline = online)
 
-                // 连接恢复时自动同步离线任务并刷新状态
+                // 连接恢复时刷新状态；离线任务由用户点击后同步并派发。
 
                 if (online && !wasOnline) {
-
-                    syncOfflineTasks()
 
                     loadIdeRunningStatus()
 
@@ -2814,9 +2812,8 @@ class AideLinkChatViewModel @Inject constructor(
 
                     cc.aidelink.app.data.repository.OfflineTaskCache.saveServerTasks(appContext, list)
 
-                    // 连接成功时同步离线任务
-
-                    syncOfflineTasks()
+                    // 离线任务保留在本地，等待用户点击后同步并派发。
+                    loadOfflineTasks()
 
                 }
 
@@ -3156,7 +3153,7 @@ class AideLinkChatViewModel @Inject constructor(
         _state.value = _state.value.copy(
             sending = false,
             errorMessage = null,
-            toastMessage = "已保存为离线任务，连接恢复后自动同步",
+            toastMessage = "已保存为离线任务，点击任务后同步并派发",
         )
         loadOfflineTasks()
         delay(3000)
@@ -3291,6 +3288,15 @@ class AideLinkChatViewModel @Inject constructor(
 
         viewModelScope.launch(Dispatchers.IO) {
 
+            if (cc.aidelink.app.data.repository.OfflineTaskCache.containsPending(appContext, taskId)) {
+                cc.aidelink.app.data.repository.OfflineTaskCache.remove(appContext, taskId)
+                _state.value = _state.value.copy(
+                    tasks = _state.value.tasks.filterNot { it.task_id == taskId },
+                    toastMessage = "离线任务已删除",
+                )
+                return@launch
+            }
+
             val ok = bridgeApi.deleteTask(taskId)
 
             if (ok) {
@@ -3352,14 +3358,31 @@ class AideLinkChatViewModel @Inject constructor(
         hideDispatchSelector()
 
         viewModelScope.launch(Dispatchers.IO) {
-
-            val ok = bridgeApi.dispatchTasks(ids, targetIde)
+            val (offlineIds, serverIds) = ids.partition {
+                cc.aidelink.app.data.repository.OfflineTaskCache.containsPending(appContext, it)
+            }
+            val offlineResults = offlineIds.map { taskId ->
+                cc.aidelink.app.data.repository.OfflineTaskCache.syncAndDispatch(
+                    context = appContext,
+                    taskId = taskId,
+                    targetIde = targetIde,
+                    bridgeApi = bridgeApi,
+                )
+            }
+            val serverOk = serverIds.isEmpty() || bridgeApi.dispatchTasks(serverIds, targetIde)
+            val ok = serverOk && offlineResults.all { it }
 
             if (ok) {
 
                 exitBatchMode()
 
                 loadTasks()
+
+            } else {
+                loadOfflineTasks()
+                _state.value = _state.value.copy(
+                    toastMessage = "派发未成功，任务仍保存在离线任务中",
+                )
 
             }
 

@@ -369,6 +369,12 @@ def api_tasks_create():
 
         ok, reply = dispatch_task(task, runtime)
 
+        if not ok:
+            # 未派发成功的 App 任务不保留为服务端失败任务；手机端会继续持有离线副本。
+            tasks = [item for item in runtime.read_tasks() if item.get("task_id") != task["task_id"]]
+            runtime.write_tasks(tasks)
+            return jsonify({"ok": False, "message": reply}), 503
+
         return jsonify({"ok": ok, "task_id": task["task_id"], "reply": reply})
 
 
