@@ -90,6 +90,10 @@ internal fun resolveStartupTargetKey(savedKey: String, processes: List<DesktopId
     return if (candidate != null && candidate in selectedIdeKeys) candidate else validSaved
 }
 
+internal fun shouldFallbackToOfflineTaskCache(bridgeOnline: Boolean, serverTaskCreated: Boolean): Boolean {
+    return !bridgeOnline || !serverTaskCreated
+}
+
 
 
 @HiltViewModel
@@ -3086,56 +3090,54 @@ class AideLinkChatViewModel @Inject constructor(
 
             try {
 
-                if (isOnline) {
-
-                    val ok = bridgeApi.createTask(text = text, title = title, targetIde = target.ifBlank { null })
-
-                    _state.value = _state.value.copy(sending = false)
-
-                    if (ok) {
-
-                        if (_state.value.monitorActive) wakeMonitor()
-
-                        loadTasks()
-
-                    } else {
-
-                        _state.value = _state.value.copy(errorMessage = "任务创建失败，请检查电脑端桥接服务")
-
-                    }
-
-                } else {
-
-                    // 离线：保存到本地缓存，如果指定了 IDE，标记为 "pending_upload"；否则作为草稿 "draft"
-
-                    val status = if (target.isNotBlank()) "pending_upload" else "draft"
-
-                    cc.aidelink.app.data.repository.OfflineTaskCache.save(
-
-                        appContext, title ?: text.take(40), text, target, status
-
+                // 健康检查状态可能比真实请求慢一拍。只要服务端创建没有成功，
+                // 就必须回退到本地缓存，避免断网瞬间把用户输入直接丢掉。
+                val createdOnServer = isOnline && runCatching {
+                    bridgeApi.createTask(
+                        text = text,
+                        title = title,
+                        targetIde = target.ifBlank { null },
                     )
+                }.getOrDefault(false)
 
-                    _state.value = _state.value.copy(sending = false, toastMessage = "已保存为离线任务，连接恢复后自动同步")
-
-                    // 加载离线任务列表
-
-                    loadOfflineTasks()
-
-                    // 3 秒后清除 toast
-                    delay(3000)
-                    _state.value = _state.value.copy(toastMessage = null)
-
+                if (!shouldFallbackToOfflineTaskCache(isOnline, createdOnServer)) {
+                    _state.value = _state.value.copy(sending = false)
+                    if (_state.value.monitorActive) wakeMonitor()
+                    loadTasks()
+                    return@launch
                 }
+
+                saveOfflineTask(text = text, title = title, target = target)
 
             } catch (e: Exception) {
 
-                _state.value = _state.value.copy(sending = false, errorMessage = e.message ?: "任务创建失败")
+                // 本地保存本身失败时才向用户报告创建失败；网络异常由离线缓存兜底。
+                _state.value = _state.value.copy(sending = false, errorMessage = e.message ?: "离线任务保存失败")
 
             }
 
         }
 
+    }
+
+    private suspend fun saveOfflineTask(text: String, title: String?, target: String) {
+        // 指定了 IDE 的任务待恢复连接后同步；未指定目标的任务保留为草稿。
+        val status = if (target.isNotBlank()) "pending_upload" else "draft"
+        cc.aidelink.app.data.repository.OfflineTaskCache.save(
+            appContext,
+            title ?: text.take(40),
+            text,
+            target,
+            status,
+        )
+        _state.value = _state.value.copy(
+            sending = false,
+            errorMessage = null,
+            toastMessage = "已保存为离线任务，连接恢复后自动同步",
+        )
+        loadOfflineTasks()
+        delay(3000)
+        _state.value = _state.value.copy(toastMessage = null)
     }
 
 
