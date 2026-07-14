@@ -311,6 +311,12 @@ fun AideLinkChatScreen(
         selectedTaskTab = 0
     }
 
+    LaunchedEffect(state.toastMessage) {
+        val message = state.toastMessage ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(3000)
+        viewModel.clearToast(message)
+    }
+
     val filteredMessages = remember(state.messages, state.target) {
         state.messages.filter { msg ->
             val t = msg.target?.lowercase()
@@ -763,13 +769,27 @@ fun AideLinkChatScreen(
                         color = MaterialTheme.colorScheme.tertiaryContainer,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(8.dp),
+                            .padding(8.dp)
+                            .clickable { viewModel.clearToast(msg) },
                     ) {
-                        Text(
-                            text = msg,
+                        Row(
                             modifier = Modifier.padding(8.dp),
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                        )
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = msg,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "关闭提示",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                            )
+                        }
                     }
                 }
 

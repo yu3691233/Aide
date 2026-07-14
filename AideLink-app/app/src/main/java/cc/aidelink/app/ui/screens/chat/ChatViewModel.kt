@@ -664,6 +664,12 @@ class AideLinkChatViewModel @Inject constructor(
         _state.value = _state.value.copy(errorMessage = null)
     }
 
+    fun clearToast(expectedMessage: String? = null) {
+        if (expectedMessage == null || _state.value.toastMessage == expectedMessage) {
+            _state.value = _state.value.copy(toastMessage = null)
+        }
+    }
+
     fun reload() {
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -2475,10 +2481,6 @@ class AideLinkChatViewModel @Inject constructor(
 
                 _state.value = _state.value.copy(toastMessage = msg)
 
-                delay(3000)
-
-                _state.value = _state.value.copy(toastMessage = null)
-
             }
 
         }
@@ -2994,10 +2996,6 @@ class AideLinkChatViewModel @Inject constructor(
 
                     _state.value = _state.value.copy(toastMessage = "已补充到当前任务")
 
-                    delay(2500)
-
-                    _state.value = _state.value.copy(toastMessage = null)
-
                 } else {
 
                     _state.value = _state.value.copy(errorMessage = "任务补充失败，请检查任务状态或电脑端桥接服务")
@@ -3156,8 +3154,6 @@ class AideLinkChatViewModel @Inject constructor(
             toastMessage = "已保存为离线任务，点击任务后同步并派发",
         )
         loadOfflineTasks()
-        delay(3000)
-        _state.value = _state.value.copy(toastMessage = null)
     }
 
 
