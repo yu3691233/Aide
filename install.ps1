@@ -29,6 +29,35 @@ function Write-Step($msg) { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $msg" -
 function Write-OK($msg)   { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [OK] $msg" -ForegroundColor Green }
 function Write-Err($msg)  { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [ERR] $msg" -ForegroundColor Red }
 
+function Get-NormalizedPath($path) {
+    if (-not $path) { return $null }
+    return [IO.Path]::GetFullPath($path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+}
+
+function Test-AideLinkInstall($path) {
+    if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Container)) { return $false }
+    return (Test-Path -LiteralPath (Join-Path $path "install.ps1") -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $path "server\start_services.py") -PathType Leaf)
+}
+
+function Find-OldInstallPaths($targetPath) {
+    $target = Get-NormalizedPath $targetPath
+    $candidates = @((Join-Path $env:USERPROFILE "AideLink"))
+    $task = Get-ScheduledTask -TaskName "AideLink Bridge" -ErrorAction SilentlyContinue
+    if ($task) {
+        foreach ($action in $task.Actions) {
+            if ($action.WorkingDirectory) {
+                $candidates += Split-Path -Parent (Get-NormalizedPath $action.WorkingDirectory)
+            }
+        }
+    }
+    return $candidates |
+        Where-Object { $_ } |
+        ForEach-Object { Get-NormalizedPath $_ } |
+        Where-Object { $_ -ne $target -and (Test-AideLinkInstall $_) } |
+        Select-Object -Unique
+}
+
 function Stop-ExistingInstall($path) {
     schtasks /End /TN "AideLink Bridge" 2>$null | Out-Null
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -46,6 +75,28 @@ if (-not $InstallDir) {
     $input = Read-Host "安装目录 (Enter 使用默认: $defaultDir)"
     $InstallDir = if ($input.Trim()) { $input.Trim() } else { $defaultDir }
 }
+$InstallDir = Get-NormalizedPath $InstallDir
+
+# 迁移到新目录时，先识别并清理其它位置的一键安装版本。
+# 删除前要求人工确认，并严格校验 AideLink 标志文件，避免误删普通目录。
+$oldConfigJson = $null
+$oldInstallPaths = @(Find-OldInstallPaths $InstallDir)
+foreach ($oldPath in $oldInstallPaths) {
+    Write-Step "检测到其它位置的旧 AideLink 安装: $oldPath"
+    $answer = Read-Host "是否停止旧服务并删除该目录？配置会在需要时迁移到新目录（输入 Y 确认）"
+    if ($answer -notmatch '^y(?:es)?$') {
+        Write-Step "已保留旧安装: $oldPath"
+        continue
+    }
+    $oldConfigPath = Join-Path $oldPath "server\config.json"
+    if (-not $oldConfigJson -and (Test-Path -LiteralPath $oldConfigPath -PathType Leaf)) {
+        $oldConfigJson = Get-Content -LiteralPath $oldConfigPath -Raw
+    }
+    Stop-ExistingInstall $oldPath
+    Unregister-ScheduledTask -TaskName "AideLink Bridge" -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $oldPath -Recurse -Force
+    Write-OK "旧安装已清理: $oldPath"
+}
 
 Write-Step "AideLink Bridge 一键安装"
 Write-Step "  InstallDir: $InstallDir"
@@ -62,9 +113,9 @@ $git = Get-Command git -ErrorAction SilentlyContinue
 function Install-Python {
     Write-Step "Python 未安装或不可用，通过 winget 自动安装..."
     $winget = Get-Command winget -ErrorAction SilentlyContinue
-    if (-not $winget) { Write-Err "winget 不可用，请手动下载安装 Python https://www.python.org/downloads/"; exit 1 }
+    if (-not $winget) { throw "winget 不可用，请手动下载安装 Python https://www.python.org/downloads/" }
     winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements --disable-interactivity
-    if ($LASTEXITCODE -ne 0) { Write-Err "Python 安装失败，请手动安装"; exit 1 }
+    if ($LASTEXITCODE -ne 0) { throw "Python 安装失败，请手动安装" }
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
 }
 
@@ -82,20 +133,20 @@ if (-not $pyWorks) {
 if (-not $git) {
     Write-Step "git 未安装，通过 winget 自动安装..."
     $winget = Get-Command winget -ErrorAction SilentlyContinue
-    if (-not $winget) { Write-Err "winget 不可用，请手动安装 git https://git-scm.com/"; exit 1 }
+    if (-not $winget) { throw "winget 不可用，请手动安装 git https://git-scm.com/" }
     winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements --disable-interactivity
-    if ($LASTEXITCODE -ne 0) { Write-Err "git 安装失败，请手动安装"; exit 1 }
+    if ($LASTEXITCODE -ne 0) { throw "git 安装失败，请手动安装" }
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
     $git = Get-Command git -ErrorAction SilentlyContinue
 }
 $pythonArgs = if ($pythonCommand.Count -gt 1) { @($pythonCommand[1..($pythonCommand.Count-1)]) } else { @() }
 $pyVer = & $pythonCommand[0] @pythonArgs -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-if ([double]$pyVer -lt 3.10) {
-    Write-Err "Python >= 3.10 required, 当前 $pyVer"; exit 1
+if ([version]$pyVer -lt [version]"3.10") {
+    throw "Python >= 3.10 required, 当前 $pyVer"
 }
 Write-OK "Python $pyVer + git OK"
 $tkTest = & $pythonCommand[0] @pythonArgs -c "import tkinter; print('ok')" 2>$null
-if ($LASTEXITCODE -ne 0 -or $tkTest -ne 'ok') { Write-Err "当前 Python 缺少 tkinter，请安装 python.org 完整版 Python 后重试。"; exit 1 }
+if ($LASTEXITCODE -ne 0 -or $tkTest -ne 'ok') { throw "当前 Python 缺少 tkinter，请安装 python.org 完整版 Python 后重试。" }
 
 # === 2. 克隆/更新仓库 ===
 Write-Step "[2/7] 准备仓库 $InstallDir ..."
@@ -106,18 +157,18 @@ if (Test-Path $InstallDir) {
         git pull --ff-only
         $pullCode = $LASTEXITCODE
         Pop-Location
-        if ($pullCode -ne 0) { Write-Err "git pull 失败"; exit 1 }
+        if ($pullCode -ne 0) { throw "git pull 失败" }
     } else {
         $backup = "{0}.backup-{1}" -f $InstallDir, (Get-Date -Format "yyyyMMdd-HHmmss")
         Write-Step "现有目录不是 Git 仓库，备份到 $backup 后重新克隆"
         Stop-ExistingInstall $InstallDir
         Move-Item -LiteralPath $InstallDir -Destination $backup
         git clone $RepoUrl $InstallDir
-        if ($LASTEXITCODE -ne 0) { Write-Err "git clone 失败"; exit 1 }
+        if ($LASTEXITCODE -ne 0) { throw "git clone 失败" }
     }
 } else {
     git clone $RepoUrl $InstallDir
-    if ($LASTEXITCODE -ne 0) { Write-Err "git clone 失败"; exit 1 }
+    if ($LASTEXITCODE -ne 0) { throw "git clone 失败" }
 }
 Write-OK "仓库就绪"
 
@@ -128,7 +179,7 @@ $runtimePython = Join-Path $venvDir "Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $runtimePython)) {
     & $pythonCommand[0] @pythonArgs -m venv $venvDir
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $runtimePython)) {
-        Write-Err "创建 Python 虚拟环境失败"; exit 1
+        throw "创建 Python 虚拟环境失败"
     }
 }
 Write-OK "独立 Python 环境已就绪: $venvDir"
@@ -143,7 +194,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "依赖安装命令失败" }
 } catch {
     Pop-Location
-    Write-Err "依赖安装失败: $_"; exit 1
+    throw "依赖安装失败: $_"
 }
 Pop-Location
 Write-OK "依赖就绪"
@@ -154,6 +205,10 @@ Write-OK "依赖就绪"
 Write-Step "持久化 Bridge 端口 $Port ..."
 $configPath = Join-Path $InstallDir "server\config.json"
 $config = @{}
+if (-not (Test-Path -LiteralPath $configPath) -and $oldConfigJson) {
+    Set-Content -LiteralPath $configPath -Value $oldConfigJson -Encoding UTF8
+    Write-OK "已从旧安装迁移 config.json"
+}
 if (Test-Path -LiteralPath $configPath) {
     try {
         $existingConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
@@ -213,8 +268,7 @@ try {
         throw "Bridge 响应异常"
     }
 } catch {
-    Write-Err "启动失败，检查日志: $InstallDir\server\flask_new.log"
-    exit 1
+    throw "启动失败，检查日志: $InstallDir\server\flask_new.log。详细错误: $_"
 }
 
 # === 8. 开机自启（可选）===
