@@ -92,6 +92,7 @@ def capture_window_winrt(hwnd, timeout=3.0, client_only=False):
         return None
 
     result = [None]
+    blank_frames = [0]
     ready = threading.Event()
     capture = None
 
@@ -101,12 +102,24 @@ def capture_window_winrt(hwnd, timeout=3.0, client_only=False):
             bgr = frame.frame_buffer[:, :, :3]   # BGRA → BGR
             rgb = bgr[:, :, ::-1]                 # BGR → RGB
             img = Image.fromarray(rgb, 'RGB')
+            if _is_blank_image(img):
+                blank_frames[0] += 1
+                # DWM/DirectComposition 刚恢复或最大化窗口时，第一帧可能是纯白。
+                # 给合成器几帧时间；连续空白则停止并让调用方走屏幕截图兜底。
+                if blank_frames[0] < 5:
+                    return
+                print(f"[WARN] capture_window_winrt returned blank frames for hwnd={hwnd}", flush=True)
+                control.stop()
+                ready.set()
+                return
             result[0] = img
         except Exception as e:
             print(f"[WARN] capture_window_winrt frame conversion: {e}", flush=True)
-        finally:
             control.stop()
             ready.set()
+            return
+        control.stop()
+        ready.set()
 
     def on_closed():
         ready.set()
