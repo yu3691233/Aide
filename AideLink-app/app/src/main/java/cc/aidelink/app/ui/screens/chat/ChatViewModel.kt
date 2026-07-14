@@ -3125,6 +3125,24 @@ class AideLinkChatViewModel @Inject constructor(
 
     }
 
+    fun createOfflineTaskFromInput() {
+        val text = _state.value.input.trim()
+        if (text.isEmpty() || _state.value.sending) return
+
+        val target = normalizeTaskTarget(_state.value.target.key)
+        _state.value = _state.value.copy(input = "", sending = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                saveOfflineTask(text = text, title = null, target = target)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    sending = false,
+                    errorMessage = e.message ?: "离线任务保存失败",
+                )
+            }
+        }
+    }
+
     private suspend fun saveOfflineTask(text: String, title: String?, target: String) {
         // 指定了 IDE 的任务待恢复连接后同步；未指定目标的任务保留为草稿。
         val status = if (target.isNotBlank()) "pending_upload" else "draft"

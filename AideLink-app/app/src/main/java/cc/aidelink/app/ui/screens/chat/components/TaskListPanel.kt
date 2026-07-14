@@ -55,6 +55,19 @@ private fun getIdeBadgeColors(ide: String): IdeBadgeColors = when (ide.lowercase
     else -> IdeBadgeColors(bg = Color(0xFFECEFF1), text = Color(0xFF455A64))
 }
 
+private val offlineTaskStatuses = setOf("draft", "pending_upload")
+
+internal fun taskStatusMatchesTab(status: String, tab: Int): Boolean {
+    val normalized = status.lowercase()
+    return when (tab) {
+        0 -> normalized !in setOf("done", "failed", "pending_test") && normalized !in offlineTaskStatuses
+        1 -> normalized == "pending_test"
+        2 -> normalized in setOf("done", "failed")
+        3 -> normalized in offlineTaskStatuses
+        else -> true
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TaskListPanel(
@@ -78,11 +91,12 @@ fun TaskListPanel(
     onEditTask: (String) -> Unit,
     onConfirm: (String) -> Unit = {},
     onPromptBuilder: (String) -> Unit = {},
+    selectedTab: Int = 0,
+    onSelectedTabChange: (Int) -> Unit = {},
     bridgeUrl: String = "",
     modifier: Modifier = Modifier
 ) {
-    // Tab 过滤状态：0=进行中 1=待测试 2=已完成
-    var selectedTab by remember { mutableStateOf(0) }
+    // Tab 过滤状态：0=进行中 1=待测试 2=已完成 3=离线任务
     // 当前IDE / 全部切换
     var filterCurrentIdeOnly by remember { mutableStateOf(true) }
 
@@ -96,10 +110,13 @@ fun TaskListPanel(
     }
 
     val activeTasksCount = remember(filteredTasksByIde) {
-        filteredTasksByIde.count { it.status.lowercase() !in setOf("done", "failed", "pending_test") }
+        filteredTasksByIde.count { taskStatusMatchesTab(it.status, 0) }
     }
     val pendingTestTasksCount = remember(filteredTasksByIde) {
         filteredTasksByIde.count { it.status.lowercase() == "pending_test" }
+    }
+    val offlineTasksCount = remember(filteredTasksByIde) {
+        filteredTasksByIde.count { taskStatusMatchesTab(it.status, 3) }
     }
 
     // 排序：最新的在前
@@ -109,12 +126,7 @@ fun TaskListPanel(
 
     // 按 Tab 过滤
     val displayedTasks = remember(sortedTasks, selectedTab) {
-        when (selectedTab) {
-            0 -> sortedTasks.filter { it.status.lowercase() !in setOf("done", "failed", "pending_test") }
-            1 -> sortedTasks.filter { it.status.lowercase() == "pending_test" }
-            2 -> sortedTasks.filter { it.status.lowercase() in setOf("done", "failed") }
-            else -> sortedTasks
-        }
+        sortedTasks.filter { taskStatusMatchesTab(it.status, selectedTab) }
     }
     val displayedTaskIds = remember(displayedTasks) { displayedTasks.map { it.task_id }.toSet() }
     val allDisplayedSelected = displayedTaskIds.isNotEmpty() && displayedTaskIds.all { it in selectedTaskIds }
@@ -130,20 +142,21 @@ fun TaskListPanel(
         ) {
             // Tab 列表
             Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val tabs = listOf(
                     "进行中${if (activeTasksCount > 0) " $activeTasksCount" else ""}" to 0,
                     "待测试${if (pendingTestTasksCount > 0) " $pendingTestTasksCount" else ""}" to 1,
-                    "已完成" to 2
+                    "已完成" to 2,
+                    "离线任务${if (offlineTasksCount > 0) " $offlineTasksCount" else ""}" to 3,
                 )
                 tabs.forEach { (label, index) ->
                     val isSelected = selectedTab == index
                     Column(
                         modifier = Modifier
-                            .clickable { selectedTab = index }
+                            .clickable { onSelectedTabChange(index) }
                             .padding(vertical = 4.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {

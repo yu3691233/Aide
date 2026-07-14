@@ -1,5 +1,6 @@
 package cc.aidelink.app.ui.screens.chat
 
+import cc.aidelink.app.ui.screens.chat.components.taskStatusMatchesTab
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -25,5 +26,14 @@ class OfflineTaskFallbackTest {
     fun storesAideOfflineTaskWithoutDispatchTarget() {
         assertEquals("", normalizeTaskTarget("aide"))
         assertEquals("codex", normalizeTaskTarget("codex"))
+    }
+
+    @Test
+    fun separatesOfflineTasksFromActiveTab() {
+        assertTrue(taskStatusMatchesTab("pending_upload", 3))
+        assertTrue(taskStatusMatchesTab("draft", 3))
+        assertFalse(taskStatusMatchesTab("pending_upload", 0))
+        assertFalse(taskStatusMatchesTab("draft", 0))
+        assertTrue(taskStatusMatchesTab("queued", 0))
     }
 }

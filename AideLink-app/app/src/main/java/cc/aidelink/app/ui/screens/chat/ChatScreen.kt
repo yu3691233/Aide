@@ -291,6 +291,7 @@ fun AideLinkChatScreen(
         null
     }
     var showTaskList by remember { mutableStateOf(false) }
+    var selectedTaskTab by remember { mutableIntStateOf(0) }
     var showClipboardSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState()
     val monitorHeightDp = state.monitorHeightDp.dp
@@ -303,6 +304,7 @@ fun AideLinkChatScreen(
 
     LaunchedEffect(state.target.key) {
         showTaskList = state.target != AideLinkChatViewModel.Target.AIDELINK
+        selectedTaskTab = 0
     }
 
     val filteredMessages = remember(state.messages, state.target) {
@@ -460,6 +462,7 @@ fun AideLinkChatScreen(
                         showTaskList = true
                         viewModel.send(isTaskListMode = true)
                     },
+                    onCreateOfflineTask = viewModel::createOfflineTaskFromInput,
                     onUploadImage = { path ->
                         viewModel.uploadImage(path)
                     },
@@ -497,6 +500,7 @@ fun AideLinkChatScreen(
                     bridgeOnline = state.bridgeOnline,
                     bridgeConnecting = state.bridgeConnecting,
                     showTaskList = showTaskList,
+                    offlineTaskMode = showTaskList && selectedTaskTab == 3,
                     taskThreadMode = activeTask != null,
                     taskEditMode = state.editingTaskId != null,
                     onToggleTaskList = { showTaskList = !showTaskList },
@@ -724,6 +728,8 @@ fun AideLinkChatScreen(
                         onEditTask = { taskId -> viewModel.startTaskEdit(taskId) },
                         onConfirm = viewModel::confirmTask,
                         onPromptBuilder = viewModel::showTaskPromptBuilder,
+                        selectedTab = selectedTaskTab,
+                        onSelectedTabChange = { selectedTaskTab = it },
                         bridgeUrl = viewModel.bridgeApi.baseUrl,
                         modifier = Modifier.fillMaxSize()
                     )

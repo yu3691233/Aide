@@ -37,6 +37,7 @@ fun ChatInputBar(
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
     onSendToTaskList: () -> Unit = {},
+    onCreateOfflineTask: () -> Unit = {},
     onUploadImage: (String) -> Unit,
     onTargetChange: (AideLinkChatViewModel.Target) -> Unit,
     onMonitorToggle: (AideLinkChatViewModel.Target) -> Unit,
@@ -57,6 +58,7 @@ fun ChatInputBar(
     bridgeOnline: Boolean = false,
     bridgeConnecting: Boolean = true,
     showTaskList: Boolean = false,
+    offlineTaskMode: Boolean = false,
     taskThreadMode: Boolean = false,
     taskEditMode: Boolean = false,
     onToggleTaskList: () -> Unit = {},
@@ -322,6 +324,7 @@ fun ChatInputBar(
                             when {
                                 taskEditMode -> "修改任务内容…"
                                 taskThreadMode -> "补充到当前任务…"
+                                offlineTaskMode -> "输入离线任务…"
                                 else -> "发消息…"
                             }
                         )
@@ -426,49 +429,60 @@ fun ChatInputBar(
                                 tint = if (input.isNotBlank()) Color(0xFF9C27B0) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                             )
                         }
-                        // 直接发送按钮
-                        IconButton(
-                            onClick = {
-                                onSend()
-                                focusManager.clearFocus()
-                            },
-                            enabled = input.isNotBlank() && !sending,
-                            modifier = Modifier.size(36.dp),
-                        ) {
-                            if (sending) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 1.5.dp,
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.Send,
-                                    contentDescription = if (isPromptMode) "发送提示词" else "发送",
-                                    modifier = Modifier.size(18.dp),
-                                    tint = if (input.isNotBlank()) {
-                                        if (isPromptMode) Color(0xFF9C27B0) else MaterialTheme.colorScheme.primary
-                                    } else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                )
-                            }
-                        }
-
-                        // 添加到任务列表按钮
-                        // 任务是显式动作，不依赖目标或网络状态；普通发送仍保持为聊天。
-                        if (!taskThreadMode) {
-                            IconButton(
+                        if (offlineTaskMode) {
+                            FilledTonalButton(
                                 onClick = {
-                                    onSendToTaskList()
+                                    onCreateOfflineTask()
                                     focusManager.clearFocus()
                                 },
                                 enabled = input.isNotBlank() && !sending,
-                                modifier = Modifier.size(36.dp)
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlaylistAdd,
-                                    contentDescription = "添加到任务",
-                                    modifier = Modifier.size(18.dp),
-                                    tint = if (input.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                )
+                                Icon(Icons.Default.PlaylistAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("创建")
+                            }
+                        } else {
+                            // 直接发送按钮
+                            IconButton(
+                                onClick = {
+                                    onSend()
+                                    focusManager.clearFocus()
+                                },
+                                enabled = input.isNotBlank() && !sending,
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                if (sending) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 1.5.dp)
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Send,
+                                        contentDescription = if (isPromptMode) "发送提示词" else "发送",
+                                        modifier = Modifier.size(18.dp),
+                                        tint = if (input.isNotBlank()) {
+                                            if (isPromptMode) Color(0xFF9C27B0) else MaterialTheme.colorScheme.primary
+                                        } else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                    )
+                                }
+                            }
+
+                            // 任务是显式动作，不依赖目标或网络状态；普通发送仍保持为聊天。
+                            if (!taskThreadMode) {
+                                IconButton(
+                                    onClick = {
+                                        onSendToTaskList()
+                                        focusManager.clearFocus()
+                                    },
+                                    enabled = input.isNotBlank() && !sending,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlaylistAdd,
+                                        contentDescription = "添加到任务",
+                                        modifier = Modifier.size(18.dp),
+                                        tint = if (input.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                    )
+                                }
                             }
                         }
                     }
