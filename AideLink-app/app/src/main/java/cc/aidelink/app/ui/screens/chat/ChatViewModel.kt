@@ -2444,14 +2444,22 @@ class AideLinkChatViewModel @Inject constructor(
                 bridgeApi.uploadImage(filePath, filename)
 
             }.onSuccess { resp ->
-
-                _state.value = _state.value.copy(
-
-                    uploading = false,
-
-                    uploadResult = if (resp.ok) "上传成功" else "上传完成",
-
-                )
+                if (resp.ok && !resp.path.isNullOrBlank()) {
+                    val attachmentLine = "附件：${resp.path}"
+                    val currentInput = _state.value.input.trimEnd()
+                    _state.value = _state.value.copy(
+                        uploading = false,
+                        input = if (currentInput.isBlank()) attachmentLine else "$currentInput\n$attachmentLine",
+                        uploadResult = "附件已上传",
+                        toastMessage = "附件已上传，请补充说明后发送",
+                    )
+                } else {
+                    _state.value = _state.value.copy(
+                        uploading = false,
+                        uploadResult = "上传失败",
+                        errorMessage = resp.raw.ifBlank { "附件上传失败" },
+                    )
+                }
 
             }.onFailure { e ->
 

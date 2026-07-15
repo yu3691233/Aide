@@ -553,6 +553,8 @@ fun AideLinkChatScreen(
                     },
                     onWakeScreen = viewModel::wakeScreen,
                     onRefreshIdeStatus = { viewModel.loadIdeRunningStatus(); viewModel.loadOcWebStatus() },
+                    onStartIde = viewModel::startIde,
+                    onStopIde = viewModel::stopIde,
                     onQuickReply = { text ->
                         showTaskList = false
                         viewModel.sendQuickReply(text)

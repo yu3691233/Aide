@@ -72,6 +72,17 @@ def _context_label(component):
 def build_fallback(component, user_text, task_type, difficulty):
     type_label = TYPE_LABELS[task_type]
     context = _context_label(component)
+    if "【用户未描述具体需求】" in user_text:
+        return {
+            "title": f"确认{component['name']}的反馈意图"[:40],
+            "understanding": f"用户标注了 {context}，但尚未说明希望如何处理。",
+            "prompt": (
+                f"【界面定位】{context}\n"
+                "用户已通过截图标注关注区域，但尚未明确具体问题或修改目标。\n"
+                "请先向用户确认：1. 标注的是哪个页面和组件；2. 当前表现哪里不符合预期；"
+                "3. 期望结果是什么。确认前不要新增、删除或修改组件行为。"
+            ),
+        }
     constraint = ""
     if task_type == "test_plan":
         constraint = "\n本任务只进行检查、验证和方案整理，不修改代码、配置或项目文件。"
@@ -104,6 +115,32 @@ def _extract_json(text):
         return None
 
 
+def _recover_partial_json(text):
+    """Recover the first usable candidate when a vision model emits almost-JSON."""
+    cleaned = str(text or "")
+    def field(name, limit):
+        match = re.search(rf'"{name}"\s*:\s*"((?:\\.|[^"\\])*)"', cleaned, flags=re.DOTALL)
+        if not match:
+            return ""
+        try:
+            return _clean(json.loads('"' + match.group(1) + '"'), limit)
+        except (TypeError, ValueError):
+            return _clean(match.group(1), limit)
+    prompt = field("prompt", 4000)
+    if not prompt:
+        return None
+    return {
+        "difficulty": field("difficulty", 20),
+        "component_name": field("component_name", 100),
+        "component_location": field("component_location", 160),
+        "candidates": [{
+            "title": field("title", 50) or "截图识别结果",
+            "understanding": field("understanding", 300),
+            "prompt": prompt,
+        }],
+    }
+
+
 def _ai_messages(component, user_text, task_type, difficulty, image_data_url=None):
     payload = {
         "component": component,
@@ -115,6 +152,9 @@ def _ai_messages(component, user_text, task_type, difficulty, image_data_url=Non
         "你是简洁的开发任务提示词助手。用户已经定位了界面组件，你不需要猜代码文件。"
         "根据组件上下文和短描述生成最多3个可能意图，候选之间是具体理解差异，不要强行对应不同任务类型。"
         "若提供截图，请结合截图识别用户所指的页面、组件类型、可见文字和位置，不要猜源码文件。"
+        "截图和标注只能证明用户关注的位置，不能证明用户想如何修改。禁止仅凭截图臆造新增、删除、恢复、"
+        "改样式或改交互等需求。若user_text包含【用户未描述具体需求】，只描述识别到的页面、组件和可见状态，"
+        "prompt必须明确写出意图尚未确认，并列出需要用户确认的问题，不得给出具体修改指令。"
         "只输出JSON：{\"difficulty\":\"simple|medium|complex\","
         "\"component_name\":\"识别后的简短组件名\",\"component_location\":\"页面和位置\",\"candidates\":["
         "{\"title\":\"不超过24字\",\"understanding\":\"一句话\",\"prompt\":\"可直接交给开发IDE的提示词\"}]}。"
@@ -148,7 +188,7 @@ def compose_prompt(data, model_caller=None, image_data_url=None):
         try:
             result = model_caller(_ai_messages(component, user_text, task_type, difficulty, image_data_url))
             if result.get("ok"):
-                parsed = _extract_json(result.get("content")) or {}
+                parsed = _extract_json(result.get("content")) or _recover_partial_json(result.get("content")) or {}
                 parsed_difficulty = parsed.get("difficulty")
                 if parsed_difficulty in DIFFICULTY_LABELS:
                     difficulty = parsed_difficulty

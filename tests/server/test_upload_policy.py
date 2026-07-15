@@ -16,9 +16,10 @@ class UploadPolicyTests(unittest.TestCase):
     def test_extension_check_is_case_insensitive(self):
         self.assertTrue(is_allowed_upload("SCREEN.PNG"))
         self.assertTrue(is_allowed_upload("notes.md"))
+        self.assertTrue(is_allowed_upload("archive.ZIP"))
 
     def test_rejects_missing_or_disallowed_extensions(self):
-        for filename in ("", "README", "payload.exe", "archive.zip"):
+        for filename in ("", "README", "payload.exe", "script.bat"):
             with self.subTest(filename=filename):
                 self.assertFalse(is_allowed_upload(filename))
 

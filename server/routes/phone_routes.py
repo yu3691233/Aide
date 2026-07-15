@@ -304,29 +304,9 @@ def inject_clipboard_to_ide():
 
     try:
         import inject_to_ide as inj
-        import pygetwindow as gw
-        import pyautogui
-
-        win = None
-        if ide in ("mimo", "mimocode"):
-            win = inj.find_terminal_window_for_process("mimo")
-        elif ide == "trae":
-            wins = [w for w in gw.getAllWindows() if "trae" in w.title.lower()]
-            win = wins[0] if wins else None
-        elif ide == "antigravity_ide":
-            wins = [w for w in gw.getAllWindows() if "antigravity" in w.title.lower()]
-            win = wins[0] if wins else None
-        elif ide == "oc":
-            win = inj.find_terminal_window_for_process("opencode")
-
-        if not win:
-            return jsonify({"ok": False, "error": f"未找到 {ide.upper()} 窗口"})
-
-        inj.activate_window(win)
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.3)
-
-        return jsonify({"ok": True, "message": f"已粘贴到 {ide.upper()}"})
+        if not inj.paste_current_clipboard(ide):
+            return jsonify({"ok": False, "error": f"未能按 {ide.upper()} 的窗口绑定/校准配置粘贴"})
+        return jsonify({"ok": True, "message": f"已按发送配置粘贴到 {ide.upper()}"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 

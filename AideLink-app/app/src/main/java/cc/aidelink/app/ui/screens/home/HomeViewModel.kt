@@ -14,6 +14,7 @@ import cc.aidelink.app.R
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cc.aidelink.app.data.api.OpenCodeApi
+import cc.aidelink.app.data.api.BridgeApi
 import cc.aidelink.app.data.api.ServerConnection
 import cc.aidelink.app.data.repository.LocalServerManager
 import cc.aidelink.app.data.repository.ServerConfigRepository
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 private const val TAG = "HomeViewModel"
@@ -84,6 +86,7 @@ class HomeViewModel @Inject constructor(
     application: Application,
     private val serverRepository: ServerConfigRepository,
     private val api: OpenCodeApi,
+    private val bridgeApi: BridgeApi,
     private val localServerManager: LocalServerManager,
     private val settingsRepository: SettingsRepository,
 ) : AndroidViewModel(application) {
@@ -799,7 +802,54 @@ class HomeViewModel @Inject constructor(
             val isRunning = isServiceRunning(context, cc.aidelink.app.service.UiLocatorService::class.java)
             
             if (!isRunning) {
+                android.widget.Toast.makeText(context, "正在检测 Root 并连接无线调试…", android.widget.Toast.LENGTH_SHORT).show()
+                val adbServer = _uiState.value.servers.firstOrNull { it.id in _uiState.value.connectedServerIds }
+                    ?: _uiState.value.servers.firstOrNull()
+                adbServer?.let { bridgeApi.baseUrl = it.url.trimEnd('/') }
+                val currentAdbStatus = cc.aidelink.app.service.WirelessAdbManager.detectStatus(context)
+                if (adbServer != null && currentAdbStatus.deviceIp.isNotBlank()) {
+                    bridgeApi.deviceIp = currentAdbStatus.deviceIp
+                    bridgeApi.grantOverlayPermission(
+                        currentAdbStatus.deviceIp,
+                        currentAdbStatus.adbPort,
+                    )
+                    delay(200)
+                }
                 if (android.provider.Settings.canDrawOverlays(context)) {
+                    settingsRepository.setGlobalLocatorEnabled(true)
+                    val intent = Intent(context, cc.aidelink.app.service.UiLocatorService::class.java)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+                    else context.startService(intent)
+                    return@launch
+                }
+                val adbResult = withTimeoutOrNull(12_000L) {
+                    cc.aidelink.app.service.WirelessAdbManager.enableWirelessAdb(context, adbServer?.url.orEmpty())
+                } ?: Result.failure(Exception("无线调试连接超时"))
+                adbResult.onSuccess { connection ->
+                    bridgeApi.deviceIp = connection.ip
+                    cc.aidelink.app.service.WirelessAdbManager.grantOverlayPermissionViaLocalAdb(
+                        context,
+                        connection.port,
+                    )
+                    if (adbServer != null && bridgeApi.ensureAdb(connection.ip, connection.port)) {
+                        bridgeApi.grantOverlayPermission(connection.ip, connection.port)
+                    }
+                }
+                if (!android.provider.Settings.canDrawOverlays(context)) {
+                    cc.aidelink.app.service.WirelessAdbManager.grantOverlayPermissionAsRoot()
+                }
+                if (!android.provider.Settings.canDrawOverlays(context)) {
+                    android.widget.Toast.makeText(context, "请先授予悬浮窗权限", android.widget.Toast.LENGTH_LONG).show()
+                    val intent = Intent(
+                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        android.net.Uri.parse("package:${context.packageName}")
+                    ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                    context.startActivity(intent)
+                    return@launch
+                }
+                if (adbResult.isFailure) {
+                    android.widget.Toast.makeText(context, "无线调试预连接失败，截图时将重试", android.widget.Toast.LENGTH_SHORT).show()
+                }
                     settingsRepository.setGlobalLocatorEnabled(true)
                     val intent = Intent(context, cc.aidelink.app.service.UiLocatorService::class.java)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -807,16 +857,6 @@ class HomeViewModel @Inject constructor(
                     } else {
                         context.startService(intent)
                     }
-                } else {
-                    android.widget.Toast.makeText(context, "请先授予悬浮窗权限", android.widget.Toast.LENGTH_LONG).show()
-                    val intent = Intent(
-                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        android.net.Uri.parse("package:${context.packageName}")
-                    ).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(intent)
-                }
             } else {
                 settingsRepository.setGlobalLocatorEnabled(false)
                 val intent = Intent(context, cc.aidelink.app.service.UiLocatorService::class.java)

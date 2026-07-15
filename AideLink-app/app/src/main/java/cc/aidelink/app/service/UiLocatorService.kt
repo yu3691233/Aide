@@ -8,7 +8,10 @@ import android.content.Context
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.net.Uri
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -17,6 +20,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
@@ -25,11 +29,14 @@ import android.view.WindowManager
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -41,6 +48,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ComposeView
@@ -70,6 +81,27 @@ import java.io.File
 import java.io.FileOutputStream
 import javax.inject.Inject
 
+@Composable
+private fun AdaptiveScreenshotLayout(
+    modifier: Modifier = Modifier,
+    controlsExpanded: Boolean,
+    preview: @Composable ColumnScope.() -> Unit,
+    controls: @Composable ColumnScope.() -> Unit,
+) {
+    Column(modifier) {
+        Column(Modifier.weight(if (controlsExpanded) 0.64f else 0.90f).fillMaxWidth(), content = preview)
+        Spacer(Modifier.height(8.dp))
+        Column(
+            Modifier
+                .weight(if (controlsExpanded) 0.36f else 0.10f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(end = 4.dp),
+            content = controls,
+        )
+    }
+}
+
 @AndroidEntryPoint
 class UiLocatorService : Service() {
 
@@ -98,7 +130,38 @@ class UiLocatorService : Service() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         startForegroundServiceNotification()
-        showFloatingBubble()
+        if (Settings.canDrawOverlays(this)) {
+            showFloatingBubble()
+        } else {
+            serviceScope.launch { prepareOverlayPermissionAndStart() }
+        }
+    }
+
+    private suspend fun prepareOverlayPermissionAndStart() {
+        Toast.makeText(this, "正在通过 ADB / Root 授予悬浮窗权限…", Toast.LENGTH_SHORT).show()
+        val status = WirelessAdbManager.detectStatus(this)
+        if (status.deviceIp.isNotBlank()) {
+            bridgeApi.deviceIp = status.deviceIp
+            bridgeApi.grantOverlayPermission(status.deviceIp, status.adbPort)
+            delay(250)
+        }
+        if (!Settings.canDrawOverlays(this) && status.adbPort > 0) {
+            WirelessAdbManager.grantOverlayPermissionViaLocalAdb(this, status.adbPort)
+            delay(250)
+        }
+        if (!Settings.canDrawOverlays(this)) {
+            WirelessAdbManager.grantOverlayPermissionAsRoot()
+            delay(250)
+        }
+        if (Settings.canDrawOverlays(this)) {
+            showFloatingBubble()
+            return
+        }
+        Toast.makeText(this, "自动授权失败，请手动开启悬浮窗权限", Toast.LENGTH_LONG).show()
+        startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+        stopSelf()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -106,6 +169,10 @@ class UiLocatorService : Service() {
     }
 
     private fun ensureMediaProjection(onReady: suspend () -> Unit) {
+        // 手机已通过无线 ADB 连接电脑，截图由 PC 端直接执行 adb screencap。
+        serviceScope.launch { onReady() }
+        return
+
         if (mediaProjection != null) {
             serviceScope.launch { onReady() }
             return
@@ -157,10 +224,9 @@ class UiLocatorService : Service() {
                 }
             }
         }
-        // 通过 MainActivity 请求 MediaProjection 权限
-        val intent = Intent(this, cc.aidelink.app.MainActivity::class.java).apply {
+        // 使用独立透明 Activity 请求授权，完成后直接回到用户当前查看的应用
+        val intent = Intent(this, cc.aidelink.app.MediaProjectionPermissionActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            putExtra("request_media_projection", true)
         }
         startActivity(intent)
     }
@@ -255,8 +321,8 @@ class UiLocatorService : Service() {
 
             val dm = resources.displayMetrics
             val ballSizePx = (56 * dm.density).toInt()
-            val menuWidthPx = (170 * dm.density).toInt()
-            val menuHeightPx = (230 * dm.density).toInt()
+            val menuWidthPx = (244 * dm.density).toInt()
+            val menuHeightPx = (190 * dm.density).toInt()
             val screenW = dm.widthPixels
             val screenH = dm.heightPixels
             val menuX = if (posX + ballSizePx / 2 + menuWidthPx > screenW) {
@@ -290,32 +356,47 @@ class UiLocatorService : Service() {
             menuCompose.setContent {
                 Box(
                     modifier = Modifier
-                        .width(170.dp)
-                        .background(Color.White, shape = RoundedCornerShape(12.dp))
-                        .shadow(8.dp, RoundedCornerShape(12.dp))
-                        .padding(10.dp)
+                        .width(244.dp)
+                        .shadow(18.dp, RoundedCornerShape(22.dp))
+                        .background(Color(0xFFF8FAFC), shape = RoundedCornerShape(22.dp))
+                        .border(1.dp, Color.White.copy(alpha = 0.9f), RoundedCornerShape(22.dp))
+                        .padding(14.dp)
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        Text("📸 截图发送", fontSize = 14.sp, color = Color(0xFF1976D2),
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFFE3F2FD)).padding(horizontal = 12.dp, vertical = 10.dp)
-                                .clickable { removeMenu(); takeScreenshotAndShowDialog {} })
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("🎯 定位组件", fontSize = 14.sp, color = Color(0xFF7B1FA2),
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFFF3E5F5)).padding(horizontal = 12.dp, vertical = 10.dp)
-                                .clickable { removeMenu(); captureAndLocate {} })
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("✨ 生成提示词", fontSize = 14.sp, color = Color(0xFF00695C),
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFFE0F2F1)).padding(horizontal = 12.dp, vertical = 10.dp)
-                                .clickable { removeMenu(); takeScreenshotForPrompt {} })
-                        Spacer(modifier = Modifier.height(4.dp))
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 3.dp))
-                        Text("🚫 退出悬浮窗", fontSize = 13.sp, color = Color(0xFFF44336),
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFFFFEBEE)).padding(horizontal = 12.dp, vertical = 10.dp)
-                                .clickable { removeMenu(); serviceScope.launch { settingsRepository.setGlobalLocatorEnabled(false) }; stopSelf() })
+                        Text("AideLink 工具", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0F172A))
+                        Text("截图标注、组件识别与提示词", fontSize = 11.sp, color = Color(0xFF64748B))
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        fun actionModifier(color: Color, onClick: () -> Unit) = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(color)
+                            .clickable(onClick = onClick)
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+
+                        Row(
+                            modifier = actionModifier(Color(0xFFEFF6FF)) { removeMenu(); takeScreenshotAndShowDialog {} },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("▣", fontSize = 22.sp, color = Color(0xFF2563EB))
+                            Spacer(Modifier.width(12.dp))
+                            Column {
+                                Text("截图反馈", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1E3A8A))
+                                Text("标注组件并生成准确提示词", fontSize = 10.sp, color = Color(0xFF64748B))
+                            }
+                        }
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = Color(0xFFE2E8F0))
+                        Text(
+                            "退出悬浮窗",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFFDC2626),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { removeMenu(); serviceScope.launch { settingsRepository.setGlobalLocatorEnabled(false) }; stopSelf() }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                        )
                     }
                 }
             }
@@ -381,6 +462,10 @@ class UiLocatorService : Service() {
      * 保持 VirtualDisplay 存活复用，避免 Android 14 禁止重复 createVirtualDisplay。
      */
     private suspend fun capturePhoneScreen(): ByteArray? = withContext(Dispatchers.IO) {
+        bridgeApi.capturePhoneScreenshot()?.let { return@withContext it }
+        WirelessAdbManager.captureRootScreenshot(this@UiLocatorService)?.let {
+            return@withContext it
+        }
         val mp = mediaProjection ?: return@withContext null
 
         // 首次使用时初始化 VirtualDisplay 和 ImageReader
@@ -470,32 +555,42 @@ class UiLocatorService : Service() {
                     onComplete()
                     return@ensureMediaProjection
                 }
-                val tempFile = File(cacheDir, "screenshot_${System.currentTimeMillis()}.png")
-                tempFile.writeBytes(pngData)
-                val uploadResp = withContext(Dispatchers.IO) {
-                    bridgeApi.uploadImage(tempFile.absolutePath, tempFile.name, toClipboard = true)
+                // 在弹窗出现前尽力转储 UI 结构，后续按标注中心点补充组件信息。
+                // 失败不阻断截图反馈，仍可由 Aide 直接理解截图。
+                val locatorReady = withContext(Dispatchers.IO) {
+                    runCatching { bridgeApi.captureUiLocator(bridgeApi.deviceIp).ok }.getOrDefault(false)
                 }
-                tempFile.delete()
-                val imageUrl = if (uploadResp.ok) uploadResp.url else null
-
-                // 查询正在运行的 IDE 列表
-                val runningIdes = withContext(Dispatchers.IO) {
+                // 复用 IDE 管理页的数据源；运行状态只用于决定默认选中项。
+                val ideData: Pair<List<Pair<String, String>>, Set<String>> = withContext(Dispatchers.IO) {
                     try {
-                        bridgeApi.getIdeProcesses().filter { it.running && it.key != "oc_web" }
+                        val configured = bridgeApi.getDesktopIdes()
+                            .filter { it.key.isNotBlank() && it.key != "oc_web" }
+                        val runningKeys = bridgeApi.getIdeProcesses()
+                            .filter { it.running }
+                            .map { it.key }
+                            .toSet()
+                        val options = configured
+                            .distinctBy { it.key }
+                            .map { ide ->
+                                val name = ide.name.ifBlank { ide.key }
+                                ide.key to if (ide.key in runningKeys) "● $name" else name
+                            }
+                        options to runningKeys
                     } catch (_: Exception) {
-                        emptyList()
+                        emptyList<Pair<String, String>>() to emptySet()
                     }
                 }
-
-                if (runningIdes.size == 1) {
-                    // 只有一个 IDE，直接粘贴图片，不弹选择
-                    val ide = runningIdes[0].key
-                    withContext(Dispatchers.IO) { bridgeApi.injectClipboard(ide) }
-                    showScreenshotDialog(pngData, imageUrl, onComplete, defaultIde = ide, autoInjected = true)
-                } else {
-                    // 多个 IDE，弹选择框
-                    showScreenshotDialog(pngData, imageUrl, onComplete)
-                }
+                val (ideOptions, runningKeys) = ideData
+                val defaultIde = ideOptions.firstOrNull { it.first in runningKeys }?.first
+                    ?: ideOptions.firstOrNull()?.first.orEmpty()
+                showScreenshotDialog(
+                    pngData,
+                    null,
+                    onComplete,
+                    ideOptions = ideOptions,
+                    defaultIde = defaultIde,
+                    locatorReady = locatorReady,
+                )
             } catch (e: Exception) {
                 Toast.makeText(this@UiLocatorService, "截图错误: ${e.message}", Toast.LENGTH_SHORT).show()
                 showFloatingBubble()
@@ -508,7 +603,9 @@ class UiLocatorService : Service() {
         screenshotData: ByteArray,
         imageUrl: String?,
         onComplete: () -> Unit,
-        defaultIde: String = "mimo",
+        ideOptions: List<Pair<String, String>> = emptyList(),
+        defaultIde: String = "",
+        locatorReady: Boolean = false,
         autoInjected: Boolean = false,
     ) {
         val composeView = ComposeView(this)
@@ -540,91 +637,437 @@ class UiLocatorService : Service() {
         composeView.setContent {
             var inputText by remember { mutableStateOf("") }
             var isSending by remember { mutableStateOf(false) }
+            var isGeneratingPrompt by remember { mutableStateOf(false) }
+            var generatedPrompt by remember { mutableStateOf("") }
+            var recognitionSummary by remember { mutableStateOf("") }
+            var controlsExpanded by remember { mutableStateOf(false) }
+            var pasteScreenshot by remember { mutableStateOf(true) }
             var selectedIde by remember { mutableStateOf(defaultIde) }
-            var imageInjected by remember { mutableStateOf(autoInjected) }
-
-            val ideList = listOf(
-                "mimo" to "🤖 MiMo",
-                "trae" to "⚡ Trae",
-                "antigravity_ide" to "🚀 Antigravity IDE",
-                "oc" to "📂 OC"
-            )
+            var selections by remember { mutableStateOf(emptyList<Pair<Offset, Offset>>()) }
+            var cropSelection by remember { mutableStateOf<Pair<Offset, Offset>?>(null) }
+            var toolMode by remember { mutableStateOf("box") }
+            var activeStart by remember { mutableStateOf<Offset?>(null) }
+            var activeEnd by remember { mutableStateOf<Offset?>(null) }
+            val screenshotBitmap = remember(screenshotData) {
+                BitmapFactory.decodeByteArray(screenshotData, 0, screenshotData.size)?.asImageBitmap()
+            }
+            val previewBitmap = remember(screenshotData, cropSelection) {
+                val source = BitmapFactory.decodeByteArray(screenshotData, 0, screenshotData.size)
+                if (source == null) null else {
+                    val cropped = cropSelection?.let { (start, end) ->
+                        val left = (minOf(start.x, end.x) * source.width).toInt().coerceIn(0, source.width - 1)
+                        val top = (minOf(start.y, end.y) * source.height).toInt().coerceIn(0, source.height - 1)
+                        val right = (maxOf(start.x, end.x) * source.width).toInt().coerceIn(left + 1, source.width)
+                        val bottom = (maxOf(start.y, end.y) * source.height).toInt().coerceIn(top + 1, source.height)
+                        Bitmap.createBitmap(source, left, top, right - left, bottom - top).also { source.recycle() }
+                    } ?: source
+                    cropped.asImageBitmap()
+                }
+            }
 
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.7f))
+                    .background(Color(0xFF0F172A).copy(alpha = 0.58f))
                     .clickable { /* 阻止点击穿透 */ },
                 contentAlignment = Alignment.Center
             ) {
                 Column(
                     modifier = Modifier
-                        .padding(24.dp)
-                        .background(Color.White, shape = RoundedCornerShape(12.dp))
-                        .padding(16.dp)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.98f)
+                        .shadow(20.dp, RoundedCornerShape(24.dp))
+                        .background(Color(0xFFF8FAFC), shape = RoundedCornerShape(24.dp))
+                        .padding(14.dp)
                 ) {
-                    Text(
-                        text = "📸 发送截图",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = Color.Black
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    AdaptiveScreenshotLayout(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        controlsExpanded = controlsExpanded,
+                        preview = {
+                    Row(Modifier.fillMaxSize()) {
+                        Column(
+                            modifier = Modifier
+                                .width(68.dp)
+                                .fillMaxHeight()
+                                .padding(vertical = 8.dp)
+                                .background(Color.White, RoundedCornerShape(18.dp))
+                                .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(18.dp))
+                                .padding(7.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text(
+                                text = if (toolMode == "box") "框选\n使用中" else "框选",
+                                fontSize = if (toolMode == "box") 11.sp else 12.sp,
+                                lineHeight = 14.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (toolMode == "box") Color.White else Color(0xFF334155),
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                                    .background(if (toolMode == "box") Color(0xFF2563EB) else Color(0xFFF1F5F9))
+                                    .clickable(enabled = !isSending) { toolMode = "box" }
+                                    .padding(vertical = if (toolMode == "box") 8.dp else 14.dp),
+                            )
+                            Text(
+                                text = if (toolMode == "crop") "裁剪\n使用中" else "裁剪",
+                                fontSize = if (toolMode == "crop") 11.sp else 12.sp,
+                                lineHeight = 14.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (toolMode == "crop") Color.White else Color(0xFF166534),
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                                    .background(if (toolMode == "crop") Color(0xFF16A34A) else Color(0xFFF0FDF4))
+                                    .clickable(enabled = !isSending) { toolMode = "crop" }
+                                    .padding(vertical = if (toolMode == "crop") 8.dp else 14.dp),
+                            )
+                            val canUndo = selections.isNotEmpty() && !isSending
+                            Text(
+                                "撤销",
+                                fontSize = 12.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                color = if (canUndo) Color(0xFF475569) else Color(0xFFCBD5E1),
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFFF8FAFC))
+                                    .clickable(enabled = canUndo) { selections = selections.dropLast(1) }
+                                    .padding(vertical = 14.dp),
+                            )
+                            val canReset = (selections.isNotEmpty() || cropSelection != null) && !isSending
+                            Text(
+                                "重置",
+                                fontSize = 12.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                color = if (canReset) Color(0xFFDC2626) else Color(0xFFFECACA),
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                                    .background(if (canReset) Color(0xFFFEF2F2) else Color(0xFFFFFBFB))
+                                    .clickable(enabled = canReset) { selections = emptyList(); cropSelection = null }
+                                    .padding(vertical = 14.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(previewBitmap) {
+                                fun normalizedPoint(point: Offset): Offset {
+                                    val bitmap = previewBitmap ?: return Offset.Zero
+                                    val scale = minOf(
+                                        size.width / bitmap.width.toFloat(),
+                                        size.height / bitmap.height.toFloat(),
+                                    )
+                                    val shownWidth = bitmap.width * scale
+                                    val shownHeight = bitmap.height * scale
+                                    val offsetX = (size.width - shownWidth) / 2f
+                                    val offsetY = (size.height - shownHeight) / 2f
+                                    return Offset(
+                                        ((point.x - offsetX) / shownWidth).coerceIn(0f, 1f),
+                                        ((point.y - offsetY) / shownHeight).coerceIn(0f, 1f),
+                                    )
+                                }
+                                detectDragGestures(
+                                    onDragStart = { point ->
+                                        activeStart = normalizedPoint(point)
+                                        activeEnd = activeStart
+                                    },
+                                    onDrag = { change, _ ->
+                                        activeEnd = normalizedPoint(change.position)
+                                    },
+                                    onDragEnd = {
+                                        val start = activeStart
+                                        val end = activeEnd
+                                        if (start != null && end != null &&
+                                            (kotlin.math.abs(start.x - end.x) > 0.01f ||
+                                                kotlin.math.abs(start.y - end.y) > 0.01f)
+                                        ) {
+                                            if (toolMode == "crop") {
+                                                val baseLeft = cropSelection?.let { minOf(it.first.x, it.second.x) } ?: 0f
+                                                val baseTop = cropSelection?.let { minOf(it.first.y, it.second.y) } ?: 0f
+                                                val baseRight = cropSelection?.let { maxOf(it.first.x, it.second.x) } ?: 1f
+                                                val baseBottom = cropSelection?.let { maxOf(it.first.y, it.second.y) } ?: 1f
+                                                val baseWidth = baseRight - baseLeft
+                                                val baseHeight = baseBottom - baseTop
+                                                cropSelection = Offset(
+                                                    baseLeft + minOf(start.x, end.x) * baseWidth,
+                                                    baseTop + minOf(start.y, end.y) * baseHeight,
+                                                ) to Offset(
+                                                    baseLeft + maxOf(start.x, end.x) * baseWidth,
+                                                    baseTop + maxOf(start.y, end.y) * baseHeight,
+                                                )
+                                                selections = emptyList()
+                                                toolMode = "box"
+                                            } else {
+                                                selections = selections + (start to end)
+                                            }
+                                        }
+                                        activeStart = null
+                                        activeEnd = null
+                                    },
+                                    onDragCancel = {
+                                        activeStart = null
+                                        activeEnd = null
+                                    },
+                                )
+                            },
+                    ) {
+                        previewBitmap?.let { bitmap ->
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = "待标注截图",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Fit,
+                            )
+                        }
+                        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+                            val bitmap = previewBitmap ?: return@Canvas
+                            val scale = minOf(
+                                size.width / bitmap.width.toFloat(),
+                                size.height / bitmap.height.toFloat(),
+                            )
+                            val shownWidth = bitmap.width * scale
+                            val shownHeight = bitmap.height * scale
+                            val offsetX = (size.width - shownWidth) / 2f
+                            val offsetY = (size.height - shownHeight) / 2f
+                            val activeBox = activeStart?.let { start -> activeEnd?.let { end -> start to end } }
+                            val boxes = selections + if (toolMode == "box") listOfNotNull(activeBox) else emptyList()
+                            boxes.forEachIndexed { index, (start, end) ->
+                                val left = offsetX + minOf(start.x, end.x) * shownWidth
+                                val top = offsetY + minOf(start.y, end.y) * shownHeight
+                                val right = offsetX + maxOf(start.x, end.x) * shownWidth
+                                val bottom = offsetY + maxOf(start.y, end.y) * shownHeight
+                                drawRect(
+                                    color = Color.Red.copy(alpha = 0.12f),
+                                    topLeft = Offset(left, top),
+                                    size = androidx.compose.ui.geometry.Size(right - left, bottom - top),
+                                )
+                                drawRect(
+                                    color = Color.Red,
+                                    topLeft = Offset(left, top),
+                                    size = androidx.compose.ui.geometry.Size(right - left, bottom - top),
+                                    style = Stroke(width = 4.dp.toPx()),
+                                )
+                                drawCircle(
+                                    color = Color.Red,
+                                    radius = 11.dp.toPx(),
+                                    center = Offset(left + 11.dp.toPx(), top + 11.dp.toPx()),
+                                )
+                                drawContext.canvas.nativeCanvas.drawText(
+                                    "${index + 1}",
+                                    left + 11.dp.toPx(),
+                                    top + 15.dp.toPx(),
+                                    Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                        color = android.graphics.Color.WHITE
+                                        textAlign = Paint.Align.CENTER
+                                        textSize = 12.dp.toPx()
+                                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                    },
+                                )
+                            }
+                            val crop = if (toolMode == "crop") activeBox else null
+                            crop?.let { (start, end) ->
+                                val left = offsetX + minOf(start.x, end.x) * shownWidth
+                                val top = offsetY + minOf(start.y, end.y) * shownHeight
+                                val right = offsetX + maxOf(start.x, end.x) * shownWidth
+                                val bottom = offsetY + maxOf(start.y, end.y) * shownHeight
+                                drawRect(Color.Black.copy(alpha = 0.38f), Offset(offsetX, offsetY), androidx.compose.ui.geometry.Size(shownWidth, top - offsetY))
+                                drawRect(Color.Black.copy(alpha = 0.38f), Offset(offsetX, bottom), androidx.compose.ui.geometry.Size(shownWidth, offsetY + shownHeight - bottom))
+                                drawRect(Color.Black.copy(alpha = 0.38f), Offset(offsetX, top), androidx.compose.ui.geometry.Size(left - offsetX, bottom - top))
+                                drawRect(Color.Black.copy(alpha = 0.38f), Offset(right, top), androidx.compose.ui.geometry.Size(offsetX + shownWidth - right, bottom - top))
+                                drawRect(
+                                    color = Color(0xFF22C55E),
+                                    topLeft = Offset(left, top),
+                                    size = androidx.compose.ui.geometry.Size(right - left, bottom - top),
+                                    style = Stroke(width = 3.dp.toPx()),
+                                )
+                            }
+                        }
+                    }
+                    }
+                    }
+
+                        },
+                        controls = {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = !isSending) { controlsExpanded = !controlsExpanded }
+                            .padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            if (generatedPrompt.isNotBlank()) "提示词与说明 · 已生成" else if (inputText.isNotBlank()) "提示词与说明 · 已填写" else "提示词与说明",
+                            fontSize = 11.sp,
+                            color = Color(0xFF64748B),
+                        )
+                        Text(if (controlsExpanded) "⌄" else "⌃", fontSize = 13.sp, color = Color(0xFF64748B))
+                    }
+                    HorizontalDivider(color = Color(0xFFE2E8F0))
+                    if (controlsExpanded) {
 
                     Text(
-                        text = "发送到:",
+                        text = "发送目标",
                         fontSize = 13.sp,
-                        color = Color.DarkGray
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF334155)
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(7.dp))
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
                     ) {
-                        ideList.forEach { (key, label) ->
+                        ideOptions.forEach { (key, label) ->
                             val isSelected = selectedIde == key
                             Text(
                                 text = label,
                                 fontSize = 12.sp,
                                 color = if (isSelected) Color.White else Color(0xFF1976D2),
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(if (isSelected) Color(0xFF1976D2) else Color(0xFFE3F2FD))
-                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                                    .clip(RoundedCornerShape(50.dp))
+                                    .background(if (isSelected) Color(0xFF2563EB) else Color.White)
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) Color(0xFF2563EB) else Color(0xFFBFDBFE),
+                                        RoundedCornerShape(50.dp),
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
                                     .clickable {
                                         selectedIde = key
-                                        // 选 IDE 时立即把图片粘贴到 IDE（图片已在剪贴板）
-                                        if (!imageInjected) {
-                                            imageInjected = true
-                                            serviceScope.launch {
-                                                withContext(Dispatchers.IO) {
-                                                    bridgeApi.injectClipboard(key)
-                                                }
-                                            }
-                                        }
                                     }
                             )
                         }
                     }
+                    if (ideOptions.isEmpty()) {
+                        Text(
+                            text = "暂无可用 IDE，请先在设置中添加或扫描 IDE",
+                            fontSize = 12.sp,
+                            color = Color(0xFFD32F2F),
+                        )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().clickable { pasteScreenshot = !pasteScreenshot },
+                    ) {
+                        androidx.compose.material3.Checkbox(
+                            checked = pasteScreenshot,
+                            onCheckedChange = { pasteScreenshot = it },
+                        )
+                        Column {
+                            Text("粘贴截图", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF334155))
+                            Text("发送前先粘贴标注截图，再发送提示词", fontSize = 10.sp, color = Color(0xFF64748B))
+                        }
+                    }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
                     Text(
-                        text = "添加说明文字（可选）:",
+                        text = "补充说明（可选）",
                         fontSize = 13.sp,
-                        color = Color.DarkGray
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF334155)
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(7.dp))
 
                     androidx.compose.material3.OutlinedTextField(
                         value = inputText,
                         onValueChange = { inputText = it },
-                        placeholder = { Text("输入要一起发送的内容...") },
+                        placeholder = { Text("例如：点击这里没有反应") },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(80.dp),
+                            .height(72.dp),
                         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp)
                     )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    val generatePromptAction: () -> Unit = {
+                            if (!isGeneratingPrompt) {
+                                isGeneratingPrompt = true
+                                serviceScope.launch {
+                                    try {
+                                        val finalImage = createAnnotatedScreenshot(screenshotData, selections, cropSelection)
+                                        val tempFile = File(cacheDir, "prompt_${System.currentTimeMillis()}.png")
+                                        tempFile.writeBytes(finalImage)
+                                        val upload = try {
+                                            withContext(Dispatchers.IO) {
+                                                bridgeApi.uploadImage(tempFile.absolutePath, tempFile.name, toClipboard = false)
+                                            }
+                                        } finally {
+                                            tempFile.delete()
+                                        }
+                                        if (!upload.ok) throw IllegalStateException(upload.raw.ifBlank { "截图上传失败" })
+
+                                        val located = if (locatorReady && selections.isNotEmpty()) {
+                                            withContext(Dispatchers.IO) {
+                                                selections.mapIndexedNotNull { index, (start, end) ->
+                                                    val cropLeft = cropSelection?.let { minOf(it.first.x, it.second.x) } ?: 0f
+                                                    val cropTop = cropSelection?.let { minOf(it.first.y, it.second.y) } ?: 0f
+                                                    val cropWidth = cropSelection?.let { kotlin.math.abs(it.first.x - it.second.x) } ?: 1f
+                                                    val cropHeight = cropSelection?.let { kotlin.math.abs(it.first.y - it.second.y) } ?: 1f
+                                                    val centerX = ((cropLeft + (start.x + end.x) / 2f * cropWidth) * (screenshotBitmap?.width ?: 1)).toInt()
+                                                    val centerY = ((cropTop + (start.y + end.y) / 2f * cropHeight) * (screenshotBitmap?.height ?: 1)).toInt()
+                                                    val result = bridgeApi.locateUiElement(
+                                                        centerX,
+                                                        centerY,
+                                                        screenshotBitmap?.width ?: 1,
+                                                        screenshotBitmap?.height ?: 1,
+                                                    )
+                                                    if (!result.ok || result.element == null) null else {
+                                                        val element = result.element
+                                                        val identity = listOf(
+                                                            element.text.takeIf { it.isNotBlank() }?.let { "文本=$it" },
+                                                            element.content_desc.takeIf { it.isNotBlank() }?.let { "描述=$it" },
+                                                            element.resource_id.takeIf { it.isNotBlank() }?.let { "ID=${it.substringAfterLast('/')}" },
+                                                            element.`class`.takeIf { it.isNotBlank() }?.let { "类型=${it.substringAfterLast('.')}" },
+                                                        ).filterNotNull().joinToString("，")
+                                                        val code = result.matched_code?.file?.substringAfterLast('/')
+                                                        "红框 ${index + 1}: ${identity.ifBlank { "未命名组件" }}" +
+                                                            (code?.let { "，候选代码=$it" } ?: "")
+                                                    }
+                                                }
+                                            }
+                                        } else emptyList()
+                                        recognitionSummary = if (located.isEmpty()) {
+                                            "未取得可靠的结构化组件信息，将以截图和标注意图为准"
+                                        } else located.joinToString("\n")
+                                        val result = withContext(Dispatchers.IO) {
+                                            bridgeApi.composePrompt(
+                                                platform = "Android App",
+                                                componentName = located.joinToString("；"),
+                                                userText = inputText.ifBlank {
+                                                    "【用户未描述具体需求】请只识别截图红框中的页面、组件和当前可见状态，不要推断用户想如何修改；在提示词中明确列出需要用户确认的问题。"
+                                                },
+                                                taskType = "auto",
+                                                location = recognitionSummary,
+                                                image = upload.url ?: upload.path,
+                                            )
+                                        }
+                                        if (!result.ok) throw IllegalStateException(result.message ?: "提示词生成失败")
+                                        generatedPrompt = result.prompt
+                                        controlsExpanded = true
+                                    } catch (e: Exception) {
+                                        Toast.makeText(this@UiLocatorService, "生成失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                    isGeneratingPrompt = false
+                                }
+                            }
+                    }
+                    if (controlsExpanded && generatedPrompt.isNotBlank()) {
+                        Text(recognitionSummary, fontSize = 10.sp, color = Color(0xFF64748B), maxLines = 2)
+                        androidx.compose.material3.OutlinedTextField(
+                            value = generatedPrompt,
+                            onValueChange = { generatedPrompt = it },
+                            label = { Text("发送前请确认 IDE 对页面和组件的理解") },
+                            modifier = Modifier.fillMaxWidth().height(112.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -638,9 +1081,65 @@ class UiLocatorService : Service() {
                                 showFloatingBubble()
                                 onComplete()
                             },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            enabled = !isSending,
                         ) {
-                            Text("取消")
+                            Text("关闭", fontWeight = FontWeight.Medium)
+                        }
+                        androidx.compose.material3.OutlinedButton(
+                            onClick = generatePromptAction,
+                            modifier = Modifier.weight(1f),
+                            enabled = !isGeneratingPrompt && !isSending,
+                        ) {
+                            Text(if (isGeneratingPrompt) "识别中" else "AI识别", fontWeight = FontWeight.Medium)
+                        }
+                        androidx.compose.material3.OutlinedButton(
+                            onClick = {
+                                if (!isSending) {
+                                    isSending = true
+                                    serviceScope.launch {
+                                        try {
+                                            val finalImage = createAnnotatedScreenshot(
+                                                screenshotData,
+                                                selections,
+                                                cropSelection,
+                                            )
+                                            val tempFile = File(cacheDir, "annotated_${System.currentTimeMillis()}.png")
+                                            tempFile.writeBytes(finalImage)
+                                            val upload = try {
+                                                withContext(Dispatchers.IO) {
+                                                    bridgeApi.uploadImage(
+                                                        tempFile.absolutePath,
+                                                        tempFile.name,
+                                                        toClipboard = true,
+                                                    )
+                                                }
+                                            } finally {
+                                                tempFile.delete()
+                                            }
+                                            if (!upload.ok) {
+                                                throw IllegalStateException(upload.raw.ifBlank { "复制截图失败" })
+                                            }
+                                            Toast.makeText(
+                                                this@UiLocatorService,
+                                                "标注截图已复制到电脑剪切板",
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        } catch (e: Exception) {
+                                            Toast.makeText(
+                                                this@UiLocatorService,
+                                                "复制失败: ${e.message}",
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        }
+                                        isSending = false
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = !isSending,
+                        ) {
+                            Text(if (isSending) "处理中" else "仅复制", fontWeight = FontWeight.Medium)
                         }
                         androidx.compose.material3.Button(
                             onClick = {
@@ -648,12 +1147,40 @@ class UiLocatorService : Service() {
                                     isSending = true
                                     serviceScope.launch {
                                         try {
-                                            val message = if (inputText.isNotBlank()) {
-                                                "【截图说明】\n${inputText}"
-                                            } else {
-                                                "【截图】"
+                                            if (pasteScreenshot) {
+                                                val finalImage = createAnnotatedScreenshot(
+                                                    screenshotData,
+                                                    selections,
+                                                    cropSelection,
+                                                )
+                                                val tempFile = File(cacheDir, "annotated_${System.currentTimeMillis()}.png")
+                                                tempFile.writeBytes(finalImage)
+                                                val upload = try {
+                                                    withContext(Dispatchers.IO) {
+                                                        bridgeApi.uploadImage(tempFile.absolutePath, tempFile.name, toClipboard = true)
+                                                    }
+                                                } finally {
+                                                    tempFile.delete()
+                                                }
+                                                if (!upload.ok) throw IllegalStateException(upload.raw.ifBlank { "截图上传失败" })
+                                                val injected = withContext(Dispatchers.IO) { bridgeApi.injectClipboard(selectedIde) }
+                                                if (!injected) throw IllegalStateException("截图粘贴到 IDE 失败")
+                                                delay(350)
                                             }
-                                            // 文字注入到 IDE（图片已在选 IDE 时注入）
+                                            val regionText = selections.mapIndexed { index, (start, end) ->
+                                                    val left = (minOf(start.x, end.x) * 100).toInt().coerceIn(0, 100)
+                                                    val top = (minOf(start.y, end.y) * 100).toInt().coerceIn(0, 100)
+                                                    val right = (maxOf(start.x, end.x) * 100).toInt().coerceIn(0, 100)
+                                                    val bottom = (maxOf(start.y, end.y) * 100).toInt().coerceIn(0, 100)
+                                                    "\n【红框 ${index + 1}】左上 ${left}%,${top}%；右下 ${right}%,${bottom}%"
+                                            }.joinToString("")
+                                            val message = if (generatedPrompt.isNotBlank()) {
+                                                "【截图反馈 · AI 生成提示词】\n$generatedPrompt$regionText"
+                                            } else if (inputText.isNotBlank()) {
+                                                "【截图说明】\n${inputText}$regionText"
+                                            } else {
+                                                "【截图】$regionText"
+                                            }
                                             withContext(Dispatchers.IO) {
                                                 bridgeApi.send(message, selectedIde)
                                             }
@@ -668,16 +1195,70 @@ class UiLocatorService : Service() {
                                 }
                             },
                             modifier = Modifier.weight(1f),
-                            enabled = !isSending
+                            enabled = !isSending && selectedIde.isNotBlank()
                         ) {
-                            Text(if (isSending) "发送中..." else "📤 发送")
+                            Text(if (isSending) "发送中" else "发送", fontWeight = FontWeight.SemiBold)
                         }
                     }
+                        },
+                    )
                 }
             }
         }
 
         windowManager.addView(composeView, layoutParams)
+    }
+
+    private fun createAnnotatedScreenshot(
+        screenshotData: ByteArray,
+        selections: List<Pair<Offset, Offset>>,
+        cropSelection: Pair<Offset, Offset>? = null,
+    ): ByteArray {
+        if (selections.isEmpty() && cropSelection == null) return screenshotData
+        val source = BitmapFactory.decodeByteArray(screenshotData, 0, screenshotData.size)
+            ?: return screenshotData
+        val croppedSource = cropSelection?.let { (start, end) ->
+            val left = (minOf(start.x, end.x) * source.width).toInt().coerceIn(0, source.width - 1)
+            val top = (minOf(start.y, end.y) * source.height).toInt().coerceIn(0, source.height - 1)
+            val right = (maxOf(start.x, end.x) * source.width).toInt().coerceIn(left + 1, source.width)
+            val bottom = (maxOf(start.y, end.y) * source.height).toInt().coerceIn(top + 1, source.height)
+            Bitmap.createBitmap(source, left, top, right - left, bottom - top).also { source.recycle() }
+        } ?: source
+        val bitmap = croppedSource.copy(Bitmap.Config.ARGB_8888, true)
+        croppedSource.recycle()
+        val canvas = android.graphics.Canvas(bitmap)
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.argb(35, 255, 0, 0)
+            style = Paint.Style.FILL
+        }
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.RED
+            style = Paint.Style.STROKE
+            strokeWidth = (bitmap.width / 180f).coerceAtLeast(6f)
+        }
+        val numberPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.WHITE
+            textAlign = Paint.Align.CENTER
+            textSize = (bitmap.width / 55f).coerceAtLeast(24f)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        selections.forEachIndexed { index, (start, end) ->
+            val left = minOf(start.x, end.x) * bitmap.width
+            val top = minOf(start.y, end.y) * bitmap.height
+            val right = maxOf(start.x, end.x) * bitmap.width
+            val bottom = maxOf(start.y, end.y) * bitmap.height
+            canvas.drawRect(left, top, right, bottom, fill)
+            canvas.drawRect(left, top, right, bottom, stroke)
+            val radius = (bitmap.width / 45f).coerceAtLeast(22f)
+            canvas.drawCircle(left + radius, top + radius, radius, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.RED
+            })
+            canvas.drawText("${index + 1}", left + radius, top + radius + numberPaint.textSize * 0.35f, numberPaint)
+        }
+        val output = java.io.ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+        bitmap.recycle()
+        return output.toByteArray()
     }
 
     private fun takeScreenshotForPrompt(onComplete: () -> Unit) {

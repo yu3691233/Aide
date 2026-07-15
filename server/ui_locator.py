@@ -129,11 +129,11 @@ def get_adb_devices():
     return devices
 
 
-def select_best_device(devices):
+def select_best_device(devices, target_ip=None):
     """从设备列表中选择最佳设备（优先匹配 adb_status.json 上报 IP）。"""
     if not devices:
         return None
-    target_ip = get_target_device_ip()
+    target_ip = target_ip or get_target_device_ip()
     if target_ip:
         for d in devices:
             if target_ip in d:
@@ -144,10 +144,10 @@ def select_best_device(devices):
 # ─── 截图 & UI 树 ─────────────────────────────────────────
 
 
-def capture_screenshot_only():
+def capture_screenshot_only(target_ip=None):
     """仅截图，不 dump UI 树。"""
     devices = get_adb_devices()
-    device = select_best_device(devices)
+    device = select_best_device(devices, target_ip=target_ip)
     if not device:
         return {"ok": False, "error": "未检测到已连接的 ADB 设备。"}
     cmd_prefix = [ADB_PATH, "-s", device]
@@ -163,10 +163,10 @@ def capture_screenshot_only():
         return {"ok": False, "error": f"截图异常: {e}"}
 
 
-def capture_phone_ui():
+def capture_phone_ui(target_ip=None):
     """截图 + dump UI 树，全部拉取到本地。"""
     devices = get_adb_devices()
-    device = select_best_device(devices)
+    device = select_best_device(devices, target_ip=target_ip)
     if not device:
         return {"ok": False, "error": "未检测到已连接的 ADB 设备，请确保手机已开启无线 ADB 并连接到电脑。"}
 

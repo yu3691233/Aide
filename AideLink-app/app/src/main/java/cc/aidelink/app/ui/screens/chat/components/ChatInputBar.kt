@@ -46,6 +46,8 @@ fun ChatInputBar(
     onClipboard: () -> Unit,
     onWakeScreen: () -> Unit,
     onRefreshIdeStatus: () -> Unit = {},
+    onStartIde: (String) -> Unit = {},
+    onStopIde: (String) -> Unit = {},
     onQuickReply: (String) -> Unit = {},
     onAddQuickReply: (String) -> Unit = {},
     onRemoveQuickReply: (String) -> Unit = {},
@@ -75,6 +77,18 @@ fun ChatInputBar(
     val context = LocalContext.current
     val isOpenCodeWebTarget = currentTarget.key == AideLinkChatViewModel.Target.OPENCODE_WEB.key
     val focusManager = LocalFocusManager.current
+    val attachmentPickerLauncher = rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val path = copyUriToTempFile(context, uri)
+            if (path != null) {
+                onUploadImage(path)
+            } else {
+                Toast.makeText(context, "无法读取附件", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -136,18 +150,26 @@ fun ChatInputBar(
                                 else ideRunningMap[target.key] ?: false
                             DropdownMenuItem(
                                 text = {
-                                    Column {
-                                        Text(target.label)
-                                        if (target.key != "aide") {
-                                            Text(
-                                                if (running) "运行中" else "未运行",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = if (running) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                    }
+                                    Text(target.label)
                                 },
                                 leadingIcon = { TargetIcon(target, size = 16.dp) },
+                                trailingIcon = if (target.key == "aide") null else {
+                                    {
+                                        Switch(
+                                            checked = running,
+                                            onCheckedChange = { enabled ->
+                                                if (target.key == "oc_web") {
+                                                    if (enabled != ocWebRunning) onOcWebToggle()
+                                                } else if (enabled) {
+                                                    onStartIde(target.key)
+                                                } else {
+                                                    onStopIde(target.key)
+                                                }
+                                            },
+                                            modifier = Modifier.height(28.dp),
+                                        )
+                                    }
+                                },
                                 onClick = {
                                     onTargetChange(target)
                                     targetDropdown = false
@@ -246,6 +268,24 @@ fun ChatInputBar(
                             text = { Text("剪贴板") },
                             leadingIcon = { Icon(Icons.Default.ContentPaste, contentDescription = null) },
                             onClick = { onClipboard(); menuExpanded = false }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("相册") },
+                            leadingIcon = { Icon(Icons.Default.PhotoLibrary, contentDescription = null) },
+                            enabled = !uploading,
+                            onClick = {
+                                menuExpanded = false
+                                imagePickerLauncher.launch("image/*")
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("发送附件") },
+                            leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) },
+                            enabled = !uploading,
+                            onClick = {
+                                menuExpanded = false
+                                attachmentPickerLauncher.launch("*/*")
+                            }
                         )
 
                     }

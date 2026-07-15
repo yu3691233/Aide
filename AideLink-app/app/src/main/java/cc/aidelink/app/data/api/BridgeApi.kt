@@ -312,7 +312,7 @@ class BridgeApi(
                 MultiPartFormDataContent(
                     formData {
                         append("file", java.io.File(filePath).readBytes(), io.ktor.http.Headers.build {
-                            append(HttpHeaders.ContentType, ContentType.Image.Any.toString())
+                            append(HttpHeaders.ContentType, ContentType.Application.OctetStream.toString())
                             append(HttpHeaders.ContentDisposition, "filename=\"$filename\"")
                         })
                         if (toClipboard) {
@@ -841,7 +841,9 @@ class BridgeApi(
 
     suspend fun deleteProject(idx: Int): Boolean = try {
         val resp = client.delete("$baseUrl/api/projects/$idx")
-        resp.status.isSuccess()
+        resp.status.isSuccess() && runCatching {
+            json.parseToJsonElement(resp.bodyAsText()).jsonObject["ok"]?.jsonPrimitive?.booleanOrNull == true
+        }.getOrDefault(false)
     } catch (e: Exception) { false }
 
     suspend fun scanAndroidProject(path: String): Boolean = try {
@@ -1012,18 +1014,23 @@ class BridgeApi(
         }
     }
 
-    suspend fun injectClipboard(target: String): Boolean = try {
-        val resp = client.post("$baseUrl/inject-clipboard") {
-            setBody(buildJsonObject { put("target", target) })
-        }
-        resp.status.isSuccess()
-    } catch (e: Exception) {
+    suspend fun injectClipboard(target: String): Boolean = try {
+        val resp = client.post("$baseUrl/inject-clipboard") {
+            setBody(buildJsonObject { put("target", target) })
+        }
+        resp.status.isSuccess() && runCatching {
+            json.parseToJsonElement(resp.bodyAsText()).jsonObject["ok"]?.jsonPrimitive?.booleanOrNull == true
+        }.getOrDefault(false)
+    } catch (e: Exception) {
         false
     }
 
-    suspend fun captureUiLocator(): UiLocatorCaptureResponse {
-        return try {
-            val resp = client.post("$baseUrl/ui-locator/capture")
+    suspend fun captureUiLocator(deviceIp: String? = null): UiLocatorCaptureResponse {
+        return try {
+            val resp = client.post("$baseUrl/ui-locator/capture") {
+                contentType(ContentType.Application.Json)
+                setBody(if (deviceIp.isNullOrBlank()) "{}" else "{\"ip\":\"$deviceIp\"}")
+            }
             val raw = resp.bodyAsText()
             runCatching {
                 json.decodeFromString<UiLocatorCaptureResponse>(raw)
@@ -1105,6 +1112,30 @@ class BridgeApi(
         } catch (e: Exception) {
             AppVersionResponse(ok = false, error = e.message ?: "网络错误")
         }
+    }
+
+    suspend fun capturePhoneScreenshot(): ByteArray? {
+        return uiLocatorApi.captureScreenshot(deviceIp)
+    }
+
+    suspend fun ensureAdb(ip: String, port: Int): Boolean = try {
+        val resp = client.post("$baseUrl/api/adb/ensure") {
+            setBody("{\"ip\":\"$ip\",\"port\":$port,\"auto_enable\":false}")
+            contentType(ContentType.Application.Json)
+        }
+        resp.status.isSuccess()
+    } catch (_: Exception) {
+        false
+    }
+
+    suspend fun grantOverlayPermission(ip: String, port: Int): Boolean = try {
+        val resp = client.post("$baseUrl/api/adb/grant-overlay") {
+            setBody("{\"ip\":\"$ip\",\"port\":$port}")
+            contentType(ContentType.Application.Json)
+        }
+        resp.status.isSuccess()
+    } catch (_: Exception) {
+        false
     }
 
     suspend fun forceStopIde(ide: String): Boolean = try {

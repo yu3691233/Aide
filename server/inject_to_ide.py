@@ -372,6 +372,60 @@ def find_terminal_window_for_process(process_name):
 
     return None
 
+
+def resolve_target_window(target):
+    """Resolve an IDE window using the same binding-first rules as message injection."""
+    target = (target or "").strip().lower()
+    win = find_saved_window(target)
+    if win:
+        return win
+    if target in ("mimo", "mimocode"):
+        return find_terminal_window_for_process("mimo")
+    if target == "trae":
+        return find_window_by_aliases(("trae",), ("trae.exe",))
+    if target == "antigravity_ide":
+        return find_window_by_aliases(("antigravity",), ("antigravity.exe",))
+    if target in ("oc", "opencode"):
+        return find_window_by_aliases(("opencode",), ("opencode.exe",)) or find_terminal_window_for_process("opencode")
+    if target == "codex":
+        return find_window_by_aliases(
+            ("codex", "openai codex", "chatgpt", "openai"),
+            ("codex.exe", "chatgpt.exe", "chatgptdesktop.exe"),
+        ) or find_terminal_window_for_process("codex")
+
+    try:
+        import ide_scanner
+        ide_info = next((item for item in ide_scanner.get_all_ides() if item.get("key") == target), None) or {}
+    except Exception:
+        ide_info = {}
+    aliases = [target, ide_info.get("name", "")]
+    path = ide_info.get("path") or ""
+    exe_name = os.path.basename(path).lower() if path else ""
+    process_names = [exe_name] if exe_name else []
+    return find_window_by_aliases(aliases, process_names) or (
+        find_terminal_window_for_process(os.path.splitext(exe_name)[0]) if exe_name else None
+    )
+
+
+def paste_current_clipboard(target):
+    """Paste existing clipboard data without sending, honoring binding and focus calibration."""
+    win = resolve_target_window(target)
+    if not win:
+        print(f"[ERROR] Cannot resolve window for clipboard paste target: {target}")
+        return False
+    activate_window(win)
+    focus_result = focus_calibrated_input(target, win)
+    if focus_result is False:
+        return False
+    # None means the user explicitly did not enable pre-dispatch clicking.
+    # Preserve the window's last focused control instead of guessing a coordinate.
+    VK_CONTROL = 0x11
+    VK_V = 0x56
+    _send_key_combination(VK_CONTROL, VK_V)
+    time.sleep(0.5)
+    print(f"[INFO] Pasted current clipboard into {target.upper()} without Enter")
+    return True
+
 def inject(target, text, worktree_path=None):
     if target in ("antigravity_ide",):
         # GUI IDE: 优先使用 Web IDE 管理中保存的窗口绑定。
@@ -703,12 +757,7 @@ def inject(target, text, worktree_path=None):
         calibrated_focus = focus_calibrated_input(target, win)
         if calibrated_focus is False:
             return False
-        if calibrated_focus is None:
-            # 保留 Codex 既有行为：未启用校准时仍点击窗口下半部。
-            click_x = win.left + win.width // 2
-            click_y = win.top + int(win.height * 0.85)
-            pyautogui.click(click_x, click_y)
-            time.sleep(0.3)
+        # 未启用“派发前点击”时保留窗口原有焦点，不再猜测坐标点击。
 
         print(f"[INFO] Pasting via Ctrl+V in Codex window (title='{win.title}')")
         pyautogui.hotkey('ctrl', 'v')

@@ -7,7 +7,15 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 
 ALLOWED_UPLOAD_EXTENSIONS = frozenset(
-    {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".txt", ".md", ".json", ".csv", ".log"}
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
+        ".txt", ".md", ".json", ".csv", ".log", ".xml", ".yaml", ".yml",
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".zip", ".7z", ".tar", ".gz",
+        ".kt", ".kts", ".java", ".py", ".js", ".ts", ".tsx", ".jsx",
+        ".html", ".css", ".c", ".h", ".cpp", ".hpp", ".cs", ".go", ".rs",
+        ".gradle", ".properties", ".toml", ".sql", ".sh", ".ps1",
+    }
 )
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 MAX_UPLOAD_REQUEST_SIZE = MAX_UPLOAD_SIZE + 1024 * 1024

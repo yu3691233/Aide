@@ -60,9 +60,10 @@ def api_prompt_compose():
         return call_model(
             model_key,
             messages,
-            max_tokens=700,
-            temperature=0.2,
-            timeout=35,
+            max_tokens=1800,
+            temperature=0.1,
+            timeout=45,
+            response_format={"type": "json_object"},
         )
 
     result = compose_prompt(data, model_caller=call_default_model, image_data_url=image_data_url)

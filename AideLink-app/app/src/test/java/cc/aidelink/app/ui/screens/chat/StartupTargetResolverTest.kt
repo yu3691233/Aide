@@ -9,9 +9,9 @@ class StartupTargetResolverTest {
     private val selected = setOf("oc", "codex")
 
     @Test
-    fun legacyOpenCodeDesktopTargetUsesUnifiedOpenCodeTarget() {
-        assertEquals("oc_web", AideLinkChatViewModel.Target.fromKey("oc").key)
-        assertEquals("OpenCode", AideLinkChatViewModel.Target.fromKey("oc").label)
+    fun desktopOpenCodeTargetRemainsSeparateFromOpenCodeWeb() {
+        assertEquals("opencode", AideLinkChatViewModel.Target.fromKey("opencode").key)
+        assertEquals("OpenCode", AideLinkChatViewModel.Target.fromKey("opencode").label)
     }
 
     @Test

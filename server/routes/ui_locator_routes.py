@@ -23,7 +23,9 @@ def _get_project_scanner():
 def ui_locator_capture():
     """触发手机截屏和 UI 树转储"""
     ui_locator = _get_ui_locator()
-    res = ui_locator.capture_phone_ui()
+    data = request.get_json(silent=True) or {}
+    target_ip = data.get("ip") or request.headers.get("X-Device-IP") or request.remote_addr
+    res = ui_locator.capture_phone_ui(target_ip=target_ip)
     if res["ok"]:
         return jsonify({
             "ok": True,
@@ -41,7 +43,9 @@ def ui_locator_capture():
 def ui_locator_screenshot():
     """仅截取手机屏幕（不转储 UI 树），用于截图发送等轻量场景"""
     ui_locator = _get_ui_locator()
-    res = ui_locator.capture_screenshot_only()
+    data = request.get_json(silent=True) or {}
+    target_ip = data.get("ip") or request.headers.get("X-Device-IP") or request.remote_addr
+    res = ui_locator.capture_screenshot_only(target_ip=target_ip)
     if res["ok"]:
         return jsonify({
             "ok": True,

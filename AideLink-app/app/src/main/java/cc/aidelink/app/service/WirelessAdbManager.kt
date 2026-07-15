@@ -457,6 +457,40 @@ object WirelessAdbManager {
         return 0
     }
 
+    suspend fun captureRootScreenshot(context: Context): ByteArray? = withContext(Dispatchers.IO) {
+        if (!checkRoot()) return@withContext null
+        val file = context.cacheDir.resolve("root_screen.png")
+        try {
+            file.delete()
+            val result = com.topjohnwu.superuser.Shell.cmd("screencap -p ${file.absolutePath}").exec()
+            if (result.isSuccess && file.exists()) file.readBytes() else null
+        } catch (e: Exception) {
+            Log.w(TAG, "Root 截图失败: ${e.message}")
+            null
+        } finally {
+            file.delete()
+        }
+    }
+
+    suspend fun grantOverlayPermissionAsRoot(): Boolean = withContext(Dispatchers.IO) {
+        if (!checkRoot()) return@withContext false
+        try {
+            com.topjohnwu.superuser.Shell.cmd(
+                "appops set cc.aidelink.app android:system_alert_window allow"
+            ).exec().isSuccess
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    suspend fun grantOverlayPermissionViaLocalAdb(context: Context, port: Int): Boolean {
+        return executeLocalAdbCommand(
+            context,
+            port,
+            "appops set cc.aidelink.app android:system_alert_window allow",
+        ).isSuccess
+    }
+
     private fun getClassicAdbPort(): Int {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("getprop", "service.adb.tcp.port"))

@@ -589,6 +589,20 @@ def api_adb_ensure():
     return jsonify(result), status
 
 
+@device_bp.route("/api/adb/grant-overlay", methods=["POST"])
+def api_adb_grant_overlay():
+    """Grant AideLink's overlay AppOp through the already connected ADB device."""
+    data = request.json or {}
+    device = data.get("device") or _connected_adb_device_for(data.get("ip"), data.get("port"))
+    if not device:
+        return jsonify({"ok": False, "error": "未找到已连接的 ADB 设备"}), 503
+    result = _run_adb(["-s", device, "shell", "appops", "set", "cc.aidelink.app",
+                       "android:system_alert_window", "allow"], timeout=8)
+    if result.returncode != 0:
+        return jsonify({"ok": False, "error": result.stderr.strip() or "ADB 授权悬浮窗失败"}), 500
+    return jsonify({"ok": True, "device": device})
+
+
 @device_bp.route("/api/adb/enable-wireless", methods=["POST"])
 @device_bp.route("/adb/enable-wireless", methods=["POST"])
 def api_adb_enable_wireless():

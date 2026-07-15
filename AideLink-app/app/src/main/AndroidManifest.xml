@@ -67,6 +67,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".MediaProjectionPermissionActivity"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.AideLink.Transparent" />
+
         <service
             android:name=".service.ConnectionService"
             android:enabled="true"

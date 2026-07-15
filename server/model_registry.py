@@ -496,6 +496,8 @@ def call_model(key: str, messages: list, **kwargs) -> dict:
             }
             if "max_tokens" in kwargs:
                 body["max_tokens"] = kwargs["max_tokens"]
+            if "response_format" in kwargs:
+                body["response_format"] = kwargs["response_format"]
             if tools:
                 body["tools"] = tools
                 body["tool_choice"] = "auto"
