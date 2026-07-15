@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "key": "antigravity_ide",
+  "version": "1.0.0",
+  "display_name": "Antigravity IDE",
+  "capabilities": [
+    "launch",
+    "open_project",
+    "stop",
+    "bind_window",
+    "calibrate",
+    "install_mcp",
+    "profile_update"
+  ],
+  "launch": {
+    "mode": "executable"
+  },
+  "project": {
+    "mode": "argument"
+  }
+}

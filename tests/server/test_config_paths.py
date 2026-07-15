@@ -28,7 +28,7 @@ class ProjectPathTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(r"C:\Projects\AideLink", normalized["current_project"])
+        self.assertEqual(r"F:\AideLink", normalized["current_project"])
         self.assertEqual(1, len(normalized["projects"]))
         self.assertEqual("AideLink", normalized["projects"][0]["name"])
 

@@ -398,7 +398,7 @@ def test_notification():
     from datetime import datetime
     bus = _import_bus()
     bus.publish("ide.notification", {
-        "ide": "agy",
+        "ide": "antigravity_ide",
         "aumid": "Antigravity",
         "title": "🔔 测试通知 - AideLink",
         "body": "测试：您已经成功收到了这一条跨网络推送通知！",

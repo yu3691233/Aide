@@ -11,10 +11,10 @@
     "exe_pattern": "Trae CN.exe",
     "color": "#29B6F6"
   },
-  "antigravity": {
-    "name": "Antigravity",
+  "antigravity_ide": {
+    "name": "Antigravity IDE",
     "scan_paths": ["%LOCALAPPDATA%\\Programs\\antigravity", "%LOCALAPPDATA%\\Programs\\Antigravity"],
-    "exe_pattern": "Antigravity.exe",
+    "exe_pattern": "antigravity*",
     "color": "#AB47BC"
   },
   "cursor": {
@@ -29,7 +29,7 @@
     "exe_pattern": "Code.exe",
     "color": "#2196F3"
   },
-  "oc": {
+  "opencode": {
     "name": "OpenCode",
     "scan_paths": ["%LOCALAPPDATA%\\Programs\\@opencode-aidesktop", "%LOCALAPPDATA%\\Programs\\OpenCode"],
     "exe_pattern": "OpenCode.exe",

@@ -87,6 +87,9 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import cc.aidelink.app.domain.model.bridge.ProjectNode
 import cc.aidelink.app.domain.model.bridge.AideTask
 import cc.aidelink.app.ui.screens.chat.components.*
+import cc.aidelink.app.ui.screens.sessions.SessionListScreen
+import cc.aidelink.app.ui.screens.sessions.SessionListViewModel
+import cc.aidelink.app.ui.screens.sessions.buildOpenCodeWebSessionUrl
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInput
@@ -205,9 +208,9 @@ private data class IdeBadgeColors(val bg: Color, val text: Color)
 
 private fun getIdeBadgeColors(ide: String): IdeBadgeColors = when (ide.lowercase()) {
     "mimo" -> IdeBadgeColors(bg = Color(0xFFFFF3E0), text = Color(0xFFF57C00))
-    "agy" -> IdeBadgeColors(bg = Color(0xFFF3E5F5), text = Color(0xFF7B1FA2))
+    "antigravity_ide" -> IdeBadgeColors(bg = Color(0xFFF3E5F5), text = Color(0xFF7B1FA2))
     "trae" -> IdeBadgeColors(bg = Color(0xFFE1F5FE), text = Color(0xFF0288D1))
-    "oc", "oc_web" -> IdeBadgeColors(bg = Color(0xFFE8F5E9), text = Color(0xFF388E3C))
+        "opencode", "oc_web" -> IdeBadgeColors(bg = Color(0xFFE8F5E9), text = Color(0xFF388E3C))
     else -> IdeBadgeColors(bg = Color(0xFFECEFF1), text = Color(0xFF455A64))
 }
 
@@ -282,10 +285,13 @@ fun AideLinkChatScreen(
     onNavigateBack: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToOpenCodeWeb: ((url: String, username: String, pwd: String) -> Unit)? = null,
+    onNavigateToOpenCodeSessions: ((url: String, username: String, pwd: String) -> Unit)? = null,
     initialTarget: String? = null,
     viewModel: AideLinkChatViewModel = hiltViewModel(),
 ) {
     val state = viewModel.state.collectAsStateWithLifecycle().value
+    // 服务端可返回不同名称/图标的动态 Target，OpenCode Web 必须按稳定 key 判断。
+    val isOpenCodeWebTarget = state.target.key == AideLinkChatViewModel.Target.OPENCODE_WEB.key
 
     LaunchedEffect(initialTarget, state.targetInitialized) {
         if (state.targetInitialized && initialTarget != null && state.target.key != initialTarget) {
@@ -314,6 +320,9 @@ fun AideLinkChatScreen(
     val sheetState = rememberModalBottomSheetState()
     val monitorHeightDp = state.monitorHeightDp.dp
     val coroutineScope = rememberCoroutineScope()
+    val openCodeSessionViewModel: SessionListViewModel = hiltViewModel()
+    var openCodeWebConfig by remember { mutableStateOf<AideLinkChatViewModel.OpenCodeWebConfig?>(null) }
+    var openCodeSessionCreating by remember { mutableStateOf(false) }
     val monitorByTarget = state.monitorByTarget
     val showMonitorPanel = state.monitorActive
     val activeTask = remember(state.tasks, state.activeTaskId) {
@@ -321,8 +330,16 @@ fun AideLinkChatScreen(
     }
 
     LaunchedEffect(state.target.key) {
-        showTaskList = state.target != AideLinkChatViewModel.Target.AIDELINK
+        showTaskList = state.target != AideLinkChatViewModel.Target.AIDELINK && !isOpenCodeWebTarget
         selectedTaskTab = 0
+    }
+
+    LaunchedEffect(state.target.key, state.ocWebRunning) {
+        openCodeWebConfig = if (isOpenCodeWebTarget) {
+            viewModel.resolveOpenCodeWebConfig()
+        } else {
+            null
+        }
     }
 
     LaunchedEffect(state.toastMessage) {
@@ -349,6 +366,9 @@ fun AideLinkChatScreen(
             viewModel.consumePendingCalibrationRequest()
             viewModel.setMonitorScreenVisible(true)
             viewModel.onResumeRefresh()
+            if (isOpenCodeWebTarget) {
+                openCodeSessionViewModel.loadSessions()
+            }
         } else {
             viewModel.setMonitorScreenVisible(false)
         }
@@ -393,11 +413,44 @@ fun AideLinkChatScreen(
                         .padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = state.currentProjectName.ifBlank { if (state.target == AideLinkChatViewModel.Target.AIDELINK) "Aide" else state.target.label },
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    var projectMenuExpanded by remember { mutableStateOf(false) }
+                    Box {
+                        Row(
+                            modifier = Modifier
+                                .clickable { projectMenuExpanded = true }
+                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = state.currentProjectName.ifBlank { if (state.target == AideLinkChatViewModel.Target.AIDELINK) "Aide" else state.target.label },
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = "切换项目", modifier = Modifier.size(18.dp))
+                        }
+                        DropdownMenu(
+                            expanded = projectMenuExpanded,
+                            onDismissRequest = { projectMenuExpanded = false },
+                        ) {
+                            state.projects.forEach { project ->
+                                DropdownMenuItem(
+                                    text = { Text(project.name.ifBlank { project.path.substringAfterLast('\\') }) },
+                                    onClick = {
+                                        projectMenuExpanded = false
+                                        viewModel.selectProject(project.path)
+                                    },
+                                    leadingIcon = if (project.path.equals(state.currentProjectPath, ignoreCase = true)) {
+                                        { Icon(Icons.Default.Check, contentDescription = null) }
+                                    } else null,
+                                )
+                            }
+                            if (state.projects.isEmpty()) {
+                                DropdownMenuItem(text = { Text("请先在设置中添加项目") }, onClick = { projectMenuExpanded = false })
+                            }
+                        }
+                    }
 
                     Spacer(modifier = Modifier.width(6.dp))
 
@@ -468,6 +521,7 @@ fun AideLinkChatScreen(
                     currentTarget = state.target,
                     monitorByTarget = monitorByTarget,
                     selectedIdeList = state.selectedIdeList,
+                    desktopIdes = state.desktopIdes,
                     ideRunningMap = state.ideRunningMap,
                     quickReplies = state.quickReplies,
                     isPromptMode = state.isPromptMode,
@@ -486,7 +540,8 @@ fun AideLinkChatScreen(
                     },
                     onTargetChange = { newTarget ->
                         viewModel.setTarget(newTarget)
-                        showTaskList = newTarget != AideLinkChatViewModel.Target.AIDELINK
+                        showTaskList = newTarget != AideLinkChatViewModel.Target.AIDELINK &&
+                            newTarget.key != AideLinkChatViewModel.Target.OPENCODE_WEB.key
                     },
                     onMonitorToggle = { target ->
                         val current = monitorByTarget[target] == true
@@ -497,8 +552,6 @@ fun AideLinkChatScreen(
                         showClipboardSheet = true
                     },
                     onWakeScreen = viewModel::wakeScreen,
-                    onStartIde = { ide -> viewModel.startIde(ide) },
-                    onStopIde = { ide -> viewModel.stopIde(ide) },
                     onRefreshIdeStatus = { viewModel.loadIdeRunningStatus(); viewModel.loadOcWebStatus() },
                     onQuickReply = { text ->
                         showTaskList = false
@@ -506,7 +559,7 @@ fun AideLinkChatScreen(
                     },
                     onAddQuickReply = { text -> viewModel.addQuickReply(text) },
                     onRemoveQuickReply = { text -> viewModel.removeQuickReply(text) },
-                    onShowDesktopIdeDialog = { viewModel.setShowDesktopIdeDialog(true) },
+                    onShowDesktopIdeDialog = viewModel::openDesktopIdeDialog,
                     projectMapExpanded = state.projectMapExpanded,
                     onToggleProjectMap = viewModel::toggleProjectMap,
                     onRefreshTasks = viewModel::loadTasks,
@@ -533,6 +586,25 @@ fun AideLinkChatScreen(
                             coroutineScope.launch {
                                 val cfg = viewModel.resolveOpenCodeWebConfig()
                                 if (cfg != null) onNavigateToOpenCodeWeb(cfg.url, cfg.username, cfg.password)
+                            }
+                        }
+                    },
+                    openCodeSessionCreating = openCodeSessionCreating,
+                    onCreateOpenCodeSession = {
+                        val config = openCodeWebConfig
+                        val projectPath = state.currentProjectPath
+                        when {
+                            config == null -> Toast.makeText(context, "OpenCode 连接配置尚未就绪", Toast.LENGTH_SHORT).show()
+                            projectPath.isBlank() -> Toast.makeText(context, "请先在左上角选择项目", Toast.LENGTH_SHORT).show()
+                            else -> {
+                                openCodeSessionCreating = true
+                                openCodeSessionViewModel.createNewSession(
+                                    directory = projectPath,
+                                    initialPrompt = state.input,
+                                ) { success ->
+                                    openCodeSessionCreating = false
+                                    if (success) viewModel.setInput("")
+                                }
                             }
                         }
                     },
@@ -581,7 +653,7 @@ fun AideLinkChatScreen(
                 )
             }
 
-            if (showMonitorPanel && state.target != AideLinkChatViewModel.Target.OPENCODE_WEB) {
+            if (showMonitorPanel && !isOpenCodeWebTarget) {
                 ScreenMonitorPanel(
                     active = state.monitorActive,
                     windowFound = state.windowFound,
@@ -630,19 +702,6 @@ fun AideLinkChatScreen(
                 HorizontalDivider()
             }
 
-            if (state.target == AideLinkChatViewModel.Target.OPENCODE_WEB) {
-                OcWebStatusCard(
-                    running = state.ocWebRunning,
-                    loading = state.ocWebLoading,
-                    port = state.ocWebPort,
-                    statusMessage = state.ocWebStatusMessage,
-                    latestReply = state.ocWebLatestReply,
-                    sessionTitle = state.ocWebSessionTitle,
-                    onRefreshReply = viewModel::loadOcWebLatestReply,
-                )
-                HorizontalDivider()
-            }
-
             Box(modifier = Modifier.fillMaxSize()) {
                 if (activeTask != null) {
                     TaskThreadPanel(
@@ -655,6 +714,37 @@ fun AideLinkChatScreen(
                         onEdit = { viewModel.startTaskEdit(activeTask.task_id) },
                         modifier = Modifier.fillMaxSize(),
                     )
+                } else if (isOpenCodeWebTarget && !showTaskList) {
+                    val config = openCodeWebConfig
+                    if (config != null) {
+                        SessionListScreen(
+                            onNavigateToChat = { sessionId, directory ->
+                                val projectDirectory = directory.ifBlank { state.currentProjectPath }
+                                val sessionUrl = buildOpenCodeWebSessionUrl(config.url, projectDirectory, sessionId)
+                                onNavigateToOpenCodeWeb?.invoke(sessionUrl, config.username, config.password)
+                            },
+                            onNavigateBack = {},
+                            serverId = "aidelink-opencode-main",
+                            serverUrl = config.url,
+                            username = config.username,
+                            password = config.password,
+                            serverName = "OpenCode 会话",
+                            embedded = true,
+                            viewModel = openCodeSessionViewModel,
+                        )
+                    } else {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            OcWebStatusCard(
+                                running = state.ocWebRunning,
+                                loading = state.ocWebLoading,
+                                port = state.ocWebPort,
+                                statusMessage = state.ocWebStatusMessage,
+                                latestReply = state.ocWebLatestReply,
+                                sessionTitle = state.ocWebSessionTitle,
+                                onRefreshReply = viewModel::loadOcWebLatestReply,
+                            )
+                        }
+                    }
                 } else if (!showTaskList) {
                     // 显示对话气泡
                     when {
@@ -992,19 +1082,44 @@ fun AideLinkChatScreen(
     }
 }
     if (state.showDesktopIdeDialog) {
-        DesktopIdeManagerDialog(
+        IdeControlDialog(
+            currentTarget = state.target,
             ides = state.desktopIdes,
+            desktopIdesLoading = state.desktopIdesLoading,
             ideRunningMap = state.ideRunningMap,
+            projects = state.projects,
+            currentProjectPath = state.currentProjectPath,
             onRefresh = viewModel::loadDesktopIdes,
             onScan = viewModel::scanDesktopIdes,
-            onBrowse = viewModel::browseIdePath,
-            onAdd = viewModel::addDesktopIde,
-            onRemove = viewModel::removeDesktopIde,
             onStart = viewModel::startIde,
             onStop = viewModel::stopIde,
+            onSwitchProject = viewModel::switchIdeProject,
+            onUpdateProfile = viewModel::updateIdeProfile,
+            historySessions = state.ideHistorySessions,
+            historyLoading = state.ideHistoryLoading,
+            onLoadHistory = viewModel::loadIdeHistory,
+            onOpenHistory = viewModel::openIdeHistory,
             onInstallMcp = viewModel::installMcp,
             onBindWindow = viewModel::bindIdeWindowAndCalibrate,
             onCalibrate = viewModel::openIdeCalibration,
+            ocWebRunning = state.ocWebRunning,
+            onOcWebToggle = viewModel::toggleOcWeb,
+            onOpenSessions = {
+                if (onNavigateToOpenCodeSessions != null) {
+                    coroutineScope.launch {
+                        val cfg = viewModel.resolveOpenCodeWebConfig()
+                        if (cfg != null) onNavigateToOpenCodeSessions(cfg.url, cfg.username, cfg.password)
+                    }
+                }
+            },
+            onOpenWeb = {
+                if (onNavigateToOpenCodeWeb != null) {
+                    coroutineScope.launch {
+                        val cfg = viewModel.resolveOpenCodeWebConfig()
+                        if (cfg != null) onNavigateToOpenCodeWeb(cfg.url, cfg.username, cfg.password)
+                    }
+                }
+            },
             onDismiss = { viewModel.setShowDesktopIdeDialog(false) }
         )
     }

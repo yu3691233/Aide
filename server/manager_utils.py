@@ -1,4 +1,5 @@
 import os
+import os
 import sys
 import json
 import time
@@ -79,8 +80,11 @@ def kill_existing_processes(exclude_pid=None):
     creationflags = 0x08000000 if os.name == 'nt' else 0
     curr_dir = str(BASE_DIR)
 
-    subprocess.run(["taskkill", "/F", "/T", "/FI", "WINDOWTITLE eq aidelink-watchdog-service*"], capture_output=True, creationflags=creationflags)
-    subprocess.run(["taskkill", "/F", "/T", "/FI", "WINDOWTITLE eq aidelink-bridge-service*"], capture_output=True, creationflags=creationflags)
+    # 不使用 /T：IDE 可能由 Flask/托盘启动，递归结束进程树会误伤 IDE。
+    # 先按窗口标题清理服务，再按脚本/PID 精确清理 AideLink 自有进程。
+    for title in ("aidelink-watchdog-service*", "aidelink-bridge-service*"):
+        subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq {title}"],
+                       capture_output=True, creationflags=creationflags)
 
     pid_file = os.path.join(curr_dir, "manager.pid")
     if os.path.exists(pid_file):
@@ -88,7 +92,7 @@ def kill_existing_processes(exclude_pid=None):
             with open(pid_file, "r") as f:
                 pid = int(f.read().strip())
             if pid != my_pid:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, creationflags=creationflags)
+                subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, creationflags=creationflags)
             os.remove(pid_file)
         except Exception:
             pass
@@ -96,35 +100,60 @@ def kill_existing_processes(exclude_pid=None):
     owned_markers = (
         "bridge_watchdog.py", "phone_chat_bridge.py", "manager.py",
         "manager_tray.py", "tray_app.py", "mascot_tray.py",
+        "manager_process.py", "start_manager.py",
     )
 
-    for proc in psutil.process_iter(attrs=["pid", "name", "cmdline"]):
+    def stop_pid(pid):
+        if not pid or pid == my_pid:
+            return
         try:
-            if proc.info["pid"] == my_pid:
-                continue
-            cmdline = proc.info.get("cmdline") or []
-            cmd_str = " ".join(cmdline).lower()
-            if any(x in cmd_str for x in owned_markers) and _is_aidelink_process(proc, cmd_str, curr_dir):
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.info["pid"])], capture_output=True, creationflags=creationflags)
+            proc = psutil.Process(pid)
+            proc.terminate()
+            proc.wait(timeout=1.5)
+        except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
+            pass
+        try:
+            if psutil.pid_exists(pid) and pid != my_pid:
+                subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                               capture_output=True, creationflags=creationflags)
         except Exception:
             pass
+
+    # 多轮扫描：watchdog 退出后可能刚好留下 bridge，避免一次扫描漏掉旧进程。
+    for _ in range(3):
+        matched = []
+        for proc in psutil.process_iter(attrs=["pid", "name", "cmdline"]):
+            try:
+                pid = proc.info["pid"]
+                cmdline = proc.info.get("cmdline") or []
+                cmd_str = " ".join(cmdline).lower()
+                if (pid != my_pid and any(x in cmd_str for x in owned_markers)
+                        and _is_aidelink_process(proc, cmd_str, curr_dir)):
+                    matched.append(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        for pid in matched:
+            stop_pid(pid)
+        if not matched:
+            break
+        time.sleep(0.2)
 
     for proc in psutil.process_iter(attrs=["pid", "name", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()
             cmd_str = " ".join(proc.info.get("cmdline") or []).lower()
             if name in ("frpc.exe", "frpc") and _is_aidelink_process(proc, cmd_str, curr_dir):
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.info["pid"])], capture_output=True, creationflags=creationflags)
+                subprocess.run(["taskkill", "/F", "/PID", str(proc.info["pid"])], capture_output=True, creationflags=creationflags)
         except Exception:
             pass
 
     for conn in psutil.net_connections(kind="tcp"):
-        if conn.laddr.port == FLASK_SERVICE_PORT and conn.pid and conn.pid != my_pid:
+        if conn.laddr.port in (FLASK_SERVICE_PORT, 5001) and conn.pid and conn.pid != my_pid:
             try:
                 proc = psutil.Process(conn.pid)
                 cmd_str = " ".join(proc.cmdline()).lower()
                 if _is_aidelink_process(proc, cmd_str, curr_dir):
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(conn.pid)], capture_output=True, creationflags=creationflags)
+                    subprocess.run(["taskkill", "/F", "/PID", str(conn.pid)], capture_output=True, creationflags=creationflags)
             except Exception:
                 pass
     time.sleep(0.5)
@@ -171,6 +200,8 @@ def load_config():
         "flask_host": FLASK_SERVICE_HOST,
         "flask_port": FLASK_SERVICE_PORT,
         "auto_start": False,
+        "open_browser_on_start": False,
+        "allow_elevated_ide_launch": False,
         "log_level": "INFO",
         "theme": "dark",
         "frp": {

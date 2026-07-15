@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cc.aidelink.app.ui.screens.chat.AideLinkChatViewModel
 import cc.aidelink.app.ui.screens.chat.TargetIcon
+import cc.aidelink.app.domain.model.bridge.DesktopIde
 
 @Composable
 fun ChatInputBar(
@@ -31,6 +32,7 @@ fun ChatInputBar(
     currentTarget: AideLinkChatViewModel.Target,
     monitorByTarget: Map<AideLinkChatViewModel.Target, Boolean>,
     selectedIdeList: List<String> = emptyList(),
+    desktopIdes: List<DesktopIde> = emptyList(),
     ideRunningMap: Map<String, Boolean> = emptyMap(),
     quickReplies: List<String> = emptyList(),
     isPromptMode: Boolean = false,
@@ -43,8 +45,6 @@ fun ChatInputBar(
     onMonitorToggle: (AideLinkChatViewModel.Target) -> Unit,
     onClipboard: () -> Unit,
     onWakeScreen: () -> Unit,
-    onStartIde: (String) -> Unit = {},
-    onStopIde: (String) -> Unit = {},
     onRefreshIdeStatus: () -> Unit = {},
     onQuickReply: (String) -> Unit = {},
     onAddQuickReply: (String) -> Unit = {},
@@ -69,8 +69,11 @@ fun ChatInputBar(
     ocWebRunning: Boolean = false,
     onOcWebToggle: () -> Unit = {},
     onOpenWeb: () -> Unit = {},
+    openCodeSessionCreating: Boolean = false,
+    onCreateOpenCodeSession: () -> Unit = {},
 ) {
     val context = LocalContext.current
+    val isOpenCodeWebTarget = currentTarget.key == AideLinkChatViewModel.Target.OPENCODE_WEB.key
     val focusManager = LocalFocusManager.current
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -112,63 +115,67 @@ fun ChatInputBar(
                     }
                     val visibleTargets = buildList {
                         add(AideLinkChatViewModel.Target.AIDELINK)
-                        for (key in selectedIdeList) {
-                            if (key == "aide") continue
-                            val target = AideLinkChatViewModel.Target.fromKey(key)
-                            if (target.key != "aide") add(target)
+                        // 桌面 OpenCode 与 OpenCode Web 是两个独立目标。
+                        add(AideLinkChatViewModel.Target.OPENCODE)
+                        selectedIdeList.forEach { key ->
+                            if (key == "aide" || key == "opencode" || key == "oc_web") return@forEach
+                            val ide = desktopIdes.firstOrNull { it.key == key }
+                            add(
+                                ide?.let { AideLinkChatViewModel.Target(it.key, it.name, it.icon, it.color) }
+                                    ?: AideLinkChatViewModel.Target.fromKey(key)
+                            )
                         }
-                        if (none { it.key == "oc_web" }) add(AideLinkChatViewModel.Target.OPENCODE_WEB)
-                    }
+                        add(AideLinkChatViewModel.Target.OPENCODE_WEB)
+                    }.distinctBy { it.key }
                     DropdownMenu(
                         expanded = targetDropdown,
-                        onDismissRequest = { targetDropdown = false }
+                        onDismissRequest = { targetDropdown = false },
                     ) {
-                        visibleTargets.forEach { t ->
-                            val isIdeTarget = t.key != "aide"
-                            val isOcWeb = t.key == "oc_web"
-                            val isRunning = if (isOcWeb) ocWebRunning else (ideRunningMap[t.key] ?: false)
+                        visibleTargets.forEach { target ->
+                            val running = if (target.key == "oc_web") ocWebRunning
+                                else ideRunningMap[target.key] ?: false
                             DropdownMenuItem(
                                 text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        TargetIcon(t, size = 16.dp)
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(t.label)
-                                            if (isIdeTarget) {
-                                                Text(
-                                                    if (isRunning) "运行中" else "未运行",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = if (isRunning) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                        }
-                                        if (isIdeTarget) {
-                                            Switch(
-                                                checked = isRunning,
-                                                onCheckedChange = { checked ->
-                                                    if (isOcWeb) {
-                                                        onOcWebToggle()
-                                                    } else {
-                                                        if (checked) onStartIde(t.key) else onStopIde(t.key)
-                                                    }
-                                                },
-                                                modifier = Modifier.height(24.dp)
+                                    Column {
+                                        Text(target.label)
+                                        if (target.key != "aide") {
+                                            Text(
+                                                if (running) "运行中" else "未运行",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (running) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
                                         }
                                     }
                                 },
+                                leadingIcon = { TargetIcon(target, size = 16.dp) },
                                 onClick = {
-                                    onTargetChange(t)
+                                    onTargetChange(target)
                                     targetDropdown = false
-                                }
+                                },
                             )
                         }
                     }
                 }
 
+                IconButton(
+                    onClick = {
+                        onRefreshIdeStatus()
+                        onShowDesktopIdeDialog()
+                    },
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Tune,
+                        contentDescription = "IDE 功能",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+
                 Spacer(modifier = Modifier.weight(1f))
 
                 // OC Web 启停开关 + 打开Web / 其他 IDE 监控开关
-                if (currentTarget == AideLinkChatViewModel.Target.OPENCODE_WEB) {
+                if (isOpenCodeWebTarget) {
                     IconButton(onClick = onOpenWeb, modifier = Modifier.size(32.dp)) {
                         Icon(
                             Icons.Default.OpenInNew,
@@ -325,6 +332,7 @@ fun ChatInputBar(
                                 taskEditMode -> "修改任务内容…"
                                 taskThreadMode -> "补充到当前任务…"
                                 offlineTaskMode -> "输入离线任务…"
+                                isOpenCodeWebTarget -> "输入新会话的第一条消息…"
                                 else -> "发消息…"
                             }
                         )
@@ -392,6 +400,64 @@ fun ChatInputBar(
                                 modifier = Modifier.size(18.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        }
+                    }
+                } else if (isOpenCodeWebTarget) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (isFocused) {
+                            IconButton(
+                                onClick = {
+                                    onOptimizeTaskPrompt()
+                                    focusManager.clearFocus()
+                                },
+                                enabled = input.isNotBlank() && !openCodeSessionCreating,
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = "AI 优化", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        FilledTonalButton(
+                            onClick = {
+                                onCreateOpenCodeSession()
+                                focusManager.clearFocus()
+                            },
+                            // The bridge's OC Web running flag can lag behind the session API.
+                            // Let the real create request decide availability so a usable
+                            // OpenCode connection never leaves this button silently disabled.
+                            enabled = input.isNotBlank() && !openCodeSessionCreating,
+                            contentPadding = PaddingValues(horizontal = if (isFocused) 10.dp else 8.dp, vertical = 6.dp),
+                        ) {
+                            if (openCodeSessionCreating) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 1.5.dp)
+                            } else {
+                                Icon(Icons.Default.AddComment, contentDescription = null, modifier = Modifier.size(16.dp))
+                            }
+                            if (isFocused) {
+                                Spacer(Modifier.width(4.dp))
+                                Text("创建会话")
+                            }
+                        }
+                        IconButton(
+                            onClick = {
+                                onSendToTaskList()
+                                focusManager.clearFocus()
+                            },
+                            enabled = input.isNotBlank() && !openCodeSessionCreating,
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            Icon(Icons.Default.PlaylistAdd, contentDescription = "加入任务", modifier = Modifier.size(18.dp))
+                        }
+                        if (!isFocused) {
+                            IconButton(onClick = onToggleTaskList, modifier = Modifier.size(36.dp)) {
+                                Icon(
+                                    imageVector = if (showTaskList) Icons.Default.Chat else Icons.Default.FormatListBulleted,
+                                    contentDescription = "切换会话与任务",
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
                         }
                     }
                 } else if (!isFocused) {

@@ -15,7 +15,7 @@ from json_utils import safe_read_json, safe_write_json
 
 screenshot_bp = Blueprint('screenshot', __name__)
 # 保留旧白名单用于快速路径,但实际判断走 _is_window_target 动态查找
-_WINDOW_TARGETS = ('trae', 'trae_cn', 'agy', 'mimo', 'mimocode', 'oc', 'codex')
+_WINDOW_TARGETS = ('trae', 'trae_cn', 'antigravity_ide', 'mimo', 'mimocode', 'oc', 'codex')
 
 
 def _is_window_target(target):

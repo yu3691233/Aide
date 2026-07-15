@@ -7,6 +7,7 @@ import threading
 import subprocess
 import webbrowser
 import tempfile
+import winreg
 from urllib.parse import quote
 from pathlib import Path
 
@@ -194,16 +195,154 @@ def show_main_window():
     webbrowser.open("http://127.0.0.1:5000")
 
 
-def _tray_toggle_open_browser():
+def _get_target_projects():
+    """Read the same target-project list shown by the Web manager."""
     try:
-        config = load_config()
-        # 默认值为 True
-        current = config.get("open_browser_on_start", True)
-        config["open_browser_on_start"] = not current
-        save_config(config)
+        response = _requests.get("http://127.0.0.1:5000/api/projects", timeout=2)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("projects", []), data.get("current_project", "")
+    except Exception:
+        logger.debug("读取目标项目列表失败", exc_info=True)
+        return [], ""
+
+
+def _discover_running_ide_projects():
+    """Best-effort discovery from IDE process working directories/arguments."""
+    try:
+        import ide_scanner
+        ide_paths = {
+            os.path.normcase(os.path.abspath(item.get("path", "")))
+            for item in ide_scanner.get_all_ides() if item.get("path")
+        }
+        candidates = {}
+        from ide_project_bindings import load_bindings
+        for path in load_bindings().values():
+            if os.path.isdir(path) and _looks_like_project(path):
+                candidates[os.path.normcase(path)] = path
+        for process in __import__("psutil").process_iter(["exe", "cwd", "cmdline"]):
+            try:
+                exe = os.path.normcase(os.path.abspath(process.info.get("exe") or ""))
+                if exe not in ide_paths:
+                    continue
+                values = [process.info.get("cwd") or ""]
+                values.extend(process.info.get("cmdline") or [])
+                for value in values:
+                    value = value.strip().strip('"')
+                    if os.path.isdir(value) and _looks_like_project(value):
+                        candidates[os.path.normcase(value)] = value
+            except (OSError, ValueError):
+                continue
+        return sorted(candidates.values(), key=lambda path: path.lower())
+    except Exception:
+        logger.debug("从运行中的 IDE 发现项目失败", exc_info=True)
+        return []
+
+
+def _looks_like_project(path):
+    markers = (".git", "package.json", "settings.gradle", "settings.gradle.kts",
+               "pom.xml", "Cargo.toml", "pyproject.toml")
+    return any(os.path.exists(os.path.join(path, marker)) for marker in markers)
+
+
+def _build_discovered_project_menu():
+    items = []
+    for path in _discover_running_ide_projects():
+        items.append(MenuItem(
+            os.path.basename(path) or path,
+            _project_select_handler(path),
+        ))
+    if not items:
+        items.append(MenuItem("未发现明确的项目目录", None, enabled=False))
+    return Menu(*items)
+
+
+def _select_target_project(path):
+    """Select a configured target project through the normal Web API."""
+    try:
+        response = _requests.post(
+            "http://127.0.0.1:5000/api/projects/select",
+            json={"path": path},
+            timeout=10,
+        )
+        response.raise_for_status()
+        result = response.json()
+        if not result.get("ok", False):
+            logger.warning("切换目标项目失败: %s", result.get("message", "未知错误"))
+    except Exception:
+        logger.exception("切换目标项目失败: %s", path)
+    finally:
+        refresh_tray_menu()
+
+
+def _build_project_menu():
+    projects, current = _get_target_projects()
+    items = []
+    for project in projects:
+        path = project.get("path", "")
+        if not path:
+            continue
+        name = project.get("name") or os.path.basename(path)
+        marker = "✓ " if os.path.normcase(path) == os.path.normcase(current) else "   "
+        items.append(MenuItem(
+            f"{marker}{name}",
+            _project_select_handler(path),
+        ))
+    if not items:
+        items.append(MenuItem("暂无目标项目，请先在 Web 设置中添加", None, enabled=False))
+    return Menu(*items)
+
+
+def _project_select_handler(path):
+    def handler(icon, item):
+        threading.Thread(
+            target=_select_target_project, args=(path,), daemon=True
+        ).start()
+    return handler
+
+
+STARTUP_VALUE_NAME = "AideLink"
+
+
+def _startup_command():
+    """Return the command used by the per-user Windows startup entry."""
+    start_script = BASE_DIR / "start_services.py"
+    return f'"{sys.executable}" "{start_script}"'
+
+
+def _is_auto_start_enabled(_item=None):
+    if os.name != "nt":
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Run",
+                            0, winreg.KEY_READ) as key:
+            value, _ = winreg.QueryValueEx(key, STARTUP_VALUE_NAME)
+            return bool(value)
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def _set_auto_start(enabled):
+    if os.name != "nt":
+        return
+    try:
+        subkey = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                winreg.SetValueEx(key, STARTUP_VALUE_NAME, 0, winreg.REG_SZ, _startup_command())
+            else:
+                try:
+                    winreg.DeleteValue(key, STARTUP_VALUE_NAME)
+                except FileNotFoundError:
+                    pass
         refresh_tray_menu()
     except Exception as e:
-        logger.error(f"修改启动打开浏览器设置失败: {e}")
+        logger.error(f"修改开机启动设置失败: {e}")
+
+
+def _tray_toggle_auto_start():
+    _set_auto_start(not _is_auto_start_enabled())
 
 
 def get_adb_devices():
@@ -433,10 +572,6 @@ def build_tray_menu():
     status = get_service_status()
     status_text = "✅ 运行中" if status["running"] else "⏹ 已停止"
     
-    config = load_config()
-    open_browser_on_start = config.get("open_browser_on_start", True)
-    open_browser_check_text = "√ 启动时自动打开网页" if open_browser_on_start else "  启动时自动打开网页"
-
     devices = get_device_list()
     adb_devices = get_adb_devices()
 
@@ -511,25 +646,25 @@ def build_tray_menu():
         device_menu_items.append(MenuItem("  无已连接设备", None, enabled=False))
 
     frp_status = get_frp_status()
-    frp_text = f"🌐 FRP 穿透  {'✅ 已开启' if frp_status['running'] else '⭕ 未开启'}"
 
     return Menu(
-        MenuItem(f"AideLink 管理器 — {status_text}", None, enabled=False),
+        MenuItem(f"AideLink  ·  {status_text}", None, enabled=False),
         Menu.SEPARATOR,
-        MenuItem("📊 打开管理面板", lambda: show_main_window(), default=True),
-        MenuItem(open_browser_check_text, _tray_toggle_open_browser),
+        MenuItem("打开管理面板", lambda: show_main_window(), default=True),
+        MenuItem("开机启动 AideLink", _tray_toggle_auto_start, checked=_is_auto_start_enabled),
         Menu.SEPARATOR,
-        *device_menu_items,
+        MenuItem("设备连接", Menu(*device_menu_items)),
+        MenuItem("发现运行中的 IDE 项目", _build_discovered_project_menu()),
         Menu.SEPARATOR,
-        MenuItem("🚀 启动服务", _tray_start_service, enabled=not status["running"]),
-        MenuItem("⏹ 停止服务", _tray_stop_service, enabled=status["running"]),
-        MenuItem("🔄 一键强杀重启", _tray_restart_service),
+        MenuItem("启动服务", _tray_start_service, enabled=not status["running"]),
+        MenuItem("停止服务", _tray_stop_service, enabled=status["running"]),
+        MenuItem("重启服务", _tray_restart_service),
         Menu.SEPARATOR,
-        MenuItem(frp_text, _tray_toggle_frp),
+        MenuItem(f"FRP 穿透  ·  {'已开启' if frp_status['running'] else '未开启'}", _tray_toggle_frp),
         Menu.SEPARATOR,
-        MenuItem("📁 打开数据目录", lambda: os.startfile(str(BASE_DIR))),
+        MenuItem("选择目标项目", _build_project_menu()),
         Menu.SEPARATOR,
-        MenuItem("❌ 退出", lambda: on_tray_exit()),
+        MenuItem("退出 AideLink", lambda: on_tray_exit()),
     )
 
 
@@ -610,10 +745,9 @@ def run_manager():
     else:
         logger.info("Flask 服务已在运行中")
 
-    # 根据配置判断是否在启动时打开浏览器
+    # 是否打开网页由 Web 设置控制，默认关闭，避免开机启动打扰用户。
     config = load_config()
-    if config.get("open_browser_on_start", True):
-        # 延迟一点时间，让 Flask 充分初始化完毕后再打开网页
+    if config.get("open_browser_on_start", False):
         threading.Timer(1.5, show_main_window).start()
 
     global tray_icon

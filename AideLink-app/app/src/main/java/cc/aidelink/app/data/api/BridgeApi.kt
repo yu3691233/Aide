@@ -898,19 +898,54 @@ class BridgeApi(
         false
     }
 
-    suspend fun stopIde(ide: String): Boolean = try {
-        val resp = client.post("$baseUrl/ide/$ide/stop")
-        resp.status.isSuccess()
+    suspend fun stopIde(ide: String): Boolean = try {
+        val resp = client.post("$baseUrl/ide/$ide/stop")
+        resp.status.isSuccess()
     } catch (e: Exception) {
-        false
-    }
-
-    suspend fun getDesktopIdes(): List<DesktopIde> = try {
+        false
+    }
+
+    suspend fun openIdeProject(ide: String, path: String): Boolean = try {
+        val resp = client.post("$baseUrl/ide/$ide/open-project") {
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject { put("path", normalizeWindowsPath(path)) }.toString())
+        }
+        resp.status.isSuccess()
+    } catch (e: Exception) {
+        false
+    }
+
+    suspend fun updateIdeProfile(ide: String): Boolean = try {
+        val resp = client.post("$baseUrl/api/ide-profiles/$ide/update") {
+            contentType(ContentType.Application.Json)
+            setBody("{}")
+        }
+        resp.status.isSuccess()
+    } catch (e: Exception) {
+        false
+    }
+
+    suspend fun getIdeHistory(ide: String): List<IdeHistorySession> = try {
+        val resp = client.get("$baseUrl/ide/$ide/sessions")
+        if (!resp.status.isSuccess()) emptyList()
+        else json.decodeFromString<IdeHistoryResponse>(resp.bodyAsText()).sessions
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    suspend fun openIdeHistory(ide: String, threadId: String): Boolean = try {
+        val resp = client.post("$baseUrl/ide/$ide/sessions/$threadId/open")
+        resp.status.isSuccess()
+    } catch (e: Exception) {
+        false
+    }
+
+    suspend fun getDesktopIdes(): List<DesktopIde> = try {
         val resp = client.get("$baseUrl/api/desktop-ides")
         if (!resp.status.isSuccess()) emptyList()
         else runCatching {
             val body = resp.bodyAsText()
-            Json.decodeFromString<DesktopIdesResponse>(body).ides
+            json.decodeFromString<DesktopIdesResponse>(body).ides
         }.getOrNull() ?: emptyList()
     } catch (e: Exception) {
         emptyList()
@@ -921,7 +956,7 @@ class BridgeApi(
         if (!resp.status.isSuccess()) emptyList()
         else runCatching {
             val body = resp.bodyAsText()
-            Json.decodeFromString<IdeProcessesResponse>(body).ides
+            json.decodeFromString<IdeProcessesResponse>(body).ides
         }.getOrNull() ?: emptyList()
     } catch (e: Exception) {
         emptyList()
@@ -1071,6 +1106,14 @@ class BridgeApi(
             AppVersionResponse(ok = false, error = e.message ?: "网络错误")
         }
     }
+
+    suspend fun forceStopIde(ide: String): Boolean = try {
+        val resp = client.post("$baseUrl/api/stop-ide") {
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject { put("key", ide) }.toString())
+        }
+        resp.status.isSuccess()
+    } catch (e: Exception) { false }
 
     suspend fun installMcp(ide: String): Boolean = ideApi.installMcp(ide)
     suspend fun autoBindIdeWindow(ide: String): Boolean = ideApi.autoBindWindow(ide)

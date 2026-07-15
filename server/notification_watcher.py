@@ -29,7 +29,7 @@ DEFAULT_AUMID_MAP = {
     "Cursor": "cursor",
     "OpenCode": "oc",
     "MimoCode": "mimo",
-    "Antigravity": "agy",
+    "Antigravity": "antigravity_ide",
 }
 
 # 通知数据库路径
@@ -216,8 +216,8 @@ class NotificationWatcher:
         ide_key = self._match_ide(notif["aumid"])
         if not ide_key:
             text_to_check = f"{notif.get('title', '')} {notif.get('body', '')}".lower()
-            if "antigravity" in text_to_check or "agy" in text_to_check:
-                ide_key = "agy"
+            if "antigravity" in text_to_check or "antigravity_ide" in text_to_check:
+                ide_key = "antigravity_ide"
             else:
                 ide_key = "PC"
 

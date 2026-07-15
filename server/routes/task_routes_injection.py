@@ -19,30 +19,16 @@ def _inject_to_ide(target_ide, message, task_id=""):
     # Web OpenCode：本机 Web 端，走 HTTP API
     if target_ide == "oc_web":
         try:
-            import requests
             from config import load_settings
+            from opencode_client import send_prompt
 
-            _settings = load_settings()
-            _port = _settings.get("opencode_web_port", 4096)
-            _username = _settings.get("opencode_web_username") or ""
-            _password = _settings.get("opencode_web_password") or ""
-            _auth = (_username, _password) if _password else None
-            oc_url = f"http://127.0.0.1:{_port}"
-
-            resp = requests.post(
-                f"{oc_url}/api/prompt",
-                json={"message": message, "task_id": task_id},
-                auth=_auth,
-                timeout=10,
-            )
-
-            if resp.status_code == 200:
-                return True, f"已提交到 Web OpenCode ({oc_url})"
-
-            return False, f"Web OpenCode 返回错误 ({resp.status_code}): {resp.text[:200]}"
+            settings = load_settings()
+            directory = settings.get("current_project", "") or settings.get("project_dir", "")
+            result = send_prompt(message, task_id=task_id, directory=directory, settings=settings)
+            return True, f"已提交到 OpenCode 会话 {result['session_id']}"
 
         except Exception as e:
-            return False, f"Web OpenCode 请求失败: {e}"
+            return False, f"OpenCode 请求失败: {e}"
 
     # 写入 phone_in.txt（供 bridge 监控读取）
     try:

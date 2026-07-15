@@ -24,7 +24,7 @@ layout_bp = Blueprint("window_layout", __name__)
 WINDOW_KEYWORDS = {
     "trae": ["TRAE SOLO"],
     "trae_cn": ["TRAE SOLO CN"],
-    "agy": ["Antigravity IDE", "Antigravity"],
+    "antigravity_ide": ["Antigravity IDE", "Antigravity"],
     "mimo": ["MiMoCode", "MC |", "MC "],
     "oc": ["OpenCode"],
 }

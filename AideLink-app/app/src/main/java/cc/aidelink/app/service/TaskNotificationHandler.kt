@@ -398,7 +398,7 @@ class TaskNotificationHandler @Inject constructor(
         "trae" -> "Trae"
         "oc", "opencode" -> "OpenCode"
         "mimo", "mimocode" -> "MimoCode"
-        "agy", "antigravity" -> "Antigravity"
+        "antigravity_ide" -> "Antigravity IDE"
         "cursor" -> "Cursor"
         "aide" -> "Aide"
         else -> ide

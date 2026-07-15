@@ -36,7 +36,7 @@ def _load_supported_ides():
     except Exception:
         pass
     if not keys:
-        return ("trae", "trae_cn", "agy", "oc", "mimo")
+        return ("trae", "trae_cn", "antigravity_ide", "oc", "mimo")
     return tuple(keys)
 
 

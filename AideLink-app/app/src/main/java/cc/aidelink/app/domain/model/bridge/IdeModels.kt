@@ -28,9 +28,25 @@ data class DesktopIde(
     val is_primary: Boolean = false,
     val icon: String = "",
     val color: String = "#90A4AE",
+    val profile_version: String = "",
+    val profile_source: String = "",
+    val capabilities: List<String> = emptyList(),
 )
 
 @Serializable
 data class IdeProcessesResponse(
     val ides: List<DesktopIde> = emptyList(),
+)
+
+@Serializable
+data class IdeHistorySession(
+    val id: String = "",
+    val title: String = "",
+    val updated_at: String = "",
+)
+
+@Serializable
+data class IdeHistoryResponse(
+    val ok: Boolean = false,
+    val sessions: List<IdeHistorySession> = emptyList(),
 )

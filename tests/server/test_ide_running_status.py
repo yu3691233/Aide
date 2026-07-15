@@ -44,7 +44,9 @@ class IdeRunningStatusTests(unittest.TestCase):
             NoSuchProcess=RuntimeError,
             AccessDenied=PermissionError,
         )
-        with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        with patch("dispatch_utils._has_visible_window_for_pid", return_value=True), patch.dict(
+            sys.modules, {"psutil": fake_psutil}
+        ):
             statuses = get_ide_running_statuses(self.ides)
 
         self.assertEqual(1, process_iter_calls)

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "key": "codex",
+  "version": "1.1.0",
+  "display_name": "ChatGPT",
+  "capabilities": [
+    "launch",
+    "open_project",
+    "stop",
+    "bind_window",
+    "calibrate",
+    "install_mcp",
+    "profile_update",
+    "history"
+  ],
+  "launch": {
+    "mode": "appx",
+    "aumid": "OpenAI.Codex_2p2nqsd0c76g0!App"
+  },
+  "project": {
+    "mode": "uri",
+    "template": "codex://threads/new?path={project_uri}"
+  },
+  "history": {
+    "mode": "codex_session_index",
+    "open_template": "codex://threads/{thread_id}"
+  }
+}

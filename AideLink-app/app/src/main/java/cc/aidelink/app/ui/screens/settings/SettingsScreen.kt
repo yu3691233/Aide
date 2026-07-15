@@ -391,6 +391,13 @@ class AideLinkSettingsViewModel @Inject constructor(
         }
     }
 
+    fun forceStopIde(key: String) {
+        viewModelScope.launch {
+            val ok = bridgeApi.forceStopIde(key)
+            _state.value = _state.value.copy(scanMessage = if (ok) "已强制关闭 ${key}" else "强制关闭失败")
+        }
+    }
+
     fun addIdeFromDesktop() {
         viewModelScope.launch {
             val rawPath = bridgeApi.browsePath("从电脑选择 IDE 入口") ?: return@launch

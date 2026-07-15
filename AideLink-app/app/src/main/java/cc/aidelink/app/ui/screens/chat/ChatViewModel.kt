@@ -118,10 +118,12 @@ class AideLinkChatViewModel @Inject constructor(
 
             val TRAE = Target("trae", "Trae", "", "#4FC3F7")
 
-            val ANTIGRAVITY = Target("agy", "Antigravity", "", "#CE93D8")
+            val ANTIGRAVITY = Target("antigravity_ide", "Antigravity IDE", "", "#CE93D8")
 
-            val OPENCODE = Target("oc", "OpenCode", "", "#81C784")
+            val OPENCODE = Target("opencode", "OpenCode", "", "#81C784")
 
+            // OpenCode 桌面端、Web 和原生会话页共享同一服务端会话。
+            // 桌面 OpenCode 使用 IDE 扫描返回的 opencode key；Web 使用独立 oc_web key。
             val OPENCODE_WEB = Target("oc_web", "OpenCode Web", "", "#26A69A")
 
             val MIMOCODE = Target("mimo", "MiMoCode", "", "#FFB74D")
@@ -156,9 +158,13 @@ class AideLinkChatViewModel @Inject constructor(
 
 
 
-            fun fromKey(key: String): Target =
+            // 桌面 OpenCode 与 OpenCode Web 保持独立，不做别名迁移。
+            fun canonicalUserKey(key: String): String = key
 
-                entries.find { it.key == key } ?: Target(key, key)
+            fun fromKey(key: String): Target {
+                val canonicalKey = canonicalUserKey(key)
+                return entries.find { it.key == canonicalKey } ?: Target(canonicalKey, canonicalKey)
+            }
 
         }
 
@@ -262,7 +268,13 @@ class AideLinkChatViewModel @Inject constructor(
 
         val desktopIdes: List<DesktopIde> = emptyList(),
 
+        val desktopIdesLoading: Boolean = false,
+
         val showDesktopIdeDialog: Boolean = false,
+
+        val ideHistorySessions: List<cc.aidelink.app.domain.model.bridge.IdeHistorySession> = emptyList(),
+
+        val ideHistoryLoading: Boolean = false,
 
         val monitors: List<cc.aidelink.app.domain.model.bridge.MonitorInfo> = emptyList(),
 
@@ -297,6 +309,8 @@ class AideLinkChatViewModel @Inject constructor(
         val currentProjectPath: String = "",
 
         val currentProjectName: String = "",
+
+        val projects: List<BridgeApi.ProjectInfo> = emptyList(),
 
         // ─── 任务管理状态 ───
 
@@ -431,9 +445,17 @@ class AideLinkChatViewModel @Inject constructor(
             reload()
             loadTasks()
 
-            val lastIdeKey = runCatching { settingsRepository.getDesktopIdeRaw() }.getOrDefault(Target.AIDELINK.key)
-            val savedIdeKeys = settingsRepository.getDesktopIdeList().toSet()
-            val locallyRestoredKey = if (lastIdeKey == Target.AIDELINK.key || lastIdeKey in savedIdeKeys) {
+            val rawLastIdeKey = runCatching { settingsRepository.getDesktopIdeRaw() }.getOrDefault(Target.AIDELINK.key)
+            val lastIdeKey = Target.canonicalUserKey(rawLastIdeKey)
+            val savedIdeKeys = settingsRepository.getDesktopIdeList().map(Target::canonicalUserKey).toSet()
+            if (rawLastIdeKey != lastIdeKey) {
+                runCatching { settingsRepository.setDesktopIde(lastIdeKey) }
+            }
+            val locallyRestoredKey = if (
+                lastIdeKey == Target.AIDELINK.key ||
+                lastIdeKey == Target.OPENCODE_WEB.key ||
+                lastIdeKey in savedIdeKeys
+            ) {
                 lastIdeKey
             } else {
                 Target.AIDELINK.key
@@ -457,7 +479,11 @@ class AideLinkChatViewModel @Inject constructor(
                 Target.setDynamicTargets(ides.map { Target(it.key, it.name, it.icon, it.color) })
             }
             // 启动目标只恢复用户上次选择，不再根据当前运行中的 IDE 推断。
-            val startupTargetKey = if (lastIdeKey == Target.AIDELINK.key || lastIdeKey in savedIdeKeys) {
+            val startupTargetKey = if (
+                lastIdeKey == Target.AIDELINK.key ||
+                lastIdeKey == Target.OPENCODE_WEB.key ||
+                lastIdeKey in savedIdeKeys
+            ) {
                 lastIdeKey
             } else {
                 Target.AIDELINK.key
@@ -557,8 +583,8 @@ class AideLinkChatViewModel @Inject constructor(
                         Target.setDynamicTargets(ides.map { AideLinkChatViewModel.Target(it.key, it.name, it.icon, it.color) })
                         // 智能合并：过滤掉服务端不存在的无效 key（如 trae → trae_cn 迁移）
                         if (ides.isNotEmpty()) {
-                            val serverKeys = ides.map { it.key }.toSet()
-                            val savedKeys = settingsRepository.getDesktopIdeList().toSet()
+                            val serverKeys = ides.map { it.key }.toSet() + Target.OPENCODE_WEB.key
+                            val savedKeys = settingsRepository.getDesktopIdeList().map(Target::canonicalUserKey).toSet()
                             // savedKeys 为空表示用户明确关闭了所有 IDE，尊重用户选择，不强制填充
                             if (savedKeys.isNotEmpty()) {
                                 val filtered = savedKeys.intersect(serverKeys).toList()
@@ -840,7 +866,7 @@ class AideLinkChatViewModel @Inject constructor(
 
         // 切换到 OC Web 时加载服务状态
 
-        if (target == Target.OPENCODE_WEB) {
+        if (target.key == Target.OPENCODE_WEB.key) {
 
             loadOcWebStatus()
 
@@ -972,7 +998,7 @@ class AideLinkChatViewModel @Inject constructor(
 
                 delay(2000L)
 
-                if (_state.value.target != Target.OPENCODE_WEB) return@launch
+                if (_state.value.target.key != Target.OPENCODE_WEB.key) return@launch
 
                 runCatching { bridgeApi.getOcWebLatestReply() }
 
@@ -2564,6 +2590,7 @@ class AideLinkChatViewModel @Inject constructor(
         viewModelScope.launch {
 
             val saved = settingsRepository.getDesktopIdeList()
+            val canonicalSaved = saved.map(Target::canonicalUserKey).distinct()
 
             val serverKeys = _state.value.desktopIdes.map { it.key }.toSet()
 
@@ -2571,11 +2598,11 @@ class AideLinkChatViewModel @Inject constructor(
 
             val filtered = if (serverKeys.isNotEmpty()) {
 
-                saved.filter { it in serverKeys || it == "oc_web" }
+                canonicalSaved.filter { it in serverKeys || it == Target.OPENCODE_WEB.key }
 
             } else {
 
-                saved
+                canonicalSaved
 
             }
 
@@ -2620,41 +2647,84 @@ class AideLinkChatViewModel @Inject constructor(
 
 
     fun startIde(ide: String) {
-
+        val displayName = if (ide == Target.CODEX.key) Target.CODEX.label else ide
+        _state.value = _state.value.copy(toastMessage = "正在启动 $displayName…")
         viewModelScope.launch(Dispatchers.IO) {
-
-            runCatching { bridgeApi.startIde(ide) }
-
-                .onSuccess {
-
-                    delay(1500)
-
-                    loadIdeRunningStatus()
-
-                }
-
+            val started = runCatching { bridgeApi.startIde(ide) }.getOrDefault(false)
+            if (!started) {
+                _state.value = _state.value.copy(toastMessage = "$displayName 启动失败，请检查电脑端服务")
+                return@launch
+            }
+            delay(1500)
+            loadIdeRunningStatus()
         }
-
     }
 
 
 
     fun stopIde(ide: String) {
-
+        val displayName = _state.value.desktopIdes.firstOrNull { it.key == ide }?.name ?: ide
+        _state.value = _state.value.copy(toastMessage = "正在关闭 $displayName…")
         viewModelScope.launch(Dispatchers.IO) {
-
-            runCatching { bridgeApi.stopIde(ide) }
-
-                .onSuccess {
-
-                    delay(1000)
-
-                    loadIdeRunningStatus()
-
-                }
-
+            val stopped = runCatching { bridgeApi.stopIde(ide) }.getOrDefault(false)
+            _state.value = _state.value.copy(
+                toastMessage = if (stopped) "已请求关闭 $displayName" else "$displayName 关闭失败"
+            )
+            if (stopped) {
+                delay(1000)
+                loadIdeRunningStatus()
+            }
         }
+    }
 
+    fun switchIdeProject(ide: String, path: String) {
+        val ideName = _state.value.desktopIdes.firstOrNull { it.key == ide }?.name ?: ide
+        val projectName = _state.value.projects.firstOrNull { it.path == path }?.name
+            ?.ifBlank { path.substringAfterLast('\\') }
+            ?: path.substringAfterLast('\\')
+        _state.value = _state.value.copy(toastMessage = "正在让 $ideName 打开 $projectName…")
+        viewModelScope.launch(Dispatchers.IO) {
+            val selected = runCatching { bridgeApi.selectProject(path) }.getOrDefault(false)
+            val opened = selected && runCatching { bridgeApi.openIdeProject(ide, path) }.getOrDefault(false)
+            if (selected) loadProject()
+            _state.value = _state.value.copy(
+                toastMessage = if (opened) "$ideName 已请求打开 $projectName"
+                else "$ideName 切换项目失败，请检查适配配置"
+            )
+        }
+    }
+
+    fun updateIdeProfile(ide: String) {
+        val ideName = _state.value.desktopIdes.firstOrNull { it.key == ide }?.name ?: ide
+        _state.value = _state.value.copy(toastMessage = "正在更新 $ideName 适配配置…")
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { bridgeApi.updateIdeProfile(ide) }.getOrDefault(false)
+            if (ok) refreshDesktopIdes()
+            _state.value = _state.value.copy(
+                toastMessage = if (ok) "$ideName 适配配置已检查更新" else "$ideName 适配配置更新失败"
+            )
+        }
+    }
+
+    fun loadIdeHistory(ide: String) {
+        _state.value = _state.value.copy(ideHistoryLoading = true, ideHistorySessions = emptyList())
+        viewModelScope.launch(Dispatchers.IO) {
+            val sessions = runCatching { bridgeApi.getIdeHistory(ide) }.getOrDefault(emptyList())
+            _state.value = _state.value.copy(
+                ideHistoryLoading = false,
+                ideHistorySessions = sessions,
+                toastMessage = if (sessions.isEmpty()) "没有找到可用的历史会话" else null,
+            )
+        }
+    }
+
+    fun openIdeHistory(ide: String, threadId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val opened = runCatching { bridgeApi.openIdeHistory(ide, threadId) }.getOrDefault(false)
+            _state.value = _state.value.copy(
+                toastMessage = if (opened) "已请求打开历史会话" else "历史会话打开失败"
+            )
+        }
     }
 
 
@@ -2663,6 +2733,29 @@ class AideLinkChatViewModel @Inject constructor(
 
         _state.value = _state.value.copy(showDesktopIdeDialog = show)
 
+    }
+
+    fun openDesktopIdeDialog() {
+        _state.value = _state.value.copy(
+            showDesktopIdeDialog = true,
+            desktopIdesLoading = true,
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            var ides = runCatching { bridgeApi.getDesktopIdes() }.getOrDefault(emptyList())
+            val targetKey = _state.value.target.key
+            val needsDesktopIde = targetKey != Target.AIDELINK.key && targetKey != Target.OPENCODE_WEB.key
+            if (needsDesktopIde && ides.none { it.key == targetKey }) {
+                ides = runCatching { bridgeApi.scanIdes() }.getOrDefault(emptyList())
+            }
+            _state.value = _state.value.copy(
+                desktopIdes = ides,
+                desktopIdesLoading = false,
+            )
+            Target.setDynamicTargets(
+                ides.map { ide -> Target(ide.key, ide.name, ide.icon, ide.color) }
+            )
+            loadIdeRunningStatus()
+        }
     }
 
 
@@ -2688,21 +2781,12 @@ class AideLinkChatViewModel @Inject constructor(
 
 
     fun scanDesktopIdes() {
-
+        _state.value = _state.value.copy(desktopIdesLoading = true)
         viewModelScope.launch(Dispatchers.IO) {
-
-            runCatching { bridgeApi.scanIdes() }
-
-                .onSuccess { ides ->
-
-                    _state.value = _state.value.copy(desktopIdes = ides)
-
-                }
-
+            val ides = runCatching { bridgeApi.scanIdes() }.getOrDefault(emptyList())
+            _state.value = _state.value.copy(desktopIdes = ides, desktopIdesLoading = false)
             loadIdeRunningStatus()
-
         }
-
     }
 
 
@@ -2896,6 +2980,7 @@ class AideLinkChatViewModel @Inject constructor(
 
     suspend fun loadProject() {
 
+        val projectResponse = runCatching { bridgeApi.getProjects() }.getOrNull()
         val settings = runCatching { bridgeApi.fetchSettings() }.getOrNull() ?: return
 
         val rawPath = settings.current_project ?: settings.project_dir ?: ""
@@ -2904,8 +2989,21 @@ class AideLinkChatViewModel @Inject constructor(
 
         val name = if (projPath.isNotBlank()) projPath.substringAfterLast('\\') else ""
 
-        _state.value = _state.value.copy(currentProjectPath = projPath, currentProjectName = name)
+        _state.value = _state.value.copy(
+            currentProjectPath = projPath,
+            currentProjectName = name,
+            projects = projectResponse?.projects ?: _state.value.projects,
+        )
 
+    }
+
+    fun selectProject(path: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (bridgeApi.selectProject(path)) {
+                loadProject()
+                loadTasks()
+            }
+        }
     }
 
 

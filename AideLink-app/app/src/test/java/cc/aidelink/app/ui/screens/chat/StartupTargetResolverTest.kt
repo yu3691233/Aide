@@ -9,6 +9,12 @@ class StartupTargetResolverTest {
     private val selected = setOf("oc", "codex")
 
     @Test
+    fun legacyOpenCodeDesktopTargetUsesUnifiedOpenCodeTarget() {
+        assertEquals("oc_web", AideLinkChatViewModel.Target.fromKey("oc").key)
+        assertEquals("OpenCode", AideLinkChatViewModel.Target.fromKey("oc").label)
+    }
+
+    @Test
     fun preservesSavedTargetWhenAnotherIdeIsTheOnlyRunningOne() {
         val processes = listOf(
             DesktopIde(key = "oc", running = false),

@@ -160,7 +160,7 @@ class SessionListViewModel @Inject constructor(
         SessionListUiState()
     )
 
-    var navigateToSession: ((String) -> Unit)? = null
+    var navigateToSession: ((String, String) -> Unit)? = null
 
     fun setServerId(serverId: String, fallbackUrl: String = "", fallbackUsername: String = "", fallbackPassword: String = "") {
         _serverId.value = serverId
@@ -240,17 +240,49 @@ class SessionListViewModel @Inject constructor(
         }
     }
 
-    fun createNewSession(directory: String? = null) {
+    fun createNewSession(
+        directory: String? = null,
+        initialPrompt: String = "",
+        onComplete: (Boolean) -> Unit = {},
+    ) {
         viewModelScope.launch {
-            val conn = _conn.value ?: return@launch
+            val conn = _conn.value
+            if (conn == null) {
+                _error.value = "OpenCode 连接尚未就绪"
+                onComplete(false)
+                return@launch
+            }
             try {
                 val session = openCodeApi.createSession(conn, directory = directory)
                 _allSessions.value = _allSessions.value + session
+                if (initialPrompt.isNotBlank()) {
+                    val sessionDirectory = session.directory.ifBlank { directory.orEmpty() }
+                    openCodeApi.promptAsync(
+                        conn = conn,
+                        sessionId = session.id,
+                        parts = listOf(cc.aidelink.app.data.api.PromptPart(type = "text", text = initialPrompt.trim())),
+                        directory = sessionDirectory,
+                    )
+                    var persisted = false
+                    for (attempt in 0 until 15) {
+                        val messages = runCatching {
+                            openCodeApi.listMessages(conn, session.id, limit = 1, directory = sessionDirectory)
+                        }.getOrDefault(emptyList())
+                        if (messages.isNotEmpty()) {
+                            persisted = true
+                            break
+                        }
+                        delay(100)
+                    }
+                    if (!persisted) throw IllegalStateException("首条消息未写入 OpenCode 会话")
+                }
                 Log.d(TAG, "Created new session: ${session.id}")
-                navigateToSession?.invoke(session.id)
+                navigateToSession?.invoke(session.id, session.directory.ifBlank { directory.orEmpty() })
+                onComplete(true)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create session", e)
                 _error.value = e.message ?: "创建会话失败"
+                onComplete(false)
             }
         }
     }
@@ -361,6 +393,23 @@ class SessionListViewModel @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to list directory: $directory", e)
             emptyList()
+        }
+    }
+
+    suspend fun discoverFilesystemRoots(knownPaths: List<String>): List<String> {
+        val windows = knownPaths.any { windowsDriveRoot(it) != null }
+        if (!windows) return listOf("/")
+
+        val knownRoots = knownPaths.mapNotNull(::windowsDriveRoot).toSet()
+        val candidates = (knownRoots + ('A'..'Z').map { "$it:\\" }).toList()
+        val conn = _conn.value ?: return knownRoots.sorted()
+        return coroutineScope {
+            candidates.map { root ->
+                async {
+                    runCatching { openCodeApi.listDirectory(conn, directory = root) }
+                        .fold(onSuccess = { root }, onFailure = { null })
+                }
+            }.awaitAll().filterNotNull().distinct().sorted()
         }
     }
 

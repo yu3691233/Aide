@@ -30,6 +30,12 @@ def _process_matches_ide(ide_info, proc_name, proc_exe, cmdline):
     exe_filename = os.path.basename(ide_path).lower() if ide_path else ""
     proc_filename = os.path.basename(proc_exe).lower() if proc_exe else ""
 
+    # ChatGPT Desktop intentionally keeps ChatGPT.exe in the tray after its
+    # window is closed.  That background process must not make the IDE appear
+    # "running", otherwise AideLink refuses to open a new window.
+    if ide_key == "codex" and proc_filename == "chatgpt.exe":
+        return _has_visible_window_for_pid(proc_exe)
+
     # `opencode serve` is OC Web, not the OpenCode desktop application.
     if ide_key == "oc" and "serve" in cmdline:
         return False
@@ -41,6 +47,42 @@ def _process_matches_ide(ide_info, proc_name, proc_exe, cmdline):
     # Short keys such as `oc` must never be substring-matched against arbitrary
     # process names (for example svchost.exe).
     return len(ide_key) > 2 and ide_key in proc_name
+
+
+def _has_visible_window_for_pid(proc_exe):
+    """Return whether the process owns a visible top-level window."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        import pygetwindow as gw
+        import psutil
+        user32 = ctypes.windll.user32
+        get_pid = user32.GetWindowThreadProcessId
+        for window in gw.getAllWindows():
+            hwnd = int(getattr(window, "_hWnd", 0) or 0)
+            title = str(getattr(window, "title", "") or "").strip()
+            is_visible = getattr(window, "isVisible", None)
+            if callable(is_visible):
+                is_visible = is_visible()
+            else:
+                is_visible = getattr(window, "visible", True)
+            if not hwnd or not title or not is_visible:
+                continue
+            owner_pid = ctypes.c_ulong()
+            get_pid(hwnd, ctypes.byref(owner_pid))
+            if owner_pid.value:
+                try:
+                    owner_exe = (psutil.Process(owner_pid.value).exe() or "").lower()
+                    if owner_exe == proc_exe.lower():
+                        return True
+                except Exception:
+                    continue
+    except Exception:
+        # If window inspection is unavailable, retain the conservative legacy
+        # behavior instead of falsely reporting the IDE as stopped.
+        return True
+    return False
 
 
 def get_ide_running_statuses(all_ides=None):
@@ -164,27 +206,17 @@ def dispatch_task(task, runtime):
     try:
         # Web OpenCode：本机 Web 端，走 HTTP API
         if ide == "oc_web":
-            import requests
-            settings = load_settings()
-            port = settings.get("opencode_web_port", 4096)
-            oc_url = f"http://127.0.0.1:{port}"
-            username = settings.get("opencode_web_username") or ""
-            password = settings.get("opencode_web_password") or ""
-            auth = (username, password) if password else None
+            from opencode_client import send_prompt
 
-            resp = requests.post(
-                f"{oc_url}/api/prompt",
-                json={"message": task_text, "task_id": task_id},
-                auth=auth,
-                timeout=10
-            )
-            if resp.status_code == 200:
-                runtime.mark_task_running(task_id, ide)
-                runtime.set_ide_status(ide, "busy", current_task_id=task_id)
-                return True, f"任务 `{task_id}` 已提交到 Web OpenCode ({oc_url})"
-            return False, f"Web OpenCode 返回错误 ({resp.status_code}): {resp.text[:200]}"
+            result = send_prompt(task_text, task_id=task_id, directory=task.get("project", ""))
+            metadata = dict(task.get("metadata") or {})
+            metadata["opencode_session_id"] = result["session_id"]
+            runtime.update_task(task_id, metadata=metadata)
+            runtime.mark_task_running(task_id, ide)
+            runtime.set_ide_status(ide, "busy", current_task_id=task_id)
+            return True, f"任务 `{task_id}` 已提交到 OpenCode 会话 {result['session_id']}"
 
-        # 桌面 IDE（trae/agy/mimo/mimocode/oc/codex）：剪贴板注入。
+        # 桌面 IDE（trae/antigravity_ide/mimo/mimocode/oc/codex）：剪贴板注入。
         from task_runtime import SUPPORTED_IDES
 
         if ide in SUPPORTED_IDES:

@@ -50,7 +50,7 @@ def read_crops():
     default_crops = {
         "trae": {"left": 300, "right": 350, "top": 30, "bottom": 35, "dialog_position": "center", "calib_width": 0, "calib_height": 0, "focus_input_enabled": False, "input_region": None},
         "trae_cn": {"left": 300, "right": 350, "top": 30, "bottom": 35, "dialog_position": "center", "calib_width": 0, "calib_height": 0, "focus_input_enabled": False, "input_region": None},
-        "agy": {"left": 0, "right": 0, "top": 30, "bottom": 100, "dialog_position": "center", "calib_width": 0, "calib_height": 0, "focus_input_enabled": False, "input_region": None},
+        "antigravity_ide": {"left": 0, "right": 0, "top": 30, "bottom": 100, "dialog_position": "center", "calib_width": 0, "calib_height": 0, "focus_input_enabled": False, "input_region": None},
         "oc": {"left": 0, "right": 0, "top": 0, "bottom": 0, "dialog_position": "center", "calib_width": 0, "calib_height": 0, "focus_input_enabled": False, "input_region": None},
         "codex": {"left": 0, "right": 0, "top": 0, "bottom": 0, "dialog_position": "center", "calib_width": 0, "calib_height": 0, "focus_input_enabled": False, "input_region": None},
         "mimo": {"left": 0, "right": 0, "top": 0, "bottom": 0, "dialog_position": "center", "calib_width": 0, "calib_height": 0, "focus_input_enabled": False, "input_region": None}
@@ -530,7 +530,7 @@ def _get_window_rect(hwnd):
 
 
 WINDOW_TITLE_KEYWORDS = {
-        "agy": ["Antigravity"],
+        "antigravity_ide": ["Antigravity"],
         "trae": ["Trae"],
         "mimo": ["MiMoCode", "MC |", "MC "],
         "oc": ["OpenCode"],

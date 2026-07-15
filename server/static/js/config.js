@@ -14,6 +14,10 @@ async function loadConfig() {
 
   document.getElementById('cfg-auto-start').checked = !!config.auto_start;
 
+  document.getElementById('cfg-open-browser-on-start').checked = !!config.open_browser_on_start;
+
+  document.getElementById('cfg-allow-elevated-ide-launch').checked = !!config.allow_elevated_ide_launch;
+
   document.getElementById('cfg-project-dir').value = config.project_dir || config.opencode_project_dir || '';
 
 }
@@ -65,6 +69,10 @@ async function saveFormConfig() {
   currentRawConfig.flask_port = parseInt(document.getElementById('cfg-flask-port').value) || 5000;
 
   currentRawConfig.auto_start = document.getElementById('cfg-auto-start').checked;
+
+  currentRawConfig.open_browser_on_start = document.getElementById('cfg-open-browser-on-start').checked;
+
+  currentRawConfig.allow_elevated_ide_launch = document.getElementById('cfg-allow-elevated-ide-launch').checked;
 
   currentRawConfig.project_dir = document.getElementById('cfg-project-dir').value.trim();
 
@@ -2180,7 +2188,7 @@ function dispatchTestTask(taskId, originalIde) {
 
           <option value="trae" ${originalIde === 'trae' ? 'disabled' : ''}>Trae ${originalIde === 'trae' ? '(修改中)' : ''}</option>
 
-          <option value="agy" ${originalIde === 'agy' ? 'disabled' : ''}>Antigravity ${originalIde === 'agy' ? '(修改中)' : ''}</option>
+          <option value="antigravity_ide" ${originalIde === 'antigravity_ide' ? 'disabled' : ''}>Antigravity IDE ${originalIde === 'antigravity_ide' ? '(修改中)' : ''}</option>
 
           <option value="mimo" ${originalIde === 'mimo' ? 'disabled' : ''}>MiMoCode ${originalIde === 'mimo' ? '(修改中)' : ''}</option>
 

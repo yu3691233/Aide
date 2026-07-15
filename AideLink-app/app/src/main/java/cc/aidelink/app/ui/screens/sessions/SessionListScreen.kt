@@ -7,6 +7,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.shrinkHorizontally
@@ -52,6 +54,32 @@ import java.text.SimpleDateFormat
 import java.util.*
 import androidx.compose.animation.core.*
 import androidx.compose.ui.graphics.graphicsLayer
+
+internal fun windowsDriveRoot(path: String): String? {
+    val normalized = path.trim().replace('/', '\\')
+    return Regex("^[A-Za-z]:\\\\").find(normalized)?.value?.uppercase()
+}
+
+internal fun parentFilesystemPath(path: String): String? {
+    val trimmed = path.trim()
+    if (trimmed.isBlank() || trimmed == "/") return null
+    val driveRoot = windowsDriveRoot(trimmed)
+    if (driveRoot != null) {
+        val normalized = trimmed.replace('/', '\\').trimEnd('\\')
+        if (normalized.equals(driveRoot.trimEnd('\\'), ignoreCase = true)) return null
+        val parent = normalized.substringBeforeLast('\\', missingDelimiterValue = driveRoot.trimEnd('\\'))
+        return if (parent.endsWith(':')) "$parent\\" else parent
+    }
+    val normalized = trimmed.trimEnd('/')
+    return normalized.substringBeforeLast('/', missingDelimiterValue = "").ifEmpty { "/" }
+}
+
+internal fun resolveFilesystemSearchPath(baseDirectory: String, result: String): String {
+    val value = result.trim()
+    if (windowsDriveRoot(value) != null || value.startsWith('/')) return value
+    val separator = if (windowsDriveRoot(baseDirectory) != null) "\\" else "/"
+    return baseDirectory.trimEnd('/', '\\') + separator + value.trimStart('/', '\\')
+}
 
 @Composable
 private fun isAmoledTheme(): Boolean {
@@ -108,13 +136,14 @@ private fun PulsingDotsIndicator(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionListScreen(
-    onNavigateToChat: (sessionId: String, openTerminal: Boolean) -> Unit,
+    onNavigateToChat: (sessionId: String, directory: String) -> Unit,
     onNavigateBack: () -> Unit,
     serverId: String = "",
     serverUrl: String = "",
     username: String = "",
     password: String = "",
     serverName: String = "",
+    embedded: Boolean = false,
     viewModel: SessionListViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -125,8 +154,8 @@ fun SessionListScreen(
     }
 
     LaunchedEffect(viewModel) {
-        viewModel.navigateToSession = { sessionId ->
-            onNavigateToChat(sessionId, false)
+        viewModel.navigateToSession = { sessionId, directory ->
+            onNavigateToChat(sessionId, directory)
         }
     }
 
@@ -188,8 +217,10 @@ fun SessionListScreen(
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = onNavigateBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        if (!embedded) {
+                            IconButton(onClick = onNavigateBack) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                            }
                         }
                     },
                     actions = {}
@@ -197,7 +228,7 @@ fun SessionListScreen(
             }
         },
         floatingActionButton = {
-            if (!uiState.isSelectionMode) {
+            if (!embedded && !uiState.isSelectionMode) {
                 FloatingActionButton(
                     onClick = {
                         if (uiState.sessionGroups.isNotEmpty()) {
@@ -317,7 +348,10 @@ fun SessionListScreen(
                                         if (uiState.isSelectionMode) {
                                             viewModel.toggleSelection(item.session.id)
                                         } else {
-                                            onNavigateToChat(item.session.id, false)
+                                            onNavigateToChat(
+                                                item.session.id,
+                                                item.session.directory.ifBlank { group.directory },
+                                            )
                                         }
                                     },
                                     onLongClick = { viewModel.toggleSelection(item.session.id) },
@@ -542,6 +576,8 @@ private fun OpenProjectDialog(
     var searchQuery by remember { mutableStateOf("") }
     var currentDir by remember { mutableStateOf<String?>(null) }
     var homeDir by remember { mutableStateOf<String?>(null) }
+    var filesystemRoots by remember { mutableStateOf<List<String>>(emptyList()) }
+    var directPath by remember { mutableStateOf("") }
     var directories by remember { mutableStateOf<List<FileNode>>(emptyList()) }
     var searchResults by remember { mutableStateOf<List<String>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -557,6 +593,16 @@ private fun OpenProjectDialog(
         val home = viewModel.getHomeDirectory()
         homeDir = home
         currentDir = home
+        directPath = home
+        val knownPaths = buildList {
+            add(home)
+            projects.forEach { project ->
+                add(project.worktree)
+                add(project.path)
+                project.directory?.let(::add)
+            }
+        }.filter { it.isNotBlank() }
+        filesystemRoots = viewModel.discoverFilesystemRoots(knownPaths)
         isLoading = true
         directories = viewModel.listDirectories(home)
         isLoading = false
@@ -583,7 +629,7 @@ private fun OpenProjectDialog(
         }
         delay(300)
         isLoading = true
-        val baseDir = homeDir ?: "/"
+        val baseDir = currentDir ?: homeDir ?: "/"
         searchResults = viewModel.searchDirectories(searchQuery, baseDir)
         isLoading = false
     }
@@ -626,6 +672,52 @@ private fun OpenProjectDialog(
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Close, contentDescription = "关闭")
                     }
+                }
+
+                if (filesystemRoots.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        filesystemRoots.forEach { root ->
+                            FilterChip(
+                                selected = currentDir.equals(root, ignoreCase = true),
+                                onClick = {
+                                    searchQuery = ""
+                                    directPath = root
+                                    currentDir = root
+                                },
+                                label = { Text(if (root == "/") "根目录" else root) },
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = directPath,
+                        onValueChange = { directPath = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("路径") },
+                        placeholder = { Text("例如 F:\\project") },
+                    )
+                    FilledTonalButton(
+                        onClick = {
+                            val target = directPath.trim()
+                            if (target.isNotBlank()) {
+                                searchQuery = ""
+                                currentDir = target
+                            }
+                        },
+                    ) { Text("转到") }
                 }
 
                 Row(
@@ -696,7 +788,8 @@ private fun OpenProjectDialog(
                 }
 
                 if (!isSearching && currentDir != null) {
-                    val canGoUp = currentDir != "/" && currentDir != homeDir
+                    val parentDirectory = parentFilesystemPath(currentDir ?: "/")
+                    val canGoUp = parentDirectory != null
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -705,8 +798,8 @@ private fun OpenProjectDialog(
                                 if (canGoUp) Modifier
                                     .clip(RoundedCornerShape(4.dp))
                                     .clickable {
-                                        val parent = currentDir!!.trimEnd('/').substringBeforeLast('/')
-                                        currentDir = parent.ifEmpty { "/" }
+                                        currentDir = parentDirectory
+                                        directPath = parentDirectory ?: directPath
                                     } else Modifier
                             ),
                         verticalAlignment = Alignment.CenterVertically,
@@ -763,16 +856,16 @@ private fun OpenProjectDialog(
                                     contentPadding = PaddingValues(vertical = 4.dp)
                                 ) {
                                     items(searchResults) { path ->
-                                        val base = (homeDir ?: "").trimEnd('/')
-                                        val rel = path.trimStart('/').trimEnd('/')
-                                        val absolutePath = "$base/$rel"
+                                        val base = currentDir ?: homeDir ?: "/"
+                                        val absolutePath = resolveFilesystemSearchPath(base, path)
                                         DirectoryRow(
                                             displayPath = tildeReplace(absolutePath) + "/",
                                             onClick = { onSelect(absolutePath) },
-                                            onNavigate = {
-                                                searchQuery = ""
-                                                currentDir = absolutePath
-                                            }
+                                             onNavigate = {
+                                                 searchQuery = ""
+                                                 currentDir = absolutePath
+                                                 directPath = absolutePath
+                                             }
                                         )
                                     }
                                 }
@@ -803,6 +896,7 @@ private fun OpenProjectDialog(
                                             displayPath = tildeReplace(absPath) + "/",
                                             onNavigate = {
                                                 currentDir = absPath
+                                                directPath = absPath
                                             },
                                             onClick = { onSelect(absPath) }
                                         )

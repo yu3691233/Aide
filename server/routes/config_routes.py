@@ -118,6 +118,7 @@ def get_active_models():
 @config_bp.route('/api/desktop-ides', methods=['GET'])
 def get_desktop_ides():
     import ide_scanner
+    from ide_profiles import enrich_ides
     ides = ide_scanner.get_all_ides()
     # 只有 web 型条目时，说明本地桌面 IDE 缓存可能是空的；
     # 这时补一次真实扫描，避免页面只剩 MiniMax Code。
@@ -127,16 +128,17 @@ def get_desktop_ides():
     scanned_cache_exists = os.path.exists(str(ide_scanner.SCANNED_IDES_FILE))
     if not has_desktop_ide and not scanned_cache_exists:
         ides = ide_scanner.scan_installed_ides()
-    return jsonify({"ides": ides})
+    return jsonify({"ides": enrich_ides(ides)})
 
 @config_bp.route('/api/scan-ides', methods=['POST'])
 def scan_ides():
     import ide_scanner
+    from ide_profiles import enrich_ides
     ides = ide_scanner.scan_installed_ides()
     return jsonify({
         "success": True,
         "message": f"扫描完成，发现 {len(ides)} 个 IDE",
-        "ides": ides,
+        "ides": enrich_ides(ides),
         "count": len(ides),
     })
 

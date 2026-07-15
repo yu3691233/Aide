@@ -21,8 +21,8 @@ _BOTTOM_EDGE_MARGIN = 3
 IDE_HEURISTIC = {
     "trae": {"left_ratio": 0.38, "right_ratio": 0.58},
     "trae_cn": {"left_ratio": 0.25, "right_ratio": 0.65},
-    "agy": {"left_ratio": 0.68, "right_ratio": 0.95},
-    "agy2": {"left_ratio": 0.20, "right_ratio": 0.60},
+    "antigravity_ide": {"left_ratio": 0.68, "right_ratio": 0.95},
+    "antigravity_ide2": {"left_ratio": 0.20, "right_ratio": 0.60},
     "oc": {"left_ratio": 0.15, "right_ratio": 0.65},
     "mimo": {"left_ratio": 0.15, "right_ratio": 0.85},
 }

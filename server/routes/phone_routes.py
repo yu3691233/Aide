@@ -313,7 +313,7 @@ def inject_clipboard_to_ide():
         elif ide == "trae":
             wins = [w for w in gw.getAllWindows() if "trae" in w.title.lower()]
             win = wins[0] if wins else None
-        elif ide == "agy":
+        elif ide == "antigravity_ide":
             wins = [w for w in gw.getAllWindows() if "antigravity" in w.title.lower()]
             win = wins[0] if wins else None
         elif ide == "oc":

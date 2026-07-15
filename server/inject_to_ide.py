@@ -373,7 +373,7 @@ def find_terminal_window_for_process(process_name):
     return None
 
 def inject(target, text, worktree_path=None):
-    if target in ("agy",):
+    if target in ("antigravity_ide",):
         # GUI IDE: 优先使用 Web IDE 管理中保存的窗口绑定。
         title_keyword = "Antigravity"
         win = find_saved_window(target)

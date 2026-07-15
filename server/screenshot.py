@@ -130,7 +130,7 @@ def _get_window_rect(hwnd):
 def _find_target_window(target):
     import pygetwindow as gw
     title_map = {
-        "agy": ["Antigravity IDE", "Antigravity"],
+        "antigravity_ide": ["Antigravity IDE", "Antigravity"],
         "trae": ["TRAE SOLO"],
         "trae_cn": ["TRAE SOLO CN"],
         "mimo": ["MiMoCode", "MC |", "MC "],
@@ -161,7 +161,7 @@ def _free_gdi_resources(*objs):
 def read_crops():
     default_crops = {
         "trae": {"left": 300, "right": 350, "top": 30, "bottom": 35, "dialog_position": "center", "calib_width": 0, "calib_height": 0},
-        "agy": {"left": 0, "right": 0, "top": 30, "bottom": 100, "dialog_position": "center", "calib_width": 0, "calib_height": 0},
+        "antigravity_ide": {"left": 0, "right": 0, "top": 30, "bottom": 100, "dialog_position": "center", "calib_width": 0, "calib_height": 0},
         "oc": {"left": 0, "right": 0, "top": 0, "bottom": 0, "dialog_position": "center", "calib_width": 0, "calib_height": 0},
         "codex": {"left": 0, "right": 0, "top": 0, "bottom": 0, "dialog_position": "center", "calib_width": 0, "calib_height": 0},
         "mimo": {"left": 0, "right": 0, "top": 0, "bottom": 0, "dialog_position": "center", "calib_width": 0, "calib_height": 0}

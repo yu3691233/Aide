@@ -94,6 +94,26 @@ def api_test_window_binding():
         "binding": get_binding(key),
     })
 
+
+@ide_bp.route("/api/ide-profiles/<key>", methods=["GET"])
+def api_get_ide_profile(key):
+    try:
+        from ide_profiles import load_profile
+        return jsonify({"ok": True, "profile": load_profile(key)})
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+
+
+@ide_bp.route("/api/ide-profiles/<key>/update", methods=["POST"])
+def api_update_ide_profile(key):
+    data = request.get_json(silent=True) or {}
+    try:
+        from ide_profiles import update_profile
+        updated, profile, message = update_profile(key, force=bool(data.get("force", False)))
+        return jsonify({"ok": True, "updated": updated, "message": message, "profile": profile})
+    except Exception as exc:
+        return jsonify({"ok": False, "message": f"IDE 适配配置更新失败: {exc}"}), 502
+
 @ide_bp.route("/api/launch-ide", methods=["POST"])
 def api_launch_ide():
     """启动指定 IDE"""
@@ -119,6 +139,8 @@ def api_launch_ide():
         cmd = [ide_path]
         if project_root and project_root.exists() and project_root.is_dir():
             cmd.append(str(project_root))
+            from ide_project_bindings import save_binding
+            save_binding(key, project_root)
 
         flags = _sp.CREATE_NEW_PROCESS_GROUP | _sp.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
         _sp.Popen(cmd, creationflags=flags, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
@@ -1029,8 +1051,10 @@ def api_set_ide_primary_role():
 # IDE Start/Stop/Ports/Processes
 # ============================================================
 
-def _is_ide_running_local(ide):
-    from dispatch_utils import is_ide_running
+def _is_ide_running_local(ide, ide_info=None):
+    from dispatch_utils import get_ide_running_statuses, is_ide_running
+    if ide_info is not None:
+        return get_ide_running_statuses([ide_info]).get(ide, False)
     return is_ide_running(ide)
 
 def _is_port_in_use_local(port):
@@ -1048,16 +1072,43 @@ def start_ide_server(ide):
     import ide_scanner
     all_ides = ide_scanner.get_all_ides()
     ide_info = next((i for i in all_ides if i["key"] == ide), None)
-    
+
+    # The scanned cache can be stale when a packaged app was updated while it
+    # was closed. Refresh once before declaring a configured IDE unknown.
+    if not ide_info:
+        refreshed = ide_scanner.scan_installed_ides()
+        ide_info = next((i for i in refreshed if i.get("key") == ide), None)
+
+    from ide_profiles import load_profile
+    profile = load_profile(ide)
+    registry_config = ide_scanner.load_registry().get(ide, {})
+    profile_aumid = str(profile.get("launch", {}).get("aumid") or "")
+
+    # ChatGPT is an MSIX app. WindowsApps may not be enumerable while the app
+    # is fully stopped, but its stable AppUserModelId can still launch it.
+    if not ide_info and profile_aumid:
+        ide_info = {
+            "key": ide,
+            "name": registry_config.get("name", profile.get("display_name", ide)),
+            "path": "",
+            "type": "desktop",
+        }
+
     if not ide_info:
         return jsonify({"ok": False, "error": f"未知的 IDE: {ide}"}), 400
-    
+
     ide_path = ide_info.get("path", "")
-    if not ide_path:
+    if not ide_path and not profile_aumid:
         return jsonify({"ok": False, "error": f"未找到 {ide} 的安装路径"}), 400
     
-    if _is_ide_running_local(ide):
-        return jsonify({"ok": True, "message": f"{ide_info['name']} 已在运行"})
+    already_running = _is_ide_running_local(ide, ide_info)
+    if already_running:
+        try:
+            import screenshot_engine as se
+            se._activate_target_window(ide, focus_input=False)
+        except Exception:
+            pass
+        return jsonify({"ok": True, "message": f"{ide_info['name']} 已在运行，已尝试激活窗口"})
     
     if ide in ("mimo", "oc"):
         try:
@@ -1083,22 +1134,108 @@ def start_ide_server(ide):
                 ["cmd.exe", "/c", "start", "pwsh.exe", "-NoExit", "-Command", f'& "{ide_path}"']
             )
         else:
-            creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
-            subprocess.Popen(
-                [ide_path],
-                creationflags=creation_flags,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            from ide_profiles import launch_ide
+            launched_target = launch_ide(profile, ide_info)
+            logger.info("启动 IDE %s: %s", ide, launched_target)
         
         for _ in range(20):
             time.sleep(0.5)
-            if _is_ide_running_local(ide):
+            if _is_ide_running_local(ide, ide_info):
+                if ide == "codex":
+                    try:
+                        ide_scanner.scan_installed_ides()
+                    except Exception:
+                        pass
                 return jsonify({"ok": True, "message": f"{ide_info['name']} 启动成功"})
         
         return jsonify({"ok": False, "error": f"{ide_info['name']} 启动超时"}), 500
     except Exception as e:
         return jsonify({"ok": False, "error": f"启动失败: {e}"}), 500
+
+
+@ide_bp.route('/ide/<ide>/open-project', methods=['POST'])
+def open_ide_project(ide):
+    ide = ide.strip().lower()
+    data = request.get_json(silent=True) or {}
+    requested_path = str(data.get("path") or "").strip()
+    if not requested_path:
+        return jsonify({"ok": False, "error": "缺少目标项目路径"}), 400
+
+    import ide_scanner
+    all_ides = ide_scanner.get_all_ides()
+    ide_info = next((item for item in all_ides if item.get("key") == ide), None)
+    if not ide_info and ide == "codex":
+        refreshed = ide_scanner.scan_installed_ides()
+        ide_info = next((item for item in refreshed if item.get("key") == ide), None)
+
+    from config import load_settings, normalize_project_path, project_path_key
+    normalized_requested = normalize_project_path(requested_path)
+    settings = load_settings()
+    configured_paths = [
+        normalize_project_path(item.get("path", ""))
+        for item in settings.get("projects", [])
+        if isinstance(item, dict)
+    ]
+    current_path = normalize_project_path(settings.get("current_project", ""))
+    if current_path:
+        configured_paths.append(current_path)
+    project_path = next(
+        (path for path in configured_paths if project_path_key(path) == project_path_key(normalized_requested)),
+        "",
+    )
+    if not project_path or not os.path.isdir(project_path):
+        return jsonify({"ok": False, "error": "目标项目未在 AideLink 项目列表中或路径不存在"}), 400
+
+    from ide_profiles import load_profile, open_project
+    profile = load_profile(ide)
+    if "open_project" not in profile.get("capabilities", []):
+        return jsonify({"ok": False, "error": f"{ide} 当前适配配置不支持切换项目"}), 409
+
+    if not ide_info:
+        profile_aumid = str(profile.get("launch", {}).get("aumid") or "")
+        if not profile_aumid:
+            return jsonify({"ok": False, "error": f"未找到 {ide} 的安装信息"}), 404
+        ide_info = {"key": ide, "name": profile.get("display_name", ide), "path": ""}
+
+    try:
+        target = open_project(profile, ide_info, project_path)
+        from ide_project_bindings import save_binding
+        save_binding(ide, project_path)
+        logger.info("IDE %s 切换项目: %s", ide, target)
+        return jsonify({
+            "ok": True,
+            "message": f"已请求 {ide_info.get('name', ide)} 打开目标项目 {project_path}",
+            "project": project_path,
+            "profile_version": profile.get("version", ""),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"切换项目失败: {exc}"}), 500
+
+
+@ide_bp.route('/ide/<ide>/sessions', methods=['GET'])
+def get_ide_sessions(ide):
+    try:
+        from ide_profiles import list_history, load_profile
+        profile = load_profile(ide)
+        if "history" not in profile.get("capabilities", []):
+            return jsonify({"ok": False, "error": f"{ide} 当前适配配置不支持历史会话"}), 409
+        limit = request.args.get("limit", 30, type=int)
+        return jsonify({"ok": True, "sessions": list_history(profile, limit=limit)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"读取历史会话失败: {exc}"}), 500
+
+
+@ide_bp.route('/ide/<ide>/sessions/<thread_id>/open', methods=['POST'])
+def open_ide_session(ide, thread_id):
+    try:
+        from ide_profiles import load_profile, open_history
+        profile = load_profile(ide)
+        if "history" not in profile.get("capabilities", []):
+            return jsonify({"ok": False, "error": f"{ide} 当前适配配置不支持历史会话"}), 409
+        target = open_history(profile, thread_id)
+        return jsonify({"ok": True, "message": "已请求 IDE 打开历史会话", "target": target})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"打开历史会话失败: {exc}"}), 500
 
 
 @ide_bp.route('/ide/ports', methods=['GET'])
@@ -1126,9 +1263,10 @@ def stop_ide_server(ide):
     
     ide_name = ide_info.get("name", ide)
     
-    killed_count = 0
+    closed_count = 0
     try:
         exe_filename = os.path.basename(ide_info.get("path", "")).lower() if ide_info.get("path") else ""
+        main_pids = []
         for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
             try:
                 proc_info = proc.info
@@ -1137,16 +1275,59 @@ def stop_ide_server(ide):
                 cmdline = " ".join(proc_info.get("cmdline") or []).lower()
                 if ide == "oc" and "serve" in cmdline:
                     continue
-                matches_exe = bool(exe_filename and exe_filename in proc_exe)
-                matches_name = ide != "oc" and (ide_name.lower() in proc_name or ide in proc_name)
+                # Electron IDE 有大量 renderer/utility 子进程，只定位主窗口所属进程。
+                is_electron_child = " --type=" in f" {cmdline}"
+                proc_exe_filename = os.path.basename(proc_exe)
+                matches_exe = bool(exe_filename and proc_exe_filename == exe_filename and not is_electron_child)
+                matches_name = ide != "oc" and not is_electron_child and (ide_name.lower() in proc_name or ide in proc_name)
                 if matches_exe or matches_name:
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
-                    killed_count += 1
+                    main_pids.append(proc.pid)
             except Exception:
                 continue
 
-        if killed_count > 0:
-            return jsonify({"ok": True, "message": f"已通过系统级强杀关闭 {ide_name} 进程树"})
+        for pid in main_pids:
+            # 不使用 taskkill /F：WM_CLOSE 会让 IDE 自己保存并退出。
+            try:
+                import pygetwindow as gw
+                for window in gw.getAllWindows():
+                    if getattr(window, "_hWnd", 0) and str(window.title).strip():
+                        owner_pid = ctypes.c_ulong()
+                        ctypes.windll.user32.GetWindowThreadProcessId(
+                            int(window._hWnd), ctypes.byref(owner_pid)
+                        )
+                        # pygetwindow.close() 发送 WM_CLOSE，避免数据丢失。
+                        if (owner_pid.value in main_pids
+                                or ide_name.lower() in window.title.lower()):
+                            window.close()
+                            closed_count += 1
+            except Exception:
+                continue
+
+        # ChatGPT Desktop keeps a tray process after its window receives
+        # WM_CLOSE.  In the normal app-level close action, also exit that
+        # ChatGPT process after giving the window a moment to save.  This is
+        # deliberately limited to the configured ChatGPT.exe main process and
+        # never uses taskkill /T, so AideLink and unrelated child processes are
+        # not touched.
+        if ide == "codex" and main_pids:
+            time.sleep(1.0)
+            for pid in main_pids:
+                try:
+                    proc = psutil.Process(pid)
+                    if proc.is_running():
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=3)
+                        except psutil.TimeoutExpired:
+                            proc.kill()
+                        closed_count += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+        if closed_count > 0:
+            return jsonify({"ok": True, "message": f"已请求 {ide_name} 保存并关闭"})
+        if main_pids:
+            return jsonify({"ok": True, "message": f"已请求 {ide_name} 关闭，请等待其完成保存"})
         else:
             return jsonify({"ok": True, "message": f"{ide_name} 未在运行"})
     except Exception as e:
@@ -1284,11 +1465,10 @@ def api_ide_install_mcp():
             else:
                 message = "未找到 OpenAI Codex 的 config.toml"
 
-        elif key in ("agy", "antigravity", "trae_solo", "mimo", "minimax"):
+        elif key in ("antigravity_ide", "trae_solo", "mimo", "minimax"):
             # VSCode 内核系 IDE：通用 storage.json 注入逻辑
             key_to_appdata_name = {
-                "agy":        ["Antigravity IDE", "Antigravity"],
-                "antigravity":["Antigravity IDE", "Antigravity"],
+                "antigravity_ide":        ["Antigravity IDE", "Antigravity"],
                 "trae_solo":  ["TRAE SOLO"],
                 "mimo":       ["MiMo Code", "MiMoCode"],
                 "minimax":    ["MiniMax Code"],

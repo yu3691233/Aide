@@ -104,7 +104,7 @@ MODEL_REGISTRY = {
         "caps": ["ide_interaction", "ide_code", "ide_debug"],
         "description": "Trae Solo（GUI 注入）",
     },
-    "agy": {
+    "antigravity_ide": {
         "tier": "gui",
         "level": 4,
         "cost": 0,
@@ -399,8 +399,8 @@ class FreeModelScheduler:
         if level == 4:
             return {
                 "action": "gui_inject",
-                "target": "agy",
-                "model_key": "agy",
+                "target": "antigravity_ide",
+                "model_key": "antigravity_ide",
                 "model_id": None,
                 "reason": "GUI IDE 交互",
                 "level": 4,

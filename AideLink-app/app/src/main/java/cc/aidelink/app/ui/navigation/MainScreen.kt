@@ -59,6 +59,7 @@ import cc.aidelink.app.ui.screens.chat.AideLinkChatScreen
 import cc.aidelink.app.ui.screens.idechat.OcChatScreen
 import android.widget.Toast
 import cc.aidelink.app.ui.screens.sessions.SessionListScreen
+import cc.aidelink.app.ui.screens.sessions.buildOpenCodeWebSessionUrl
 import cc.aidelink.app.ui.screens.settings.AideLinkSettingsScreen
 import cc.aidelink.app.ui.screens.webview.WebViewScreen
 
@@ -118,6 +119,9 @@ fun MainScreen(
                             val encodedPwd = java.net.URLEncoder.encode(pwd, "UTF-8")
                             navController.navigate("opencode_webview?url=$encodedUrl&user=$encodedUser&pwd=$encodedPwd")
                         },
+                        onNavigateToOpenCodeSessions = { url, username, pwd ->
+                            navController.navigate(Screen.SessionList.createRoute(url, username, pwd, "OpenCode", "aidelink-opencode"))
+                        },
                         initialTarget = "aide",
                     )
                 }
@@ -132,6 +136,9 @@ fun MainScreen(
                             val encodedUser = java.net.URLEncoder.encode(username, "UTF-8")
                             val encodedPwd = java.net.URLEncoder.encode(pwd, "UTF-8")
                             navController.navigate("opencode_webview?url=$encodedUrl&user=$encodedUser&pwd=$encodedPwd")
+                        },
+                        onNavigateToOpenCodeSessions = { url, username, pwd ->
+                            navController.navigate(Screen.SessionList.createRoute(url, username, pwd, "OpenCode", "aidelink-opencode"))
                         },
                         initialTarget = null,
                     )
@@ -154,10 +161,12 @@ fun MainScreen(
                     val serverName = backStackEntry.arguments?.getString("serverName") ?: ""
                     val serverId = backStackEntry.arguments?.getString("serverId") ?: ""
                     SessionListScreen(
-                        onNavigateToChat = { sessionId, _ ->
-                            navController.navigate(
-                                Screen.Chat.createRoute(serverUrl, username, password, serverName, serverId, sessionId)
-                            )
+                        onNavigateToChat = { sessionId, directory ->
+                            val sessionUrl = buildOpenCodeWebSessionUrl(serverUrl, directory, sessionId)
+                            val encodedUrl = java.net.URLEncoder.encode(sessionUrl, "UTF-8")
+                            val encodedUser = java.net.URLEncoder.encode(username, "UTF-8")
+                            val encodedPwd = java.net.URLEncoder.encode(password, "UTF-8")
+                            navController.navigate("opencode_webview?url=$encodedUrl&user=$encodedUser&pwd=$encodedPwd")
                         },
                         onNavigateBack = { navController.popBackStack() },
                         serverId = serverId,

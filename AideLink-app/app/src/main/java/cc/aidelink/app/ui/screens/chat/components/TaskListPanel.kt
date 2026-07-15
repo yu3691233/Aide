@@ -49,9 +49,9 @@ private data class IdeBadgeColors(val bg: Color, val text: Color)
 
 private fun getIdeBadgeColors(ide: String): IdeBadgeColors = when (ide.lowercase()) {
     "mimo" -> IdeBadgeColors(bg = Color(0xFFFFF3E0), text = Color(0xFFF57C00))
-    "agy" -> IdeBadgeColors(bg = Color(0xFFF3E5F5), text = Color(0xFF7B1FA2))
+    "antigravity_ide" -> IdeBadgeColors(bg = Color(0xFFF3E5F5), text = Color(0xFF7B1FA2))
     "trae" -> IdeBadgeColors(bg = Color(0xFFE1F5FE), text = Color(0xFF0288D1))
-    "oc", "oc_web" -> IdeBadgeColors(bg = Color(0xFFE8F5E9), text = Color(0xFF388E3C))
+    "opencode", "oc_web" -> IdeBadgeColors(bg = Color(0xFFE8F5E9), text = Color(0xFF388E3C))
     else -> IdeBadgeColors(bg = Color(0xFFECEFF1), text = Color(0xFF455A64))
 }
 

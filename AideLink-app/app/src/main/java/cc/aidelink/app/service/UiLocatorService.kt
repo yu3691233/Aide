@@ -546,7 +546,7 @@ class UiLocatorService : Service() {
             val ideList = listOf(
                 "mimo" to "🤖 MiMo",
                 "trae" to "⚡ Trae",
-                "agy" to "🚀 AGY",
+                "antigravity_ide" to "🚀 Antigravity IDE",
                 "oc" to "📂 OC"
             )
 
