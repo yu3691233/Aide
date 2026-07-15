@@ -1412,27 +1412,63 @@ def api_ide_install_mcp():
     message = ""
     try:
         import json as _json
+
+        def _inject_mcp_json(user_dir):
+            """向 VSCode 内核 IDE 的 User/mcp.json 合并写入 aidelink MCP 配置。
+
+            遵循 Trae 官方格式：顶层 mcpServers，每个 server 仅 command/args/env。
+            保留已有的其他 MCP server 配置，仅新增/更新 aidelink。
+            """
+            mcp_file = Path(user_dir) / "User" / "mcp.json"
+            try:
+                if mcp_file.exists():
+                    with open(mcp_file, "r", encoding="utf-8") as f:
+                        mcp_data = _json.load(f)
+                else:
+                    mcp_data = {}
+                if not isinstance(mcp_data.get("mcpServers"), dict):
+                    mcp_data["mcpServers"] = {}
+                mcp_data["mcpServers"]["aidelink"] = {
+                    "command": "python",
+                    "args": [mcp_script_path],
+                }
+                mcp_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(mcp_file, "w", encoding="utf-8") as f:
+                    _json.dump(mcp_data, f, ensure_ascii=False, indent=2)
+                return True
+            except Exception as e:
+                logger.error(f"Failed to write mcp.json at {mcp_file}: {e}")
+                return False
+
+        def _cleanup_storage_mcp(storage_path):
+            """清理旧版本误写入 storage.json 顶层 mcp 键的错误配置。"""
+            try:
+                p = Path(storage_path)
+                if not p.exists():
+                    return
+                with open(p, "r", encoding="utf-8") as f:
+                    sdata = _json.load(f)
+                if "mcp" in sdata:
+                    del sdata["mcp"]
+                    with open(p, "w", encoding="utf-8") as f:
+                        _json.dump(sdata, f, ensure_ascii=False, indent=4)
+            except Exception:
+                pass
+
         if key in ("trae", "trae_cn"):
-            paths = [
-                Path(os.environ.get("APPDATA", "")) / "TRAE SOLO" / "User" / "globalStorage" / "storage.json",
-                Path(os.environ.get("APPDATA", "")) / "TRAE SOLO CN" / "User" / "globalStorage" / "storage.json",
-            ]
+            appdata_names = ["TRAE SOLO"] if key == "trae" else ["TRAE SOLO CN"]
+            appdata = os.environ.get("APPDATA", "")
             injected = 0
-            for p in paths:
-                if p.exists():
-                    try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            sdata = _json.load(f)
-                        sdata["mcp"] = {"mcpServers": {"aidelink": {"name": "aidelink", "type": "stdio", "command": "python", "args": [mcp_script_path], "isEnabled": True}}}
-                        with open(p, "w", encoding="utf-8") as f:
-                            _json.dump(sdata, f, ensure_ascii=False, indent=4)
-                        injected += 1
-                    except Exception as e:
-                        logger.error(f"Failed to write to {p}: {e}")
+            for dn in appdata_names:
+                user_dir = Path(appdata) / dn
+                if user_dir.exists() and _inject_mcp_json(user_dir):
+                    # 清理旧版本误写入 storage.json 的 mcp 键
+                    _cleanup_storage_mcp(user_dir / "User" / "globalStorage" / "storage.json")
+                    injected += 1
             if injected > 0:
-                success, message = True, f"已将 MCP 配置写入 {injected} 个 Trae 实例"
+                success, message = True, f"已将 MCP 配置写入 {injected} 个 Trae 实例的 mcp.json（重启 Trae 后生效）"
             else:
-                message = "未找到已初始化的 Trae 配置文件"
+                message = "未找到已初始化的 Trae 配置目录"
 
         elif key in ("claude", "claude-code", "claude_code"):
             p = Path(os.path.expanduser("~")) / ".claude" / "mcp.json"
@@ -1466,7 +1502,7 @@ def api_ide_install_mcp():
                 message = "未找到 OpenAI Codex 的 config.toml"
 
         elif key in ("antigravity_ide", "trae_solo", "mimo", "minimax"):
-            # VSCode 内核系 IDE：通用 storage.json 注入逻辑
+            # VSCode 内核系 IDE：统一写入 User/mcp.json（Trae 官方格式）
             key_to_appdata_name = {
                 "antigravity_ide":        ["Antigravity IDE", "Antigravity"],
                 "trae_solo":  ["TRAE SOLO"],
@@ -1474,26 +1510,17 @@ def api_ide_install_mcp():
                 "minimax":    ["MiniMax Code"],
             }
             dir_names = key_to_appdata_name.get(key, [])
-            paths = []
-            for dn in dir_names:
-                p = Path(os.environ.get("APPDATA", "")) / dn / "User" / "globalStorage" / "storage.json"
-                paths.append(p)
+            appdata = os.environ.get("APPDATA", "")
             injected = 0
-            for p in paths:
-                if p.exists():
-                    try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            sdata = _json.load(f)
-                        sdata["mcp"] = {"mcpServers": {"aidelink": {"name": "aidelink", "type": "stdio", "command": "python", "args": [mcp_script_path], "isEnabled": True}}}
-                        with open(p, "w", encoding="utf-8") as f:
-                            _json.dump(sdata, f, ensure_ascii=False, indent=4)
-                        injected += 1
-                    except Exception as e:
-                        logger.error(f"Failed to write to {p}: {e}")
+            for dn in dir_names:
+                user_dir = Path(appdata) / dn
+                if user_dir.exists() and _inject_mcp_json(user_dir):
+                    _cleanup_storage_mcp(user_dir / "User" / "globalStorage" / "storage.json")
+                    injected += 1
             if injected > 0:
-                success, message = True, f"已将 MCP 配置写入 {key} (共 {injected} 个实例)"
+                success, message = True, f"已将 MCP 配置写入 {key} 的 mcp.json（共 {injected} 个实例，重启后生效）"
             else:
-                message = f"未找到 {key} 的已初始化配置文件（storage.json）"
+                message = f"未找到 {key} 的已初始化配置目录"
 
         else:
             message = f"暂不支持自动配置 {key} 的 MCP，请手动配置"

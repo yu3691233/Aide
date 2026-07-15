@@ -392,6 +392,91 @@ def set_enabled(key: str, enabled: bool) -> tuple:
 
 
 # ═══════════════════════════════════════════════════════════════
+# 文本工具调用解析（兼容不返回标准 tool_calls 的代理服务）
+# ═══════════════════════════════════════════════════════════════
+
+import re as _re
+
+# 匹配 <]minimax[><tool_call>...<]minimax[><invoke name="xxx">...<]minimax[><param>value</param>...
+_MINIMAX_INVOKE_RE = _re.compile(
+    r'<invoke\s+name=["\']([\w_]+)["\']>(.*?)</invoke>',
+    _re.DOTALL,
+)
+_MINIMAX_PARAM_RE = _re.compile(r'<(\w+)>(.*?)</\w*>', _re.DOTALL)
+# 匹配 [Tool Call: xxx] 后跟 JSON 块
+_BRACKET_CALL_RE = _re.compile(
+    r'\[Tool\s*Call[:\s]*([\w_]+)\]\s*\n?\s*(\{[^{}]*\})',
+    _re.IGNORECASE,
+)
+
+
+def _parse_text_tool_calls(content: str) -> list:
+    """从模型文本输出中解析非标准的工具调用，返回标准 tool_calls 列表。
+
+    兼容格式：
+    1. <]minimax[> 标签格式（aicncn 代理透传的 MiniMax 原生格式）
+    2. [Tool Call: name] + JSON 参数
+    """
+    if not content:
+        return []
+    calls = []
+
+    # 1. MiniMax 原生标签格式：先清除 <]minimax[> 包装标签，再解析 invoke
+    cleaned = content.replace('<]minimax[>', '')
+    for m in _MINIMAX_INVOKE_RE.finditer(cleaned):
+        name = m.group(1).strip()
+        body = m.group(2)
+        args = {}
+        for pm in _MINIMAX_PARAM_RE.finditer(body):
+            # rstrip('[' 去除 <]minimax[> 闭合标记残留
+            args[pm.group(1).strip()] = pm.group(2).strip().rstrip('[').strip()
+        calls.append({
+            "id": f"textcall-{len(calls)}",
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps(args, ensure_ascii=False),
+            },
+        })
+
+    if calls:
+        return calls
+
+    # 2. [Tool Call: name] 格式（排除 [Tool Call Result] 等非调用块）
+    for m in _BRACKET_CALL_RE.finditer(content):
+        name = m.group(1).strip()
+        if name.lower() in ("result", "results", "output", "response"):
+            continue
+        try:
+            args = json.loads(m.group(2))
+        except Exception:
+            args = {}
+        calls.append({
+            "id": f"textcall-{len(calls)}",
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps(args, ensure_ascii=False),
+            },
+        })
+
+    return calls
+
+
+def _strip_tool_call_text(content: str) -> str:
+    """从 content 中移除已解析的工具调用标签，保留正常文本。"""
+    if not content:
+        return content
+    # 移除 <]minimax[> 标签及其包裹的内容
+    cleaned = _re.sub(r'<\]minimax\[>.*?(?=<\]minimax\[>|$)', '', content, flags=_re.DOTALL)
+    # 移除残留的 <]minimax[> 标记
+    cleaned = cleaned.replace('<]minimax[>', '')
+    # 移除 [Tool Call: ...] 块
+    cleaned = _BRACKET_CALL_RE.sub('', cleaned)
+    return cleaned.strip()
+
+
+# ═══════════════════════════════════════════════════════════════
 # 统一调用入口
 # ═══════════════════════════════════════════════════════════════
 
@@ -510,6 +595,14 @@ def call_model(key: str, messages: list, **kwargs) -> dict:
             content = msg.get("content", "") or ""
             tc = msg.get("tool_calls")
             finish = choice.get("finish_reason", "stop")
+            # 某些代理服务（如 aicncn）不返回标准 tool_calls，而是把工具调用
+            # 用自定义标签（<]minimax[>、[Tool Call:]）塞进 content，尝试解析
+            if not tc and tools:
+                parsed = _parse_text_tool_calls(content)
+                if parsed:
+                    tc = parsed
+                    content = _strip_tool_call_text(content)
+                    finish = "tool_calls"
             return {
                 "ok": True, "content": content, "raw": r.text, "error": None,
                 "tool_calls": tc, "finish_reason": finish,

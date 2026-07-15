@@ -11,6 +11,17 @@ import time
 import threading
 from datetime import datetime
 
+# Windows 下强制 stdout/stderr 使用 UTF-8，避免系统 GBK 代码页导致
+# 子进程输出解码失败（如 rg 输出含中文路径时 'utf-8' codec can't decode byte 0xb1）
+if sys.platform == "win32":
+    for _name in ("stdout", "stderr"):
+        _s = getattr(sys, _name, None)
+        try:
+            if _s is not None and hasattr(_s, "reconfigure"):
+                _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 from paths import BRIDGE_DIR, HISTORY_FILE, CLIPBOARD_FILE, IN_FILE, UPLOAD_FOLDER, LOG_FILE, PHONE_LOG_FILE
 from json_utils import safe_read_json, safe_write_json
 from device_manager import load_device_aliases, find_alias_by_ip
@@ -66,6 +77,10 @@ XIAOMENGLING_TOOLS = [
         },
     },
 ]
+
+# 追加 phone_tools 包提供的工具（任务/IDE/设备/截图/日志 等只读能力）
+from routes.phone_tools import ALL_TOOL_DEFS as _PHONE_EXTRA_TOOLS, dispatch_tool as _dispatch_phone_tool
+XIAOMENGLING_TOOLS.extend(_PHONE_EXTRA_TOOLS)
 
 
 def _execute_xiaomengling_tool(name: str, args: dict, project_dir: str) -> str:
@@ -134,7 +149,7 @@ def _execute_xiaomengling_tool(name: str, args: dict, project_dir: str) -> str:
             cmd.append(".")
             r = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=10,
-                cwd=project_dir,
+                cwd=project_dir, encoding="utf-8", errors="replace",
             )
             output = r.stdout.strip()
             if not output:
@@ -147,7 +162,7 @@ def _execute_xiaomengling_tool(name: str, args: dict, project_dir: str) -> str:
                     cmd2 = ["rg", "-n", "--max-count", "3", "-g", glob_filter, query, f]
                 r2 = subprocess.run(
                     cmd2, capture_output=True, text=True, timeout=5,
-                    cwd=project_dir,
+                    cwd=project_dir, encoding="utf-8", errors="replace",
                 )
                 result_parts.append(f"\n--- {f} ---\n{r2.stdout.strip()}")
             total_matches = len(files)
@@ -183,6 +198,11 @@ def _execute_xiaomengling_tool(name: str, args: dict, project_dir: str) -> str:
             return f"搜索 '{query}'：\n" + "\n".join(matches[:20])
         except Exception as e:
             return f"搜索失败: {e}"
+
+    # phone_tools 包提供的工具（任务/IDE/设备/截图/日志 等）
+    extra = _dispatch_phone_tool(name, args or {})
+    if extra is not None:
+        return extra
 
     return f"未知工具: {name}"
 
@@ -402,15 +422,23 @@ def send_message():
                 return jsonify({"ok": False, "raw": reply, "routed_to": "aide"})
 
             project_dir = settings.get("project_dir", "").strip()
-            tools_enabled = bool(project_dir and os.path.isdir(project_dir))
+            tools_enabled_file = bool(project_dir and os.path.isdir(project_dir))
+            # 系统状态只读工具（任务/IDE/设备/日志）始终可用，不依赖 project_dir
+            tools_enabled = True
 
             system_prompt = (
                 "你是 Aide，AideLink 的 AI 助手。你运行在用户的手机/平板上，通过 AideLink 桥接服务与用户对话。"
                 "请简洁、有帮助地回答用户的问题。"
             )
-            if tools_enabled:
+            system_prompt += (
+                "\n\n你可以通过工具查看 AideLink 的运行状态：用 list_tasks 看任务、get_queue_status 看队列、"
+                "list_ides 看 IDE 运行状态、list_devices 看设备连接、list_active_models 看启用模型、"
+                "get_server_logs/get_phone_logs 看日志、get_screenshot 抓桌面截图。"
+                "当用户问'现在有什么任务/IDE/设备'时，请主动调用对应工具查询后回答。"
+            )
+            if tools_enabled_file:
                 system_prompt += (
-                    f"\n\n你有文件操作能力，可以查看项目目录 '{project_dir}' 中的文件。"
+                    f"\n\n你还有文件操作能力，可以查看项目目录 '{project_dir}' 中的文件。"
                     "当用户问到项目代码、文件内容、代码结构相关的问题时，"
                     "请主动使用 read_file、list_dir、search_files 工具来查看文件后回答。"
                 )
