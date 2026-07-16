@@ -5,6 +5,7 @@
 import os
 import sys
 import subprocess
+import base64
 from datetime import datetime
 
 from paths import BRIDGE_DIR, IN_FILE, UPLOAD_FOLDER
@@ -244,24 +245,43 @@ def dispatch_task(task, runtime):
             try:
                 log_file.write(f"\n--- Spawning inject_to_ide.py for {task_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
                 log_file.flush()
-                cmd = [sys.executable, os.path.join(BRIDGE_DIR, "inject_to_ide.py"), ide, "--stdin"]
+                injector_path = os.path.join(BRIDGE_DIR, "inject_to_ide.py")
+                cmd = [sys.executable, injector_path, ide, "--stdin"]
                 if img_abs_for_restore:
                     cmd += ["--restore-image", img_abs_for_restore]
-                flags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
-                proc = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.PIPE,
-                    stdout=log_file,
-                    stderr=log_file,
-                    creationflags=flags,
-                )
-                try:
-                    proc.communicate(input=prefixed_msg.encode("utf-8"), timeout=30)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    return False, f"注入超时（30s），请确认 {ide.upper()} 终端窗口已打开"
-                if proc.returncode != 0:
-                    return False, f"注入失败（exit={proc.returncode}），请检查 inject.log"
+                from windows_privilege import ide_window_requires_elevation, run_elevated
+                elevated = ide_window_requires_elevation(ide)
+                if elevated:
+                    encoded_text = base64.b64encode(prefixed_msg.encode("utf-8")).decode("ascii")
+                    elevated_args = [injector_path, ide, "--text-base64", encoded_text]
+                    if img_abs_for_restore:
+                        elevated_args += ["--restore-image", img_abs_for_restore]
+                    log_file.write(f"[INFO] Target {ide} is elevated; routing through RunAs injector.\n")
+                    log_file.flush()
+                    try:
+                        returncode = run_elevated(sys.executable, elevated_args, BRIDGE_DIR, timeout_ms=30_000)
+                    except TimeoutError:
+                        return False, f"管理员注入超时（30s），请确认 {ide.upper()} 窗口已打开"
+                    except OSError as exc:
+                        return False, f"{ide.upper()} 以管理员身份运行，提权请求未完成: {exc}"
+                    if returncode != 0:
+                        return False, f"管理员注入失败（exit={returncode}），请检查窗口绑定和权限设置"
+                else:
+                    flags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=log_file,
+                        stderr=log_file,
+                        creationflags=flags,
+                    )
+                    try:
+                        proc.communicate(input=prefixed_msg.encode("utf-8"), timeout=30)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        return False, f"注入超时（30s），请确认 {ide.upper()} 终端窗口已打开"
+                    if proc.returncode != 0:
+                        return False, f"注入失败（exit={proc.returncode}），请检查 inject.log"
             finally:
                 log_file.close()
 

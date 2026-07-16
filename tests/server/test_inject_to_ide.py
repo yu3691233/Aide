@@ -13,6 +13,7 @@ from inject_to_ide import (
     _bring_window_to_foreground,
     _is_trae_target,
     _refresh_window_focus,
+    _send_key_combination,
     focus_calibrated_input,
 )
 
@@ -81,6 +82,13 @@ class ForegroundActivationTests(unittest.TestCase):
         self.assertEqual(user32.timeout, 200_000)
         self.assertEqual(user32.attach_calls[-1], (22, 11, False))
 
+    @patch("inject_to_ide.time.sleep")
+    def test_send_input_reports_uipi_rejection(self, _sleep):
+        user32 = MagicMock()
+        user32.SendInput.return_value = 0
+        with patch("inject_to_ide.ctypes.windll.user32", user32):
+            self.assertFalse(_send_key_combination(0x11, 0x56))
+
 
 class TraeFocusPolicyTests(unittest.TestCase):
     def test_recognizes_current_and_legacy_trae_keys(self):
@@ -145,9 +153,8 @@ class TraeFocusPolicyTests(unittest.TestCase):
 
 class WindowFocusRefreshTests(unittest.TestCase):
     @patch("inject_to_ide.activate_window", return_value=True)
-    def test_restores_maximized_state_after_minimizing(self, activate):
+    def test_maximizes_without_minimizing(self, activate):
         user32 = MagicMock()
-        user32.IsZoomed.return_value = 1
         win = MagicMock()
         win._hWnd = 123
         win.title = "TRAE Work CN"
@@ -155,18 +162,16 @@ class WindowFocusRefreshTests(unittest.TestCase):
 
         self.assertTrue(_refresh_window_focus(win, user32, sleeps.append))
 
-        self.assertEqual(user32.ShowWindow.call_args_list[0].args, (123, 6))
-        self.assertEqual(user32.ShowWindow.call_args_list[1].args, (123, 3))
-        self.assertEqual(sleeps, [0.25, 0.35])
+        user32.ShowWindow.assert_called_once_with(123, 3)
+        self.assertEqual(sleeps, [0.35])
         activate.assert_called_once_with(win)
 
     @patch("inject_to_ide.activate_window", return_value=True)
-    def test_restores_normal_state_after_minimizing(self, _activate):
+    def test_already_normal_window_is_maximized(self, _activate):
         user32 = MagicMock()
-        user32.IsZoomed.return_value = 0
         win = MagicMock()
         win._hWnd = 456
         win.title = "IDE"
 
         self.assertTrue(_refresh_window_focus(win, user32, lambda _seconds: None))
-        self.assertEqual(user32.ShowWindow.call_args_list[1].args, (456, 9))
+        user32.ShowWindow.assert_called_once_with(456, 3)

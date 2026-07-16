@@ -225,6 +225,10 @@ def launch_ide(profile, ide_info):
     ide_path = str(ide_info.get("path") or "")
     if not ide_path:
         raise IdeProfileError("未找到 IDE 安装路径")
+    from windows_privilege import executable_requests_admin, run_elevated
+    if executable_requests_admin(ide_path):
+        run_elevated(ide_path, [], str(Path(ide_path).parent), wait=False)
+        return ide_path
     subprocess.Popen(
         [ide_path],
         creationflags=_creation_flags(),

@@ -3,6 +3,7 @@ import sys
 import time
 import subprocess
 import ctypes
+import base64
 
 # Set DPI Awareness to ensure pygetwindow and pyautogui use the same physical coordinates
 try:
@@ -59,13 +60,18 @@ def _send_key_combination(*vk_codes, down_delay=0.02, between_delay=0.02):
 
     # 1. 依次按下所有修饰键 + 主键
     inputs_down = [_make_input(vk) for vk in vk_codes]
-    user32.SendInput(len(inputs_down), (INPUT * len(inputs_down))(*inputs_down), ctypes.sizeof(INPUT))
+    sent_down = user32.SendInput(
+        len(inputs_down), (INPUT * len(inputs_down))(*inputs_down), ctypes.sizeof(INPUT)
+    )
     time.sleep(down_delay)
 
     # 2. 依次抬起（逆序）
     inputs_up = [_make_input(vk, KEYEVENTF_KEYUP) for vk in reversed(vk_codes)]
-    user32.SendInput(len(inputs_up), (INPUT * len(inputs_up))(*inputs_up), ctypes.sizeof(INPUT))
+    sent_up = user32.SendInput(
+        len(inputs_up), (INPUT * len(inputs_up))(*inputs_up), ctypes.sizeof(INPUT)
+    )
     time.sleep(between_delay)
+    return sent_down == len(inputs_down) and sent_up == len(inputs_up)
 
 
 def _paste_and_enter():
@@ -73,9 +79,10 @@ def _paste_and_enter():
     VK_CONTROL = 0x11
     VK_V = 0x56
     VK_RETURN = 0x0D
-    _send_key_combination(VK_CONTROL, VK_V)
+    if not _send_key_combination(VK_CONTROL, VK_V):
+        return False
     time.sleep(0.4)
-    _send_key_combination(VK_RETURN)
+    return _send_key_combination(VK_RETURN)
 
 
 def robust_copy(text, retries=10, delay=0.2):
@@ -233,21 +240,17 @@ def _is_trae_target(target):
 
 
 def _refresh_window_focus(win, user32=None, sleep_fn=time.sleep):
-    """用最小化/恢复触发 GUI 应用自身的输入焦点恢复逻辑。"""
+    """最大化并激活窗口，让 IDE 恢复内部输入焦点。"""
     user32 = user32 or ctypes.windll.user32
     hwnd = win._hWnd
-    was_maximized = bool(user32.IsZoomed(hwnd))
-    restore_command = 3 if was_maximized else 9  # SW_MAXIMIZE / SW_RESTORE
 
     try:
-        print(f"[INFO] Refreshing internal focus via minimize/restore: {win.title}")
-        user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
-        sleep_fn(0.25)
-        user32.ShowWindow(hwnd, restore_command)
+        print(f"[INFO] Refreshing internal focus via maximize: {win.title}")
+        user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
         sleep_fn(0.35)
         return activate_window(win)
     except Exception as exc:
-        print(f"[WARN] Minimize/restore focus refresh failed: {exc}")
+        print(f"[WARN] Maximize focus refresh failed: {exc}")
         return False
 
 
@@ -263,8 +266,9 @@ def focus_calibrated_input(target, win):
         config = se.get_crop_config(target, se.get_monitor_for_window(hwnd))
         is_trae = _is_trae_target(target)
         click_enabled = bool(config.get("focus_input_enabled"))
-        if is_trae and not click_enabled and _refresh_window_focus(win):
-            print(f"[INFO] Trae restored its input focus without a calibrated click: {target}")
+        maximize_focus_target = is_trae or target == "antigravity_ide"
+        if maximize_focus_target and not click_enabled and _refresh_window_focus(win):
+            print(f"[INFO] IDE restored its input focus without a calibrated click: {target}")
             return True
         if not click_enabled and not is_trae:
             return None
@@ -500,10 +504,6 @@ def inject(target, text, worktree_path=None):
         if not activate_window(win):
             return False
 
-        if not robust_copy(text):
-            print("Error: Clipboard copy failed completely!")
-            return False
-
         calibrated_focus = focus_calibrated_input(target, win)
         if calibrated_focus is False:
             return False
@@ -526,12 +526,15 @@ def inject(target, text, worktree_path=None):
             pyautogui.click(click_x, click_y)
             time.sleep(0.4)
 
-        pyautogui.keyUp('ctrl')
-        pyautogui.keyUp('alt')
-        pyautogui.keyUp('shift')
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.25)
-        pyautogui.press('enter')
+        # AGY 粘贴实验：最大化恢复输入焦点后，通过剪贴板发送。
+        if not robust_copy(text):
+            print("Error: Clipboard copy failed completely!")
+            return False
+        time.sleep(0.3)
+        print(f"[INFO] Pasting via SendInput Ctrl+V in AGY window (title='{win.title}')")
+        if not _paste_and_enter():
+            print("Error: SendInput was rejected; target IDE may be running at a higher privilege level")
+            return False
 
     elif target in ("mimo", "mimocode"):
         # CLI IDE: 通过进程查找终端窗口
@@ -694,7 +697,9 @@ def inject(target, text, worktree_path=None):
         # 注意：Trae 更新后，关闭校准开关时可能无法聚焦输入框（侧边栏
         # 抢占焦点），此时需用户在校准页面打开"派发前点击"开关。
         print(f"[INFO] Pasting via SendInput Ctrl+V in {target.upper()} window (title='{win.title}')")
-        _paste_and_enter()
+        if not _paste_and_enter():
+            print("Error: SendInput was rejected; target IDE may be running at a higher privilege level")
+            return False
 
     print(f"Successfully injected message into {target.upper()} window!")
     return True
@@ -724,6 +729,12 @@ if __name__ == "__main__":
         if hasattr(sys.stdin, 'reconfigure'):
             sys.stdin.reconfigure(encoding='utf-8')
         text = sys.stdin.read()
+    elif "--text-base64" in sys.argv:
+        value_index = sys.argv.index("--text-base64") + 1
+        if value_index >= len(sys.argv):
+            print("Error: --text-base64 requires a value")
+            sys.exit(1)
+        text = base64.b64decode(sys.argv[value_index]).decode("utf-8")
     elif len(sys.argv) >= 3:
         # 排除掉 --restore-image 及其参数
         args = sys.argv[2:]

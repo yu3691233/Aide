@@ -1285,23 +1285,29 @@ def stop_ide_server(ide):
             except Exception:
                 continue
 
-        for pid in main_pids:
-            # 不使用 taskkill /F：WM_CLOSE 会让 IDE 自己保存并退出。
-            try:
-                import pygetwindow as gw
-                for window in gw.getAllWindows():
-                    if getattr(window, "_hWnd", 0) and str(window.title).strip():
-                        owner_pid = ctypes.c_ulong()
-                        ctypes.windll.user32.GetWindowThreadProcessId(
-                            int(window._hWnd), ctypes.byref(owner_pid)
-                        )
-                        # pygetwindow.close() 发送 WM_CLOSE，避免数据丢失。
-                        if (owner_pid.value in main_pids
-                                or ide_name.lower() in window.title.lower()):
-                            window.close()
-                            closed_count += 1
-            except Exception:
-                continue
+        # 不使用 taskkill /F：WM_CLOSE 会让 IDE 自己保存并退出。若目标
+        # 进程完整性更高，则只把固定的 close 操作交给管理员 helper。
+        if main_pids:
+            from ide_process_control import close_windows_for_pids
+            from windows_privilege import process_requires_elevation, run_elevated
+            elevated_pids = [pid for pid in main_pids if process_requires_elevation(pid)]
+            normal_pids = [pid for pid in main_pids if pid not in elevated_pids]
+            closed_count += close_windows_for_pids(normal_pids)
+            if elevated_pids:
+                helper = os.path.join(BASE_DIR, "ide_process_control.py")
+                result = run_elevated(
+                    sys.executable,
+                    [helper, "close", *[str(pid) for pid in elevated_pids]],
+                    BASE_DIR,
+                    timeout_ms=15_000,
+                )
+                if result == 0:
+                    closed_count += len(elevated_pids)
+                else:
+                    return jsonify({
+                        "ok": False,
+                        "error": f"{ide_name} 以管理员身份运行，但提权关闭操作失败（exit={result}）",
+                    }), 409
 
         # ChatGPT Desktop keeps a tray process after its window receives
         # WM_CLOSE.  In the normal app-level close action, also exit that

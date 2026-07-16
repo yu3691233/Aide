@@ -27,6 +27,9 @@ failure_clusters.json
 phone_in.txt
 server/queues/*.jsonl
 server/state/*.json
+server/state/*.jpg
+server/state/*.jpeg
+server/state/*.png
 server/manual_ides.json
 server/scanned_ides.json
 server/disabled_ides.json
