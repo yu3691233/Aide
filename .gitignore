@@ -99,6 +99,7 @@ packages/
 # ----- 编辑器 -----
 .vscode/
 .cursor/
+.waylog/
 *.swp
 *.swo
 *~
@@ -125,6 +126,7 @@ version.json
 
 # ----- 调试截图（应手动移到 docs/screenshots/）-----
 screen_*.png
+server/screen.png
 window_dump.xml
 
 # ----- 归档/一次性脚本 -----
