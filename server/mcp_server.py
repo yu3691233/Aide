@@ -37,21 +37,173 @@ def _task_text(task):
     return json.dumps(task, ensure_ascii=False, indent=2)
 
 
+def _string_list(value):
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _normalize_scope_path(value):
+    return str(value or "").strip().replace("\\", "/").strip("/").lower()
+
+
+def _paths_overlap(left, right):
+    """Return path pairs whose scopes are equal or contain one another."""
+    conflicts = []
+    for left_path in _string_list(left):
+        normalized_left = _normalize_scope_path(left_path)
+        if not normalized_left:
+            continue
+        for right_path in _string_list(right):
+            normalized_right = _normalize_scope_path(right_path)
+            if not normalized_right:
+                continue
+            if (
+                normalized_left == normalized_right
+                or normalized_left.startswith(normalized_right + "/")
+                or normalized_right.startswith(normalized_left + "/")
+            ):
+                conflicts.append([left_path, right_path])
+    return conflicts
+
+
+def _manager_ide_candidates(runtime, main_ide="codex"):
+    """List configured IDEs, preferring an open idle non-primary worker."""
+    import ide_scanner
+    from dispatch_utils import get_ide_running_statuses
+
+    ides = [item for item in ide_scanner.get_all_ides() if item.get("type", "desktop") != "web"]
+    running = get_ide_running_statuses(ides)
+    candidates = []
+    for item in ides:
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        state = runtime.get_ide_status(key) or {}
+        available = runtime.is_ide_available(key)
+        is_manager = bool(item.get("is_primary", False)) or key == main_ide
+        candidates.append({
+            "key": key,
+            "name": item.get("name") or key,
+            "running": bool(running.get(key, False)),
+            "status": state.get("status") or "idle",
+            "is_primary": bool(item.get("is_primary", False)),
+            "is_manager": is_manager,
+            "available": bool(available),
+        })
+    candidates.sort(key=lambda item: (
+        not (item["running"] and item["available"] and not item["is_manager"]),
+        not item["running"],
+        not item["available"],
+        item["is_manager"],
+        item["name"].lower(),
+    ))
+    recommended = next((
+        item["key"] for item in candidates
+        if item["running"] and item["available"] and not item["is_manager"]
+    ), None)
+    return candidates, recommended
+
+
+def _compact_task_package(arguments):
+    objective = str(arguments.get("objective") or arguments.get("task") or "").strip()
+    task_type = str(arguments.get("task_type") or "research").strip().lower()
+    if task_type not in {"read_only", "research", "test", "summary", "code"}:
+        task_type = "research"
+    main_owned_paths = _string_list(arguments.get("main_owned_paths"))
+    worker_owned_paths = _string_list(arguments.get("worker_owned_paths"))
+    result_ref = str(arguments.get("result_ref") or "").strip()
+    result_ref_preferred = task_type in {"read_only", "research", "test", "summary"}
+    package = {
+        "objective": objective,
+        "task_type": task_type,
+        "completed": _string_list(arguments.get("completed")),
+        "remaining": _string_list(arguments.get("remaining")),
+        "decisions": _string_list(arguments.get("decisions")),
+        "main_owned_paths": main_owned_paths,
+        "worker_owned_paths": worker_owned_paths,
+        "validation": _string_list(arguments.get("validation_commands")),
+        "context_refs": _string_list(arguments.get("context_refs")),
+        "result_ref": result_ref or None,
+        "contract": {
+            "do_not_modify_main_owned_paths": True,
+            "return_via": "report_delegated_aidelink_task",
+            "result_ref_preferred": result_ref_preferred,
+            "main_ide_verifies": True,
+        },
+    }
+    return package
+
+
+def handle_prepare_delegation(arguments):
+    """Build a compact, read-only manager package without creating or dispatching a task."""
+    package = _compact_task_package(arguments)
+    if not package["objective"]:
+        return {"isError": True, "content": [{"type": "text", "text": "缺少必填参数 objective"}]}
+    conflicts = _paths_overlap(package["main_owned_paths"], package["worker_owned_paths"])
+    blockers = []
+    if package["task_type"] == "code" and not package["worker_owned_paths"]:
+        blockers.append("code_requires_worker_owned_paths")
+    if conflicts:
+        blockers.append("worker_paths_overlap_main_paths")
+    main_ide = str(arguments.get("main_ide") or "codex").strip().lower()
+    candidates, recommended = _manager_ide_candidates(get_runtime(), main_ide=main_ide)
+    payload = {
+        "task_package": package,
+        "ide_candidates": candidates,
+        "recommended_ide": recommended,
+        "file_conflicts": conflicts,
+        "dispatch_allowed": not blockers,
+        "dispatch_blockers": blockers,
+        "choices": [
+            {"id": "complete_here", "label": "不派发，由主 Codex 完成"},
+            {"id": "new_codex_session", "label": "创建 Codex 新会话接力", "requires_user_confirmation": True},
+            {"id": "delegate", "label": "选择 IDE 后派发", "requires_user_confirmation": True},
+        ],
+    }
+    return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]}
+
+
 def handle_delegate_task(arguments):
     """Create a task owned by the primary IDE and optionally queue it."""
     text = (arguments.get("task") or arguments.get("description") or "").strip()
     target_ide = (arguments.get("target_ide") or "").strip()
     if not text or not target_ide:
         return {"isError": True, "content": [{"type": "text", "text": "缺少必填参数 task 或 target_ide"}]}
+    if arguments.get("user_confirmed") is not True:
+        return {"isError": True, "content": [{"type": "text", "text": (
+            "尚未派发：必须先向用户展示候选，并在用户明确同意后传 user_confirmed=true。"
+            "用户也可以选择“不派发，由主 Codex 完成”。"
+        )}]}
+    task_type = str(arguments.get("task_type") or "research").strip().lower()
+    owned_paths = _string_list(arguments.get("owned_paths"))
+    main_owned_paths = _string_list(arguments.get("main_owned_paths"))
+    if task_type == "code" and not owned_paths:
+        return {"isError": True, "content": [{"type": "text", "text": (
+            "拒绝派发：员工代码任务必须声明 owned_paths，以便与主 IDE 文件范围隔离。"
+        )}]}
+    conflicts = _paths_overlap(main_owned_paths, owned_paths)
+    if task_type == "code" and conflicts:
+        return {"isError": True, "content": [{"type": "text", "text": (
+            "拒绝派发：员工代码任务与主 IDE 文件范围重叠："
+            + json.dumps(conflicts, ensure_ascii=False)
+        )}]}
     runtime = get_runtime()
     task = runtime.create_task(
         text,
         title=arguments.get("title"),
         source="primary_ide",
         target_ide=None,
+        owned_paths=owned_paths,
         parent_task_id=arguments.get("parent_task_id"),
         priority=arguments.get("priority", "medium"),
-        metadata={"delegated_by": "primary_ide", "worker_role": "employee"},
+        metadata={
+            "delegated_by": "primary_ide",
+            "worker_role": "employee",
+            "task_type": task_type,
+            "main_owned_paths": main_owned_paths,
+            "result_ref_preferred": task_type in {"read_only", "research", "test", "summary"},
+        },
     )
     task = runtime.assign_task(task["task_id"], target_ide)
     if not task:
@@ -276,13 +428,34 @@ def get_tool_definitions():
             },
         },
         {
+            "name": "prepare_aidelink_delegation",
+            "description": "经理模式只读准备：生成紧凑任务包和 IDE 候选，优先推荐已打开空闲 IDE，但始终保留由主 Codex 完成；不会创建或派发任务",
+            "inputSchema": {"type": "object", "properties": {
+                "objective": {"type": "string"},
+                "main_ide": {"type": "string", "default": "codex"},
+                "task_type": {"type": "string", "enum": ["read_only", "research", "test", "summary", "code"], "default": "research"},
+                "completed": {"type": "array", "items": {"type": "string"}},
+                "remaining": {"type": "array", "items": {"type": "string"}},
+                "decisions": {"type": "array", "items": {"type": "string"}},
+                "main_owned_paths": {"type": "array", "items": {"type": "string"}},
+                "worker_owned_paths": {"type": "array", "items": {"type": "string"}},
+                "validation_commands": {"type": "array", "items": {"type": "string"}},
+                "context_refs": {"type": "array", "items": {"type": "string"}},
+                "result_ref": {"type": "string"}
+            }, "required": ["objective"]},
+        },
+        {
             "name": "delegate_aidelink_task",
-            "description": "主 IDE 创建并派发一个员工任务给指定子 IDE，任务与用户直接创建的任务区分",
+            "description": "用户明确同意后，主 IDE 复用 TaskRuntime 创建并派发员工任务；未确认时拒绝且不创建任务",
             "inputSchema": {"type": "object", "properties": {
                 "task": {"type": "string"}, "title": {"type": "string"},
                 "target_ide": {"type": "string"}, "parent_task_id": {"type": "string"},
-                "priority": {"type": "string"}, "dispatch": {"type": "boolean", "default": True}
-            }, "required": ["task", "target_ide"]},
+                "priority": {"type": "string"}, "dispatch": {"type": "boolean", "default": True},
+                "user_confirmed": {"type": "boolean", "description": "仅在用户明确同意本次派发后设为 true"},
+                "task_type": {"type": "string", "enum": ["read_only", "research", "test", "summary", "code"], "default": "research"},
+                "main_owned_paths": {"type": "array", "items": {"type": "string"}},
+                "owned_paths": {"type": "array", "items": {"type": "string"}}
+            }, "required": ["task", "target_ide", "user_confirmed"]},
         },
         {
             "name": "create_aidelink_inspiration",
@@ -359,6 +532,8 @@ def process_message(line):
             result = handle_update_task(arguments)
         elif tool_name == "ask_aide":
             result = handle_ask_aide(arguments)
+        elif tool_name == "prepare_aidelink_delegation":
+            result = handle_prepare_delegation(arguments)
         elif tool_name == "delegate_aidelink_task":
             result = handle_delegate_task(arguments)
         elif tool_name == "create_aidelink_inspiration":
