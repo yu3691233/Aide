@@ -226,6 +226,12 @@ def activate_window(win):
     return activated
 
 
+def _is_trae_target(target):
+    """Return whether an IDE key/name belongs to the Trae family."""
+    normalized = "".join(ch for ch in str(target).lower() if ch.isalnum())
+    return "trae" in normalized
+
+
 def focus_calibrated_input(target, win):
     """按 Web 校准的客户区比例点击输入框。
 
@@ -236,8 +242,12 @@ def focus_calibrated_input(target, win):
 
         hwnd = win._hWnd
         config = se.get_crop_config(target, se.get_monitor_for_window(hwnd))
-        if not config.get("focus_input_enabled"):
+        force_trae_focus = _is_trae_target(target)
+        if not config.get("focus_input_enabled") and not force_trae_focus:
             return None
+
+        if force_trae_focus and not config.get("focus_input_enabled"):
+            print(f"[INFO] Trae requires calibrated input focus after activation: {target}")
 
         class RECT(ctypes.Structure):
             _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
@@ -252,8 +262,12 @@ def focus_calibrated_input(target, win):
         if not user32.GetClientRect(hwnd, ctypes.byref(client_rect)):
             print(f"[ERROR] Cannot read client bounds for calibrated focus: {target}")
             return False
+        focus_config = config
+        if force_trae_focus and not config.get("focus_input_enabled"):
+            focus_config = dict(config)
+            focus_config["focus_input_enabled"] = True
         point = se.get_input_focus_client_point(
-            config,
+            focus_config,
             client_rect.right - client_rect.left,
             client_rect.bottom - client_rect.top,
         )
