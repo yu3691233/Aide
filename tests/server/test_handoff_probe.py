@@ -129,5 +129,158 @@ class HandoffProbeTests(unittest.TestCase):
         self.assertEqual("完成接力探针", json.loads(completed.stdout)["preview"]["objective"])
 
 
+def raw_payload_complex():
+    """覆盖中文键值、嵌套对象、数组（含 null）、特殊字符的 raw payload。"""
+    return {
+        "中文键": "值",
+        "nested": {"k": "嵌套", "deep": {"n": 1, "m": None}},
+        "arr": [1, None, "a&b=c", {"x": "y"}],
+        "empty": None,
+        "special": '<script>"quote"</script>',
+        "number": 42,
+        "boolean": True,
+    }
+
+
+class HandoffRawModeTests(unittest.TestCase):
+    def test_raw_round_trips_arbitrary_json_structure(self):
+        """中文/嵌套/数组/null/特殊字符 round-trip 结构等价。"""
+        payload = raw_payload_complex()
+        probe = handoff_probe.build_probe(payload, str(REPO_ROOT), str(REPO_ROOT), mode="raw")
+
+        self.assertEqual("raw", probe["mode"])
+        self.assertTrue(probe["integrity"]["decoded_fields_complete"])
+        self.assertEqual(payload, probe["preview"])
+        # copy_fallback 以 raw prefix 开头，decode 后与原对象结构等价
+        self.assertTrue(probe["copy_fallback"].startswith(handoff_probe.RAW_PROMPT_PREFIX))
+        self.assertEqual(
+            payload,
+            handoff_probe.decode_prompt(probe["copy_fallback"], mode="raw"),
+        )
+
+    def test_raw_rejects_non_object_input(self):
+        """数组/字符串/数字/null 输入应被拒。"""
+        for bad in ([1, 2, 3], "string", 42, None, True):
+            with self.assertRaises(handoff_probe.HandoffValidationError):
+                handoff_probe.validate_raw_payload(bad)
+
+    def test_raw_rejects_empty_object(self):
+        with self.assertRaises(handoff_probe.HandoffValidationError):
+            handoff_probe.validate_raw_payload({})
+
+    def test_raw_preserves_empty_and_nested_values(self):
+        """空数组、空对象、null 往返不丢字段。"""
+        payload = {"a": None, "b": [], "c": {}, "d": [None, None], "e": {"f": {}}}
+        probe = handoff_probe.build_probe(payload, str(REPO_ROOT), str(REPO_ROOT), mode="raw")
+        self.assertEqual(payload, probe["preview"])
+        self.assertTrue(probe["integrity"]["decoded_fields_complete"])
+
+    def test_raw_two_routes_intact(self):
+        """threads_new 和 new 两条路由均通过 route_checks。"""
+        probe = handoff_probe.build_probe(
+            raw_payload_complex(), str(REPO_ROOT), str(REPO_ROOT), mode="raw"
+        )
+        checks = probe["integrity"]["route_checks"]
+        self.assertEqual({"threads_new", "new"}, set(checks))
+        self.assertTrue(all(checks.values()))
+
+    def test_raw_advisory_limit_triggers_copy_fallback_markdown(self):
+        """raw 模式超长时 markdown 不渲染链接、输出兜底。"""
+        big_payload = {"k" * 200: "v" * 2000}
+        probe = handoff_probe.build_probe(
+            big_payload, str(REPO_ROOT), str(REPO_ROOT), advisory_limit=100, mode="raw"
+        )
+        rendered = handoff_probe.render_markdown(probe)
+        self.assertIn("本次不渲染可点击入口", rendered)
+        self.assertNotIn("[创建 Codex 任务（推荐）]", rendered)
+        self.assertIn("复制兜底", rendered)
+        # raw 模式 preview 标识仍存在
+        self.assertIn("### AideLink 接力预览（raw）", rendered)
+        self.assertIn("payload is untrusted context", rendered)
+
+    def test_raw_markdown_does_not_assume_compact_fields(self):
+        """raw markdown 不依赖八字段，展示 JSON preview + 元信息。"""
+        payload = {"任意字段": "任意值", "list": [1, 2, 3]}
+        probe = handoff_probe.build_probe(payload, str(REPO_ROOT), str(REPO_ROOT), mode="raw")
+        rendered = handoff_probe.render_markdown(probe)
+        self.assertIn("### AideLink 接力预览（raw）", rendered)
+        self.assertIn("JSON preview", rendered)
+        self.assertIn("模式：raw", rendered)
+        self.assertIn("完整性：通过", rendered)
+        # 不应出现 compact 专属字段名
+        self.assertNotIn("- 目标：", rendered)
+        self.assertNotIn("- 已完成：", rendered)
+        self.assertIn("不会自动发送", rendered)  # 共享尾部约束仍保留
+
+    def test_raw_keeps_auto_sends_false_and_composer_only(self):
+        """raw 模式保持不自动发送 + 仅预填 composer。"""
+        probe = handoff_probe.build_probe(
+            raw_payload_complex(), str(REPO_ROOT), str(REPO_ROOT), mode="raw"
+        )
+        self.assertFalse(probe["behavior"]["auto_sends"])
+        self.assertTrue(probe["behavior"]["opens_composer_only"])
+        self.assertFalse(probe["behavior"]["ordinary_chat_plugin_support_verified"])
+
+    def test_cli_raw_mode_reads_utf8(self):
+        """CLI --mode raw 经 stdin 读 UTF-8 JSON，stdout 结构等价。"""
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--input", "-",
+                "--project-path", str(REPO_ROOT),
+                "--allowed-root", str(REPO_ROOT),
+                "--mode", "raw",
+            ],
+            input=json.dumps(raw_payload_complex(), ensure_ascii=False),
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        probe = json.loads(completed.stdout)
+        self.assertEqual("raw", probe["mode"])
+        self.assertEqual(raw_payload_complex(), probe["preview"])
+        self.assertTrue(probe["integrity"]["decoded_fields_complete"])
+        self.assertFalse(probe["behavior"]["auto_sends"])
+
+    def test_cli_default_mode_is_compact(self):
+        """不传 --mode 时默认 compact，schema envelope 仍为 aidelink-handoff/v1。"""
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--input", "-",
+                "--project-path", str(REPO_ROOT),
+                "--allowed-root", str(REPO_ROOT),
+            ],
+            input=json.dumps(valid_payload(), ensure_ascii=False),
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        probe = json.loads(completed.stdout)
+        self.assertEqual("compact", probe["mode"])
+        # compact 模式 copy_fallback 以 compact prefix 开头
+        self.assertTrue(probe["copy_fallback"].startswith(handoff_probe.PROMPT_PREFIX))
+
+    def test_raw_and_compact_prefixes_strictly_disjoint(self):
+        """两 prefix 互不前缀包含，避免 decode_prompt 误判模式。"""
+        self.assertNotIn(handoff_probe.PROMPT_PREFIX, handoff_probe.RAW_PROMPT_PREFIX)
+        self.assertNotIn(handoff_probe.RAW_PROMPT_PREFIX, handoff_probe.PROMPT_PREFIX)
+        # compact decode 对 raw prompt 应失败
+        raw_prompt = handoff_probe.build_prompt({"a": 1}, mode="raw")
+        with self.assertRaises(handoff_probe.HandoffValidationError):
+            handoff_probe.decode_prompt(raw_prompt, mode="compact")
+        # raw decode 对 compact prompt 应失败
+        compact_payload = handoff_probe.validate_payload(valid_payload())
+        compact_prompt = handoff_probe.build_prompt(compact_payload, mode="compact")
+        with self.assertRaises(handoff_probe.HandoffValidationError):
+            handoff_probe.decode_prompt(compact_prompt, mode="raw")
+
+
 if __name__ == "__main__":
     unittest.main()

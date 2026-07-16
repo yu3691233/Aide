@@ -12,6 +12,85 @@ from json_utils import safe_read_json, safe_write_json
 from paths import PROJECT_ROOT
 
 
+class TaskStatusError(ValueError):
+    """状态转换非法时抛出。
+
+    用于将员工契约中的关键状态约束（不能绕过 report/verify 闭环）
+    从 prompt 提升为运行时硬约束。调用方捕获后应回传失败或保持原状态。
+    """
+
+
+# 已知合法状态集合：draft/queued/dispatched/running/pending_test/merging/done/failed/
+# test_failed/merge_conflict/timeout/pending/completed/cancelled。
+# merging 由 merge_daemon 在 pending_test 后写入（commit/rebase/test/merge 四阶段）。
+_VALID_STATUSES = frozenset({
+    "draft", "queued", "dispatched", "running", "pending_test", "merging",
+    "done", "failed", "test_failed", "merge_conflict", "timeout",
+    "pending", "completed", "cancelled",
+})
+
+# 允许的状态转换映射。键为源状态，值为该状态下可直接 update_task 写入的目标状态集合。
+# 不在此映射中的转换由 update_task 拒绝；调用方应改用专用方法（mark_task_done /
+# mark_task_failed / confirm_task_done / mark_task_running / assign_task）。
+#
+# 设计要点：
+# - running/dispatched → pending_test 必须经 mark_task_done（带 result_ref 闭环），
+#   直接 update_task(status="pending_test") 仍允许，因为 mark_task_done 内部就是
+#   这样调用的；但 running/dispatched → done 直接写入被禁止，必须经
+#   pending_test + confirm_task_done 两步。
+# - pending_test → done 必须经 confirm_task_done，直接 update_task 被禁止；
+#   故 pending_test 的允许目标集合不含 done，confirm_task_done 内部用
+#   _skip_status_check=True 跳过校验。
+# - merging → done 允许：merge_daemon 自动合并成功后直接写 done，语义等价于
+#   自动确认。进入 merging 前必须先经 pending_test（已要求 result_ref），
+#   故此路径不绕过 result_ref 闭环。test_failed/merge_conflict → done
+#   仍只能经 confirm_task_done。
+# - 任意 → failed 允许（保持 mark_task_failed 与外部失败路径能力）。
+# - 任意 → timeout 允许（TaskMonitor 超时路径）。
+# - merging 由 merge_daemon 从 pending_test 进入，可回退到 test_failed/merge_conflict。
+_ALLOWED_TRANSITIONS = {
+    "draft":         {"queued", "running", "dispatched", "failed", "timeout", "cancelled"},
+    "queued":        {"running", "dispatched", "failed", "timeout", "cancelled", "draft"},
+    "dispatched":    {"running", "pending_test", "failed", "timeout", "cancelled"},
+    "running":       {"pending_test", "failed", "timeout", "cancelled", "dispatched"},
+    "pending_test":  {"merging", "failed", "test_failed", "merge_conflict", "timeout", "cancelled"},
+    "merging":       {"done", "pending_test", "failed", "test_failed", "merge_conflict", "timeout", "cancelled"},
+    "test_failed":   {"failed", "pending_test", "merging", "timeout", "cancelled"},
+    "merge_conflict":{"failed", "pending_test", "merging", "timeout", "cancelled"},
+    "done":          {"failed", "cancelled"},
+    "failed":        {"running", "queued", "draft", "cancelled"},
+    "timeout":       {"failed", "cancelled", "running", "queued"},
+    "pending":       {"running", "queued", "failed", "timeout", "cancelled"},
+    "completed":     {"failed", "cancelled"},
+    "cancelled":     {"failed"},
+}
+
+
+def _assert_transition(old_status, new_status):
+    """校验状态转换合法性，非法则抛 TaskStatusError。
+
+    专用方法（mark_task_done/mark_task_failed/confirm_task_done）通过传入
+    `_skip_status_check=True` 跳过校验，因为它们内部已自行保证语义正确。
+    update_task 的外部调用方无法跳过。
+    """
+    if new_status not in _VALID_STATUSES:
+        raise TaskStatusError(
+            f"非法任务状态值: {new_status!r}；合法值: {sorted(_VALID_STATUSES)}"
+        )
+    if old_status == new_status:
+        return  # 同状态更新字段合法（如只改 summary）
+    allowed = _ALLOWED_TRANSITIONS.get(old_status)
+    if allowed is None:
+        # 未知旧状态（可能是历史归档），允许一次写入已知合法状态，不阻断迁移
+        return
+    if new_status not in allowed:
+        raise TaskStatusError(
+            f"非法状态转换: {old_status!r} → {new_status!r}；"
+            f"允许的目标: {sorted(allowed)}。"
+            f"如需完成请用 mark_task_done/confirm_task_done，失败请用 mark_task_failed。"
+        )
+
+
 def _load_supported_ides():
     """从 ide_registry.json 和 manual_ides.json 动态加载支持的 IDE 列表。
 
@@ -432,6 +511,10 @@ class TaskRuntime:
             return None
 
     def update_task(self, task_id, **fields):
+        # _skip_status_check 仅供内部专用方法（mark_task_done/mark_task_failed/
+        # confirm_task_done）使用，它们已自行保证状态语义正确。外部调用方无法跳过校验，
+        # 必须遵循 _ALLOWED_TRANSITIONS 或改用专用方法，防止绕过 report/verify 闭环。
+        skip_status_check = fields.pop("_skip_status_check", False)
         with self._lock:
             tasks = self.read_tasks()
             updated = None
@@ -440,6 +523,9 @@ class TaskRuntime:
             for task in tasks:
                 if task.get("task_id") == task_id:
                     old_status = task.get("status")
+                    new_status = fields.get("status")
+                    if new_status is not None and not skip_status_check:
+                        _assert_transition(old_status, new_status)
                     task.update(fields)
                     task["updated_at"] = _now_iso()
                     updated = task
@@ -540,6 +626,7 @@ class TaskRuntime:
                 status="done",
                 completed_at=_now_iso(),
                 _is_manual=is_manual,
+                _skip_status_check=True,  # done 只能经此方法从 pending_test/merging/test_failed/merge_conflict 进入
             )
 
     def mark_task_failed(self, task_id, error, is_manual=False):

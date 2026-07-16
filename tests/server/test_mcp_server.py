@@ -465,5 +465,130 @@ class McpServerTests(unittest.TestCase):
                 self.assertEqual("done", runtime.get_task(task_id)["status"])
 
 
+class GetDelegatedTaskFieldsTests(unittest.TestCase):
+    """T5-C：get_delegated_task 返回结构化字段，员工不必解析 prompt 文本。"""
+
+    def _delegate_and_get(self, runtime, delegate_args):
+        """辅助：派发任务后用 get_delegated_task 读取并返回 payload。"""
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            delegated = mcp_server.handle_delegate_task(delegate_args)
+            task_id = json.loads(delegated["content"][0]["text"])["task_id"]
+            result = mcp_server.handle_get_delegated_task({"task_id": task_id})
+        return task_id, json.loads(result["content"][0]["text"])
+
+    def test_get_delegated_task_returns_main_owned_paths(self):
+        """1. get_delegated_task 返回 main_owned_paths。"""
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            TaskRuntime, "_ensure_timeout_scanner"
+        ), patch.object(TaskRuntime, "_try_dispatch_next_queued", return_value=None):
+            runtime = TaskRuntime(temp_dir)
+            task_id, payload = self._delegate_and_get(runtime, {
+                "task": "验证字段", "target_ide": "trae_solo_cn",
+                "user_confirmed": True, "dispatch": False,
+                "task_type": "code", "owned_paths": ["tests/server"],
+                "main_owned_paths": ["server/mcp_server.py", "server/task_runtime.py"],
+            })
+        self.assertEqual(
+            ["server/mcp_server.py", "server/task_runtime.py"],
+            payload["main_owned_paths"],
+        )
+
+    def test_get_delegated_task_returns_validation(self):
+        """2. get_delegated_task 返回 validation。"""
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            TaskRuntime, "_ensure_timeout_scanner"
+        ), patch.object(TaskRuntime, "_try_dispatch_next_queued", return_value=None):
+            runtime = TaskRuntime(temp_dir)
+            task_id, payload = self._delegate_and_get(runtime, {
+                "task": "验证字段", "target_ide": "trae_solo_cn",
+                "user_confirmed": True, "dispatch": False,
+                "task_type": "test", "owned_paths": ["tests/server"],
+                "validation_commands": [
+                    "python -m unittest tests.server.test_mcp_server",
+                    "git diff --check",
+                ],
+            })
+        self.assertEqual(
+            [
+                "python -m unittest tests.server.test_mcp_server",
+                "git diff --check",
+            ],
+            payload["validation"],
+        )
+
+    def test_get_delegated_task_returns_task_type(self):
+        """3. get_delegated_task 返回 task_type。"""
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            TaskRuntime, "_ensure_timeout_scanner"
+        ), patch.object(TaskRuntime, "_try_dispatch_next_queued", return_value=None):
+            runtime = TaskRuntime(temp_dir)
+            task_id, payload = self._delegate_and_get(runtime, {
+                "task": "验证字段", "target_ide": "trae_solo_cn",
+                "user_confirmed": True, "dispatch": False,
+                "task_type": "code", "owned_paths": ["tests/server"],
+            })
+        self.assertEqual("code", payload["task_type"])
+
+    def test_get_delegated_task_returns_defaults_when_metadata_missing(self):
+        """4. 老任务数据缺少字段时保持兼容（回退默认值）。"""
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "legacy-1",
+            "source": "primary_ide",
+            "status": "running",
+            "title": "legacy task",
+            "text": "old task without structured fields",
+            "target_ide": "codex",
+            "owned_paths": [],
+            "summary": None,
+            "result_ref": None,
+            "error": None,
+            "updated_at": "2026-01-01",
+            "metadata": {},  # 老任务 metadata 为空，无 main_owned_paths/validation/task_type
+        }
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_get_delegated_task({"task_id": "legacy-1"})
+        payload = json.loads(result["content"][0]["text"])
+        self.assertEqual([], payload["main_owned_paths"])
+        self.assertEqual([], payload["validation"])
+        self.assertEqual("research", payload["task_type"])
+
+    def test_get_delegated_task_returns_empty_validation_when_not_provided(self):
+        """5. 新任务未传 validation_commands 时返回空数组（不报错）。"""
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            TaskRuntime, "_ensure_timeout_scanner"
+        ), patch.object(TaskRuntime, "_try_dispatch_next_queued", return_value=None):
+            runtime = TaskRuntime(temp_dir)
+            task_id, payload = self._delegate_and_get(runtime, {
+                "task": "无 validation 的任务", "target_ide": "trae_solo_cn",
+                "user_confirmed": True, "dispatch": False,
+                "task_type": "research", "owned_paths": [],
+            })
+        self.assertEqual([], payload["validation"])
+        self.assertEqual("research", payload["task_type"])
+        self.assertEqual([], payload["main_owned_paths"])
+
+    def test_get_delegated_task_metadata_still_returned_for_compat(self):
+        """6. metadata 仍整体返回，保持现有消费者兼容（contract 字段可在 metadata 中读取）。"""
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            TaskRuntime, "_ensure_timeout_scanner"
+        ), patch.object(TaskRuntime, "_try_dispatch_next_queued", return_value=None):
+            runtime = TaskRuntime(temp_dir)
+            task_id, payload = self._delegate_and_get(runtime, {
+                "task": "验证 metadata 兼容", "target_ide": "trae_solo_cn",
+                "user_confirmed": True, "dispatch": False,
+                "task_type": "test", "owned_paths": ["tests/server"],
+                "main_owned_paths": ["server/mcp_server.py"],
+                "validation_commands": ["python -m pytest"],
+            })
+        metadata = payload["metadata"]
+        # 顶层字段与 metadata 内字段一致（无双写不一致）
+        self.assertEqual(payload["main_owned_paths"], metadata["main_owned_paths"])
+        self.assertEqual(payload["validation"], metadata["validation"])
+        self.assertEqual(payload["task_type"], metadata["task_type"])
+        # contract 相关字段仍在 metadata（result_ref_required 等）
+        self.assertTrue(metadata["result_ref_required"])
+
+
 if __name__ == "__main__":
     unittest.main()

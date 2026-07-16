@@ -253,6 +253,9 @@ def handle_delegate_task(arguments):
             "worker_role": "employee",
             "task_type": task_type,
             "main_owned_paths": main_owned_paths,
+            # validation 与 _compact_task_package 同源（validation_commands），
+            # 写入 metadata 让 get_delegated_task 能结构化返回，员工不必解析 prompt。
+            "validation": _string_list(arguments.get("validation_commands")),
             "result_ref_required": True,
             "objective": text,
         },
@@ -322,6 +325,12 @@ def handle_get_delegated_task(arguments):
         "summary", "result_ref", "error", "updated_at", "metadata",
     )
     payload = {key: task.get(key) for key in fields}
+    # 补齐结构化字段：员工不再需要解析 prompt 文本获取 main_owned_paths/validation/task_type。
+    # 来源优先从 metadata 提取（delegate_task 写入位置），缺失时回退到空值，不破坏旧任务兼容。
+    metadata = task.get("metadata") or {}
+    payload["main_owned_paths"] = metadata.get("main_owned_paths", [])
+    payload["validation"] = metadata.get("validation", [])
+    payload["task_type"] = metadata.get("task_type", "research")
     return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]}
 
 
