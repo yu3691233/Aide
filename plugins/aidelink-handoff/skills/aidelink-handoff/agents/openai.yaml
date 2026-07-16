@@ -1,0 +1,4 @@
+interface:
+  display_name: "AideLink Handoff"
+  short_description: "Build compact, verified ChatGPT-to-Codex handoffs."
+  default_prompt: "Use $aidelink-handoff to create a compact handoff for a new Codex task."

@@ -25,6 +25,9 @@ def _install_aidelink_skill(key, home_dir=None, source_dir=None):
     home = Path(home_dir) if home_dir else Path.home()
     roots = []
     if key in {"codex", "openai-codex", "openaicodex"}:
+        # Current Codex releases discover user skills from ~/.agents/skills.
+        # Keep the former ~/.codex/skills target for installed older clients.
+        roots.append(home / ".agents" / "skills")
         roots.append(home / ".codex" / "skills")
     if key in {"trae", "trae_cn", "trae_solo", "trae_solo_cn"}:
         roots.append(home / ".trae" / "skills")

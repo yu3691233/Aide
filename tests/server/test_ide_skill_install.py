@@ -22,8 +22,9 @@ class IdeSkillInstallTests(unittest.TestCase):
             source.mkdir(parents=True)
             (source / "SKILL.md").write_text("---\nname: aidelink-manager-worker\ndescription: test\n---\n", encoding="utf-8")
 
-            self.assertEqual(1, _install_aidelink_skill("codex", root / "home", source))
+            self.assertEqual(2, _install_aidelink_skill("codex", root / "home", source))
             self.assertEqual(1, _install_aidelink_skill("trae_solo_cn", root / "home", source))
+            self.assertTrue((root / "home" / ".agents" / "skills" / source.name / "SKILL.md").is_file())
             self.assertTrue((root / "home" / ".codex" / "skills" / source.name / "SKILL.md").is_file())
             self.assertTrue((root / "home" / ".trae" / "skills" / source.name / "SKILL.md").is_file())
 

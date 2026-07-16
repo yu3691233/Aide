@@ -1,0 +1,18 @@
+{
+  "name": "aidelink-handoff",
+  "version": "0.1.0",
+  "description": "Build compact, verifiable ChatGPT-to-Codex handoff packages and safe local task deep links.",
+  "author": {
+    "name": "AideLink contributors"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "AideLink Handoff",
+    "shortDescription": "Create compact ChatGPT-to-Codex task handoffs.",
+    "longDescription": "Preview and validate an eight-field handoff, generate UTF-8-safe Codex task links, report URL lengths, and keep a copy fallback without sending anything automatically.",
+    "developerName": "AideLink contributors",
+    "category": "Productivity",
+    "capabilities": ["Skills"],
+    "defaultPrompt": "Create a compact AideLink handoff for a new Codex task and show me the preview before I open it."
+  }
+}
