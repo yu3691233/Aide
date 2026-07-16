@@ -65,6 +65,35 @@ class McpServerTests(unittest.TestCase):
         names = {tool["name"] for tool in mcp_server.get_tool_definitions()}
         self.assertIn("create_aidelink_inspiration", names)
 
+    def test_get_tasks_reads_project_runtime_and_defaults_to_actionable(self):
+        class Runtime:
+            def read_tasks(self):
+                return [
+                    {"task_id": "idea-1", "title": "later", "status": "draft", "priority": "high",
+                     "target_ide": None, "updated_at": "2026-01-02", "metadata": {"content_kind": "inspiration"}},
+                    {"task_id": "done-1", "title": "done", "status": "done", "priority": "medium",
+                     "updated_at": "2026-01-01", "metadata": {}},
+                ]
+
+        with patch("mcp_server.get_runtime", return_value=Runtime()):
+            result = mcp_server.handle_get_tasks({})
+
+        text = result["content"][0]["text"]
+        self.assertIn("idea-1", text)
+        self.assertIn("灵感", text)
+        self.assertNotIn("done-1", text)
+
+    def test_get_tasks_can_return_inspiration_details(self):
+        class Runtime:
+            def read_tasks(self):
+                return [{"task_id": "idea-1", "title": "later", "text": "full context", "status": "draft",
+                         "updated_at": "2026-01-02", "metadata": {"content_kind": "inspiration"}}]
+
+        with patch("mcp_server.get_runtime", return_value=Runtime()):
+            result = mcp_server.handle_get_tasks({"scope": "inspirations", "include_details": True})
+
+        self.assertIn("full context", result["content"][0]["text"])
+
     def test_create_inspiration_has_no_ide_target(self):
         response = _Response({
             "ok": True,
@@ -74,6 +103,8 @@ class McpServerTests(unittest.TestCase):
             result = mcp_server.handle_create_inspiration({"text": "later", "title": "idea"})
 
         self.assertFalse(result.get("isError", False))
+        self.assertIn("idea-1", result["content"][0]["text"])
+        self.assertNotIn("full context", result["content"][0]["text"])
         request = urlopen.call_args.args[0]
         self.assertTrue(request.full_url.endswith("/api/tasks/inspiration"))
         self.assertEqual("later", json.loads(request.data.decode("utf-8"))["text"])

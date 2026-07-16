@@ -89,7 +89,10 @@ def handle_create_inspiration(arguments):
     task = result.get("task") if result.get("ok") else None
     if not isinstance(task, dict):
         return {"isError": True, "content": [{"type": "text", "text": result.get("message", "灵感创建失败")}]}
-    return {"content": [{"type": "text", "text": f"已记录项目灵感：\n{_task_text(task)}"}]}
+    return {"content": [{"type": "text", "text": (
+        f"已记录项目灵感：`{task.get('task_id')}` | {task.get('title')} | "
+        f"{task.get('status', 'draft')} | {task.get('project', '')}"
+    )}]}
 
 
 def handle_get_delegated_task(arguments):
@@ -136,25 +139,33 @@ def write_tasks(tasks):
         return False
 
 def handle_get_tasks(arguments):
-    tasks = read_tasks()
+    tasks = get_runtime().read_tasks()
+    scope = str(arguments.get("scope") or "actionable").strip().lower()
+    limit = max(1, min(int(arguments.get("limit") or 20), 100))
+    include_details = bool(arguments.get("include_details", False))
+    terminal_statuses = {"done", "completed", "failed", "cancelled", "timeout"}
+    if scope == "inspirations":
+        tasks = [task for task in tasks if (task.get("metadata") or {}).get("content_kind") == "inspiration"]
+    elif scope == "actionable":
+        tasks = [task for task in tasks if str(task.get("status") or "").lower() not in terminal_statuses]
+    tasks = sorted(tasks, key=lambda task: str(task.get("updated_at") or task.get("created_at") or ""), reverse=True)[:limit]
     if not tasks:
-        return {"content": [{"type": "text", "text": "目前 AideLink 任务列表中没有任何任务。"}]}
+        return {"content": [{"type": "text", "text": f"当前项目没有符合 scope={scope} 的任务。"}]}
     
     # Format tasks for display
-    lines = ["📋 AideLink 当前任务列表："]
+    lines = [f"当前项目任务（scope={scope}, {len(tasks)} 条）："]
     for t in tasks:
-        status_symbol = "⏳"
-        status = t.get("status", "pending")
-        if status == "running":
-            status_symbol = "🏃"
-        elif status == "completed":
-            status_symbol = "✅"
-        elif status == "failed":
-            status_symbol = "❌"
-        
-        lines.append(f"- [{status_symbol}] ID: `{t.get('id')}` | {t.get('title', '无标题')}")
-        if t.get("description"):
-            lines.append(f"  描述: {t.get('description')}")
+        status = str(t.get("status") or "draft")
+        kind = "灵感" if (t.get("metadata") or {}).get("content_kind") == "inspiration" else "任务"
+        target = t.get("target_ide") or "未分配"
+        lines.append(
+            f"- `{t.get('task_id')}` | {kind} | {status} | {t.get('priority', 'medium')} | "
+            f"{t.get('title') or '无标题'} | {target}"
+        )
+        if include_details:
+            text = str(t.get("text") or "").strip().replace("\n", " ")
+            if text:
+                lines.append(f"  {text[:300]}{'…' if len(text) > 300 else ''}")
     
     return {"content": [{"type": "text", "text": "\n".join(lines)}]}
 
@@ -229,7 +240,11 @@ def get_tool_definitions():
         {
             "name": "get_aidelink_tasks",
             "description": "获取 AideLink 应用后端的当前开发任务列表，了解哪些任务待办、进行中或已完成",
-            "inputSchema": {"type": "object", "properties": {}},
+            "inputSchema": {"type": "object", "properties": {
+                "scope": {"type": "string", "enum": ["actionable", "inspirations", "all"], "default": "actionable"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                "include_details": {"type": "boolean", "default": False}
+            }},
         },
         {
             "name": "update_aidelink_task",
@@ -369,6 +384,10 @@ def send_response(response):
     sys.stdout.flush()
 
 def main():
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     log_debug("AideLink Tasks MCP server started.")
     for line in sys.stdin:
         line = line.strip()
