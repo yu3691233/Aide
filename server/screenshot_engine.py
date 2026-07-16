@@ -707,14 +707,14 @@ def _crop_to_bytes(img, left, top, right, bottom, quality=70):
     if right <= left or bottom <= top:
         return None
     cropped = img.crop((left, top, right, bottom))
+    scaled = cropped
     try:
-        cropped = _scale_for_phone(cropped)
-        img_io = io.BytesIO()
-        cropped.save(img_io, 'JPEG', quality=quality)
-        img_io.seek(0)
-        return img_io.getvalue()
+        scaled = _scale_for_phone(cropped)
+        with io.BytesIO() as img_io:
+            scaled.save(img_io, 'JPEG', quality=quality)
+            return img_io.getvalue()
     finally:
-        _free_gdi_resources(cropped)
+        _free_gdi_resources(scaled, cropped if scaled is not cropped else None)
 
 
 def _make_placeholder(msg, w=None, h=None, bbox=None):
@@ -731,6 +731,7 @@ def _make_placeholder(msg, w=None, h=None, bbox=None):
 
 
 def _is_mostly_black(img, threshold=8):
+    small = None
     try:
         small = img.resize((80, 45))
         extrema = small.getextrema()
@@ -739,6 +740,9 @@ def _is_mostly_black(img, threshold=8):
             return max(max_r, max_g, max_b) < threshold
     except Exception:
         pass
+    finally:
+        if small is not None:
+            small.close()
     return False
 
 
@@ -787,8 +791,6 @@ def _free_gdi_resources(*objs):
 
 
 def _encode_jpeg(img, quality=85):
-    buf = io.BytesIO()
-    img.save(buf, 'JPEG', quality=quality)
-    buf.seek(0)
-    data = buf.getvalue()
-    return data
+    with io.BytesIO() as buf:
+        img.save(buf, 'JPEG', quality=quality)
+        return buf.getvalue()

@@ -20,12 +20,14 @@ internal fun decodeScaledBitmap(bytes: ByteArray, maxDim: Int = 1920): Bitmap? {
     if (decoded.width <= maxDim && decoded.height <= maxDim) return decoded
 
     val scale = maxDim.toFloat() / maxOf(decoded.width, decoded.height)
-    return Bitmap.createScaledBitmap(
+    val scaled = Bitmap.createScaledBitmap(
         decoded,
         (decoded.width * scale).toInt(),
         (decoded.height * scale).toInt(),
         true,
     )
+    if (scaled !== decoded) decoded.recycle()
+    return scaled
 }
 
 internal fun centerRegionHash(bytes: ByteArray): Long {

@@ -202,8 +202,6 @@ class AideLinkChatViewModel @Inject constructor(
 
         val monitorImage: ImageBitmap? = null,
 
-        val fullMonitorImage: ImageBitmap? = null,  // 全屏截图，用于黑边检测
-
         val monitorOriginalWidth: Int = 0,  // 监控全屏截图原始宽度
 
         val monitorOriginalHeight: Int = 0,  // 监控全屏截图原始高度
@@ -1718,48 +1716,6 @@ class AideLinkChatViewModel @Inject constructor(
                         _state.value = _state.value.copy(
 
                             monitorImage = bitmap.asImageBitmap()
-
-                        )
-
-                    }
-
-                }
-
-            }
-
-        }
-
-        // 同时获取全屏截图用于黑边检测（不受全屏状态影响）
-
-        runCatching {
-
-            val currentTarget = _state.value.target.key
-
-            val fullBytes = bridgeApi.screenshotFull(target = currentTarget)
-
-            if (fullBytes != null) {
-
-                runCatching {
-
-                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-
-                    BitmapFactory.decodeByteArray(fullBytes, 0, fullBytes.size, opts)
-
-                    val origW = opts.outWidth
-
-                    val origH = opts.outHeight
-
-                    val fullBitmap = decodeScaledBitmap(fullBytes)
-
-                    if (fullBitmap != null && fullBitmap.width in 1..2048 && fullBitmap.height in 1..2048) {
-
-                        _state.value = _state.value.copy(
-
-                            fullMonitorImage = fullBitmap.asImageBitmap(),
-
-                            monitorOriginalWidth = origW,
-
-                            monitorOriginalHeight = origH
 
                         )
 
@@ -4337,8 +4293,6 @@ class AideLinkChatViewModel @Inject constructor(
         stopMonitorPolling()
 
         recycleOldBitmap(_state.value.monitorImage)
-
-        recycleOldBitmap(_state.value.fullMonitorImage)
 
         recycleOldBitmap(_state.value.dialogUncroppedImage)
 

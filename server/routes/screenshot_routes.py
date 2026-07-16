@@ -4,11 +4,12 @@ _server_dir = str(Path(__file__).parent.parent)
 if _server_dir not in sys.path:
     sys.path.insert(0, _server_dir)
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 import json
 import os
 import time
 import ctypes
+import threading
 
 from paths import BRIDGE_DIR, CROPS_FILE
 from json_utils import safe_read_json, safe_write_json
@@ -16,6 +17,35 @@ from json_utils import safe_read_json, safe_write_json
 screenshot_bp = Blueprint('screenshot', __name__)
 # 保留旧白名单用于快速路径,但实际判断走 _is_window_target 动态查找
 _WINDOW_TARGETS = ('trae', 'trae_cn', 'antigravity_ide', 'mimo', 'mimocode', 'oc', 'codex')
+_CAPTURE_ENDPOINTS = {'screenshot.screenshot_full', 'screenshot.screenshot_crop', 'screenshot.screenshot_dialog'}
+_CAPTURE_LOCK = threading.Lock()
+_CAPTURE_LOCK_TIMEOUT_SECONDS = 15
+
+
+@screenshot_bp.before_request
+def _serialize_high_memory_captures():
+    """一次只执行一个截图流水线，避免并发 4K 捕获叠加到 watchdog 阈值。"""
+    if request.endpoint not in _CAPTURE_ENDPOINTS or request.method != 'GET':
+        return None
+    if not _CAPTURE_LOCK.acquire(timeout=_CAPTURE_LOCK_TIMEOUT_SECONDS):
+        return jsonify({"error": "Screenshot capture is busy; please retry"}), 503
+    g.screenshot_capture_lock_held = True
+    return None
+
+
+@screenshot_bp.after_request
+def _release_capture_lock(response):
+    if getattr(g, 'screenshot_capture_lock_held', False):
+        g.screenshot_capture_lock_held = False
+        _CAPTURE_LOCK.release()
+    return response
+
+
+@screenshot_bp.teardown_request
+def _release_capture_lock_on_error(_error):
+    if getattr(g, 'screenshot_capture_lock_held', False):
+        g.screenshot_capture_lock_held = False
+        _CAPTURE_LOCK.release()
 
 
 def _is_window_target(target):
@@ -106,9 +136,34 @@ def _preferred_monitor_for_target(target, pcb):
 # /screenshot/full
 # ============================================================
 
+def _capture_to_jpeg(img, pcb):
+    """抓取→缩放→JPEG 编码→立即释放图像内存。
+
+    返回 JPEG bytes。图像对象在函数内用完即 close+del，避免跨请求驻留。
+    """
+    if img is None:
+        return None
+    scaled = None
+    try:
+        scaled = pcb._scale_for_phone(img)
+        return pcb._encode_jpeg(scaled)
+    except Exception as e:
+        print(f"[WARN] _capture_to_jpeg failed: {e}", flush=True)
+        return None
+    finally:
+        if scaled is not None and scaled is not img:
+            try:
+                scaled.close()
+            except Exception:
+                pass
+        try:
+            img.close()
+        except Exception:
+            pass
+
+
 @screenshot_bp.route('/screenshot/full')
 def screenshot_full():
-    _imgs = []
     try:
         print(f"[DEBUG] screenshot_full: UA={request.headers.get('User-Agent')}, Remote={request.remote_addr}, XFF={request.headers.get('X-Forwarded-For')}", flush=True)
         target = request.args.get('target', default='').strip().lower()
@@ -138,17 +193,11 @@ def screenshot_full():
                         import capture_window
                         winrt_img = capture_window.capture_window_winrt(hwnd, client_only=True)
                         if winrt_img is not None:
-                            _imgs.append(winrt_img)
-                            winrt_img = pcb._scale_for_phone(winrt_img)
-                            _imgs.append(winrt_img)
-                            data = pcb._encode_jpeg(winrt_img)
+                            data = _capture_to_jpeg(winrt_img, pcb)
                         else:
                             pw_img = capture_window.capture_window_client(hwnd)
                             if pw_img is not None:
-                                _imgs.append(pw_img)
-                                pw_img = pcb._scale_for_phone(pw_img)
-                                _imgs.append(pw_img)
-                                data = pcb._encode_jpeg(pw_img)
+                                data = _capture_to_jpeg(pw_img, pcb)
             except Exception as win_err:
                 print(f"[WARN] Failed to grab window for {target}: {win_err}", flush=True)
 
@@ -160,10 +209,7 @@ def screenshot_full():
                 sel = next((m for m in monitors if m["name"] == monitor_name), None)
                 if sel:
                     img = pcb.safe_grab_screen(bbox=(sel["left"], sel["top"], sel["right"], sel["bottom"]))
-                    _imgs.append(img)
-                    img = pcb._scale_for_phone(img)
-                    _imgs.append(img)
-                    data = pcb._encode_jpeg(img)
+                    data = _capture_to_jpeg(img, pcb)
             except Exception as mon_err:
                 print(f"[WARN] Failed to grab specified monitor {monitor_name}: {mon_err}", flush=True)
 
@@ -181,10 +227,7 @@ def screenshot_full():
                         sel = next((m for m in monitors if m["name"] == win_mon), None)
                         if sel:
                             img = pcb.safe_grab_screen(bbox=(sel["left"], sel["top"], sel["right"], sel["bottom"]))
-                            _imgs.append(img)
-                            img = pcb._scale_for_phone(img)
-                            _imgs.append(img)
-                            data = pcb._encode_jpeg(img)
+                            data = _capture_to_jpeg(img, pcb)
             except Exception:
                 pass
 
@@ -201,10 +244,7 @@ def screenshot_full():
                 msg = "AideLink PC Offline / Locked\n\n(Screen grab not available)"
                 img = pcb._make_placeholder(msg)
 
-            _imgs.append(img)
-            img = pcb._scale_for_phone(img)
-            _imgs.append(img)
-            data = pcb._encode_jpeg(img)
+            data = _capture_to_jpeg(img, pcb)
 
         if _is_window_target(target) and not window_found:
             window_found = _target_window_payload(target) is not None
@@ -218,19 +258,13 @@ def screenshot_full():
         try:
             pcb = _get_screenshot_utils()
             placeholder = pcb._make_placeholder(f"AideLink Fatal Error\n\n{e}")
-            _imgs.append(placeholder)
             from flask import Response
-            resp = Response(pcb._encode_jpeg(placeholder), mimetype='image/jpeg')
+            data = _capture_to_jpeg(placeholder, pcb)
+            resp = Response(data, mimetype='image/jpeg')
             resp.headers['X-Window-Found'] = 'false'
             return resp
         except Exception:
             return jsonify({"error": str(e)}), 500
-    finally:
-        try:
-            pcb = _get_screenshot_utils()
-            pcb._free_gdi_resources(*_imgs)
-        except Exception:
-            pass
 
 
 # ============================================================
@@ -582,7 +616,8 @@ def screenshot_dialog():
             if cropped is not None and cropped.width > 50 and cropped.height > 50:
                 _imgs.append(cropped)
                 cropped_scaled = pcb._scale_for_phone(cropped)
-                _imgs.append(cropped_scaled)
+                if cropped_scaled is not cropped:
+                    _imgs.append(cropped_scaled)
                 import io
                 img_io = io.BytesIO()
                 cropped_scaled.save(img_io, 'JPEG', quality=85)

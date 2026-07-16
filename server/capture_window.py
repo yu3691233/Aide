@@ -109,25 +109,41 @@ def capture_window_winrt(hwnd, timeout=3.0, client_only=False):
     blank_frames = [0]
     ready = threading.Event()
     capture = None
+    capture_control = None
 
     def on_frame(frame, control):
+        img = None
         try:
             # frame.frame_buffer: BGRA numpy ndarray
+            # 注意：Image.fromarray 会引用 numpy 数组的内存，而 numpy
+            # 数组又持有 frame 的引用。若不显式拷贝，整个 frame_buffer
+            # （4K 窗口约 32MB）会随 Image 对象长期驻留，导致内存泄漏。
+            # 用 copy=True 让 PIL 创建独立的像素缓冲区，断开对 numpy
+            # 数组的引用，使 frame 可被立即回收。
             bgr = frame.frame_buffer[:, :, :3]   # BGRA → BGR
             rgb = bgr[:, :, ::-1]                 # BGR → RGB
-            img = Image.fromarray(rgb, 'RGB')
+            img = Image.fromarray(rgb, 'RGB').copy()
+            # 显式删除局部视图，解除对 frame_buffer 的引用
+            del bgr, rgb
             if _is_blank_image(img):
                 blank_frames[0] += 1
                 # DWM/DirectComposition 刚恢复或最大化窗口时，第一帧可能是纯白。
                 # 给合成器几帧时间；连续空白则停止并让调用方走屏幕截图兜底。
                 if blank_frames[0] < 5:
+                    img.close()
                     return
                 print(f"[WARN] capture_window_winrt returned blank frames for hwnd={hwnd}", flush=True)
+                img.close()
                 control.stop()
                 ready.set()
                 return
             result[0] = img
         except Exception as e:
+            if img is not None:
+                try:
+                    img.close()
+                except Exception:
+                    pass
             print(f"[WARN] capture_window_winrt frame conversion: {e}", flush=True)
             control.stop()
             ready.set()
@@ -145,7 +161,9 @@ def capture_window_winrt(hwnd, timeout=3.0, client_only=False):
         capture = WindowsCapture(window_hwnd=hwnd, cursor_capture=False, draw_border=border_setting)
         capture.frame_handler = on_frame
         capture.closed_handler = on_closed
-        capture.start()
+        # start_free_threaded 返回可等待的控制对象；无论成功、失败还是超时，
+        # 都能在 finally 中确认原生 D3D 捕获线程已结束。
+        capture_control = capture.start_free_threaded()
 
         if not ready.wait(timeout=timeout):
             print(f"[WARN] capture_window_winrt timeout ({timeout}s) for hwnd={hwnd}", flush=True)
@@ -161,8 +179,13 @@ def capture_window_winrt(hwnd, timeout=3.0, client_only=False):
                 x_off, y_off, c_w, c_h = ca
                 if x_off >= 0 and y_off >= 0 and c_w > 0 and c_h > 0:
                     if x_off + c_w <= img.width and y_off + c_h <= img.height:
-                        img = img.crop((x_off, y_off, x_off + c_w, y_off + c_h))
+                        # crop 创建新图像，原图立即 close 释放 24MB 像素内存
+                        cropped = img.crop((x_off, y_off, x_off + c_w, y_off + c_h))
+                        img.close()
+                        img = cropped
 
+        # 清除闭包引用，避免 result[0] 长期持有图像对象
+        result[0] = None
         return img
 
     except Exception as e:
@@ -170,11 +193,20 @@ def capture_window_winrt(hwnd, timeout=3.0, client_only=False):
         return None
 
     finally:
-        if capture and hasattr(capture, 'close'):
+        if capture_control is not None:
             try:
-                capture.close()
+                capture_control.stop()
             except Exception:
                 pass
+            try:
+                capture_control.wait()
+            except Exception:
+                pass
+        if capture is not None:
+            # windows-capture 没有 close()；清空回调可切断 native capture
+            # 对闭包/result/frame 的潜在引用。
+            capture.frame_handler = None
+            capture.closed_handler = None
 
 
 def _is_blank_image(img):
@@ -183,15 +215,26 @@ def _is_blank_image(img):
         return True
     # 缩小后检查亮度范围，避免对校准大图逐像素扫描。Electron 窗口失败时
     # 常见结果不仅是全黑，也可能是几乎纯白的客户区。
-    sample = img.convert("L").resize((32, 32))
-    low, high = sample.getextrema()
-    return high <= 4 or low >= 251
+    gray = sample = None
+    try:
+        gray = img.convert("L")
+        sample = gray.resize((32, 32))
+        low, high = sample.getextrema()
+        return high <= 4 or low >= 251
+    finally:
+        if sample is not None:
+            sample.close()
+        if gray is not None:
+            gray.close()
 
 
-def _cleanup(hbitmap, memory_dc, hdc, hwnd):
+def _cleanup(hbitmap, memory_dc, hdc, hwnd, old_bitmap=None):
     """安全的 GDI 资源清理"""
+    if memory_dc and old_bitmap:
+        gdi32.SelectObject(memory_dc, old_bitmap)
     if hbitmap:
-        gdi32.DeleteObject(hbitmap)
+        if not gdi32.DeleteObject(hbitmap):
+            print("[WARN] DeleteObject failed for capture bitmap", flush=True)
     if memory_dc:
         gdi32.DeleteDC(memory_dc)
     if hdc and hwnd:
@@ -229,11 +272,11 @@ def capture_window_client(hwnd):
             _cleanup(None, memory_dc, hdc, hwnd)
             return None
 
-        gdi32.SelectObject(memory_dc, hbitmap)
+        old_bitmap = gdi32.SelectObject(memory_dc, hbitmap)
 
         # PrintWindow: 0=success, non-zero=fail
         if user32.PrintWindow(hwnd, memory_dc, PW_CLIENTONLY) == 0:
-            _cleanup(hbitmap, memory_dc, hdc, hwnd)
+            _cleanup(hbitmap, memory_dc, hdc, hwnd, old_bitmap)
             return None
 
         # 用 GetDIBits 读像素数据
@@ -252,17 +295,18 @@ def capture_window_client(hwnd):
             memory_dc, hbitmap, 0, h,
             pixels, ctypes.byref(bmp_info), DIB_RGB_COLORS
         ):
-            _cleanup(hbitmap, memory_dc, hdc, hwnd)
+            _cleanup(hbitmap, memory_dc, hdc, hwnd, old_bitmap)
             return None
 
-        _cleanup(hbitmap, memory_dc, hdc, hwnd)
+        _cleanup(hbitmap, memory_dc, hdc, hwnd, old_bitmap)
 
-        img = Image.frombuffer('RGBA', (w, h), pixels, 'raw', 'BGRA', 0, 1)
-        if img.mode == 'RGBA':
-            img = img.convert('RGB')
+        rgba_img = Image.frombuffer('RGBA', (w, h), pixels, 'raw', 'BGRA', 0, 1)
+        img = rgba_img.convert('RGB')
+        rgba_img.close()
 
         if _is_blank_image(img):
             print(f"[WARN] capture_window_client: PrintWindow returned blank for hwnd={hwnd}", flush=True)
+            img.close()
             return None
 
         return img
@@ -304,10 +348,10 @@ def capture_window_full(hwnd):
             _cleanup(None, memory_dc, hdc, hwnd)
             return None
 
-        gdi32.SelectObject(memory_dc, hbitmap)
+        old_bitmap = gdi32.SelectObject(memory_dc, hbitmap)
 
         if user32.PrintWindow(hwnd, memory_dc, 0) == 0:  # 0 = 包含非客户区
-            _cleanup(hbitmap, memory_dc, hdc, hwnd)
+            _cleanup(hbitmap, memory_dc, hdc, hwnd, old_bitmap)
             return None
 
         bmp_info = BITMAPINFO()
@@ -325,17 +369,18 @@ def capture_window_full(hwnd):
             memory_dc, hbitmap, 0, h,
             pixels, ctypes.byref(bmp_info), DIB_RGB_COLORS
         ):
-            _cleanup(hbitmap, memory_dc, hdc, hwnd)
+            _cleanup(hbitmap, memory_dc, hdc, hwnd, old_bitmap)
             return None
 
-        _cleanup(hbitmap, memory_dc, hdc, hwnd)
+        _cleanup(hbitmap, memory_dc, hdc, hwnd, old_bitmap)
 
-        img = Image.frombuffer('RGBA', (w, h), pixels, 'raw', 'BGRA', 0, 1)
-        if img.mode == 'RGBA':
-            img = img.convert('RGB')
+        rgba_img = Image.frombuffer('RGBA', (w, h), pixels, 'raw', 'BGRA', 0, 1)
+        img = rgba_img.convert('RGB')
+        rgba_img.close()
 
         if _is_blank_image(img):
             print(f"[WARN] capture_window_full: PrintWindow returned blank for hwnd={hwnd}", flush=True)
+            img.close()
             return None
 
         return img
