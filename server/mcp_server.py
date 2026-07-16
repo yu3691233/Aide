@@ -64,6 +64,22 @@ def handle_delegate_task(arguments):
     return {"content": [{"type": "text", "text": f"已派发员工任务：\n{_task_text(task)}"}]}
 
 
+def handle_create_inspiration(arguments):
+    """Create a project-level idea without binding or dispatching an IDE."""
+    idea = (arguments.get("text") or arguments.get("idea") or "").strip()
+    if not idea:
+        return {"isError": True, "content": [{"type": "text", "text": "缺少必填参数 text"}]}
+    task = get_runtime().create_task(
+        idea,
+        title=arguments.get("title") or idea[:40],
+        source="primary_ide",
+        target_ide=None,
+        priority=arguments.get("priority", "medium"),
+        metadata={"created_via": "mcp", "content_kind": "inspiration"},
+    )
+    return {"content": [{"type": "text", "text": f"已记录项目灵感：\n{_task_text(task)}"}]}
+
+
 def handle_get_delegated_task(arguments):
     task_id = (arguments.get("task_id") or "").strip()
     if not task_id:
@@ -242,6 +258,14 @@ def get_tool_definitions():
             }, "required": ["task", "target_ide"]},
         },
         {
+            "name": "create_aidelink_inspiration",
+            "description": "把值得后续优化但当前不立即执行的内容记录为当前项目灵感，不绑定或派发任何 IDE",
+            "inputSchema": {"type": "object", "properties": {
+                "text": {"type": "string"}, "title": {"type": "string"},
+                "priority": {"type": "string", "default": "medium"}
+            }, "required": ["text"]},
+        },
+        {
             "name": "get_delegated_aidelink_task",
             "description": "读取主 IDE 派发任务的状态、结果和子 IDE 回传",
             "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
@@ -310,6 +334,8 @@ def process_message(line):
             result = handle_ask_aide(arguments)
         elif tool_name == "delegate_aidelink_task":
             result = handle_delegate_task(arguments)
+        elif tool_name == "create_aidelink_inspiration":
+            result = handle_create_inspiration(arguments)
         elif tool_name == "get_delegated_aidelink_task":
             result = handle_get_delegated_task(arguments)
         elif tool_name == "report_delegated_aidelink_task":

@@ -61,6 +61,24 @@ class McpServerTests(unittest.TestCase):
             "verify_delegated_aidelink_task",
         }.issubset(names))
 
+    def test_tools_include_project_inspiration(self):
+        names = {tool["name"] for tool in mcp_server.get_tool_definitions()}
+        self.assertIn("create_aidelink_inspiration", names)
+
+    def test_create_inspiration_has_no_ide_target(self):
+        class Runtime:
+            def create_task(self, text, **kwargs):
+                self.created = (text, kwargs)
+                return {"task_id": "idea-1", "text": text, "status": "draft", "target_ide": None}
+
+        runtime = Runtime()
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_create_inspiration({"text": "later", "title": "idea"})
+
+        self.assertFalse(result.get("isError", False))
+        self.assertIsNone(runtime.created[1]["target_ide"])
+        self.assertEqual("inspiration", runtime.created[1]["metadata"]["content_kind"])
+
     def test_delegate_task_marks_primary_ide_source(self):
         class Runtime:
             def create_task(self, text, **kwargs):
