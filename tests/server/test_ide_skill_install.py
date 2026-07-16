@@ -48,6 +48,35 @@ class IdeSkillInstallTests(unittest.TestCase):
             mcp = json.loads((user_dir / "mcp.json").read_text(encoding="utf-8"))
             self.assertIn("aidelink", mcp["mcpServers"])
 
+    def test_minimax_route_rejects_mcp_install_without_writing_files(self):
+        """MiniMax Code 当前未验证支持第三方 MCP：接口必须返回 success=false、
+        给出明确非永久性提示，且不会创建任何 MiniMax Code 的 mcp.json 文件。"""
+        app = Flask(__name__)
+        app.register_blueprint(ide_bp)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            appdata = Path(temp_dir) / "AppData"
+            appdata.mkdir(parents=True)
+            home_dir = Path(temp_dir) / "home"
+            home_dir.mkdir(parents=True)
+            with patch.dict("os.environ", {"APPDATA": str(appdata), "USERPROFILE": str(home_dir)}), patch(
+                "routes.ide_routes._install_aidelink_skill", return_value=0
+            ) as skill_mock:
+                response = app.test_client().post(
+                    "/api/ide/install-mcp", json={"key": "minimax"}
+                )
+
+            payload = response.get_json()
+            self.assertFalse(payload["success"])
+            self.assertIn("当前未验证支持第三方 MCP", payload["message"])
+
+            # 不得创建 VSCode 内核风格的 User/mcp.json
+            self.assertFalse((appdata / "MiniMax Code" / "User" / "mcp.json").exists())
+            # 不得创建 ~/.minimax/mcp/mcp.json 猜测路径
+            self.assertFalse((home_dir / ".minimax" / "mcp" / "mcp.json").exists())
+
+            # success=False 时不应当继续触发 Skill 自动安装
+            skill_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

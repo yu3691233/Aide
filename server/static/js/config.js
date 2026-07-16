@@ -426,7 +426,9 @@ function renderIdesTable(ides) {
 
           ${isRemovable ? `<button class="btn btn-sm btn-danger" onclick="deleteDesktopIde('${ide.key}')">🗑️ 删除</button>` : ''}
 
-          <button class="btn btn-sm btn-outline" onclick="installMcpForIde('${ide.key}')" title="将 AideLink MCP 配置自动注入此 IDE">🔌 安装MCP</button>
+          ${(ide.exe_key === 'minimax' || ide.key === 'minimax')
+            ? `<span class="btn btn-sm btn-outline" style="cursor:default;opacity:0.75;" title="当前未验证支持第三方 MCP，使用 Skill 与人工转发。">🧩 Skill 模式</span>`
+            : `<button class="btn btn-sm btn-outline" onclick="installMcpForIde('${ide.key}')" title="将 AideLink MCP 配置自动注入此 IDE">🔌 安装MCP</button>`}
 
         </div>
 

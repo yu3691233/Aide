@@ -1531,13 +1531,19 @@ def api_ide_install_mcp():
             else:
                 message = "未找到 OpenAI Codex 的 config.toml"
 
-        elif key in ("antigravity_ide", "mimo", "minimax"):
+        elif key == "minimax":
+            # MiniMax Code 当前未验证支持第三方 MCP（写入 User/mcp.json 或
+            # ~/.minimax/mcp/mcp.json 后均不会被加载）。不写入任何猜测路径，
+            # 仅返回明确但非永久性的提示，交由用户以 Skill + 人工转发方式使用。
+            success = False
+            message = "MiniMax Code 当前未验证支持第三方 MCP，请使用 Skill 与人工任务转发模式。"
+
+        elif key in ("antigravity_ide", "mimo"):
             # VSCode 内核系 IDE：统一写入 User/mcp.json（Trae 官方格式）
             key_to_appdata_name = {
                 "antigravity_ide":        ["Antigravity IDE", "Antigravity"],
                 "trae_solo":  ["TRAE SOLO"],
                 "mimo":       ["MiMo Code", "MiMoCode"],
-                "minimax":    ["MiniMax Code"],
             }
             dir_names = key_to_appdata_name.get(key, [])
             appdata = os.environ.get("APPDATA", "")
