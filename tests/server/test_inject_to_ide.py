@@ -9,7 +9,12 @@ SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
-from inject_to_ide import _bring_window_to_foreground, _is_trae_target, focus_calibrated_input
+from inject_to_ide import (
+    _bring_window_to_foreground,
+    _is_trae_target,
+    _refresh_window_focus,
+    focus_calibrated_input,
+)
 
 
 class _Kernel32:
@@ -88,11 +93,31 @@ class TraeFocusPolicyTests(unittest.TestCase):
             with self.subTest(target=target):
                 self.assertFalse(_is_trae_target(target))
 
+    @patch("inject_to_ide._refresh_window_focus", return_value=True)
     @patch("inject_to_ide.pyautogui.click")
     @patch("inject_to_ide.activate_window", return_value=True)
     @patch("inject_to_ide.time.sleep")
-    def test_trae_uses_saved_region_when_legacy_switch_is_disabled(
-        self, _sleep, _activate, click
+    def test_trae_prefers_window_focus_refresh_without_click(
+        self, _sleep, _activate, click, refresh
+    ):
+        screenshot_engine = MagicMock()
+        screenshot_engine.get_monitor_for_window.return_value = "primary"
+        screenshot_engine.get_crop_config.return_value = {"focus_input_enabled": False}
+        win = MagicMock()
+        win._hWnd = 123
+
+        with patch.dict(sys.modules, {"screenshot_engine": screenshot_engine}):
+            self.assertTrue(focus_calibrated_input("trae_solo_cn", win))
+
+        refresh.assert_called_once_with(win)
+        click.assert_not_called()
+
+    @patch("inject_to_ide._refresh_window_focus", return_value=False)
+    @patch("inject_to_ide.pyautogui.click")
+    @patch("inject_to_ide.activate_window", return_value=True)
+    @patch("inject_to_ide.time.sleep")
+    def test_trae_uses_saved_region_when_focus_refresh_fails(
+        self, _sleep, _activate, click, _refresh
     ):
         config = {
             "focus_input_enabled": False,
@@ -116,3 +141,32 @@ class TraeFocusPolicyTests(unittest.TestCase):
         self.assertTrue(effective_config["focus_input_enabled"])
         self.assertFalse(config["focus_input_enabled"])
         click.assert_called_once_with(510, 648)
+
+
+class WindowFocusRefreshTests(unittest.TestCase):
+    @patch("inject_to_ide.activate_window", return_value=True)
+    def test_restores_maximized_state_after_minimizing(self, activate):
+        user32 = MagicMock()
+        user32.IsZoomed.return_value = 1
+        win = MagicMock()
+        win._hWnd = 123
+        win.title = "TRAE Work CN"
+        sleeps = []
+
+        self.assertTrue(_refresh_window_focus(win, user32, sleeps.append))
+
+        self.assertEqual(user32.ShowWindow.call_args_list[0].args, (123, 6))
+        self.assertEqual(user32.ShowWindow.call_args_list[1].args, (123, 3))
+        self.assertEqual(sleeps, [0.25, 0.35])
+        activate.assert_called_once_with(win)
+
+    @patch("inject_to_ide.activate_window", return_value=True)
+    def test_restores_normal_state_after_minimizing(self, _activate):
+        user32 = MagicMock()
+        user32.IsZoomed.return_value = 0
+        win = MagicMock()
+        win._hWnd = 456
+        win.title = "IDE"
+
+        self.assertTrue(_refresh_window_focus(win, user32, lambda _seconds: None))
+        self.assertEqual(user32.ShowWindow.call_args_list[1].args, (456, 9))

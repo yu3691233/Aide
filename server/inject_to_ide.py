@@ -232,6 +232,25 @@ def _is_trae_target(target):
     return "trae" in normalized
 
 
+def _refresh_window_focus(win, user32=None, sleep_fn=time.sleep):
+    """用最小化/恢复触发 GUI 应用自身的输入焦点恢复逻辑。"""
+    user32 = user32 or ctypes.windll.user32
+    hwnd = win._hWnd
+    was_maximized = bool(user32.IsZoomed(hwnd))
+    restore_command = 3 if was_maximized else 9  # SW_MAXIMIZE / SW_RESTORE
+
+    try:
+        print(f"[INFO] Refreshing internal focus via minimize/restore: {win.title}")
+        user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+        sleep_fn(0.25)
+        user32.ShowWindow(hwnd, restore_command)
+        sleep_fn(0.35)
+        return activate_window(win)
+    except Exception as exc:
+        print(f"[WARN] Minimize/restore focus refresh failed: {exc}")
+        return False
+
+
 def focus_calibrated_input(target, win):
     """按 Web 校准的客户区比例点击输入框。
 
@@ -242,12 +261,16 @@ def focus_calibrated_input(target, win):
 
         hwnd = win._hWnd
         config = se.get_crop_config(target, se.get_monitor_for_window(hwnd))
-        force_trae_focus = _is_trae_target(target)
-        if not config.get("focus_input_enabled") and not force_trae_focus:
+        is_trae = _is_trae_target(target)
+        click_enabled = bool(config.get("focus_input_enabled"))
+        if is_trae and not click_enabled and _refresh_window_focus(win):
+            print(f"[INFO] Trae restored its input focus without a calibrated click: {target}")
+            return True
+        if not click_enabled and not is_trae:
             return None
 
-        if force_trae_focus and not config.get("focus_input_enabled"):
-            print(f"[INFO] Trae requires calibrated input focus after activation: {target}")
+        if is_trae and not click_enabled:
+            print(f"[WARN] Trae focus refresh failed; falling back to calibrated click: {target}")
 
         class RECT(ctypes.Structure):
             _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
@@ -263,7 +286,7 @@ def focus_calibrated_input(target, win):
             print(f"[ERROR] Cannot read client bounds for calibrated focus: {target}")
             return False
         focus_config = config
-        if force_trae_focus and not config.get("focus_input_enabled"):
+        if is_trae and not click_enabled:
             focus_config = dict(config)
             focus_config["focus_input_enabled"] = True
         point = se.get_input_focus_client_point(
