@@ -146,6 +146,45 @@ def robust_copy(text, retries=10, delay=0.2):
 
     return False
 
+
+def _bring_window_to_foreground(hwnd, user32=None, kernel32=None):
+    """激活窗口，并在结束时恢复 Windows 前台锁超时。"""
+    user32 = user32 or ctypes.windll.user32
+    kernel32 = kernel32 or ctypes.windll.kernel32
+    get_timeout = 0x2000
+    set_timeout = 0x2001
+
+    old_timeout = ctypes.c_uint32()
+    timeout_changed = False
+    if user32.SystemParametersInfoW(get_timeout, 0, ctypes.byref(old_timeout), 0):
+        timeout_changed = bool(
+            user32.SystemParametersInfoW(set_timeout, 0, ctypes.c_void_p(0), 0)
+        )
+
+    foreground_hwnd = user32.GetForegroundWindow()
+    foreground_thread = user32.GetWindowThreadProcessId(foreground_hwnd, None)
+    current_thread = kernel32.GetCurrentThreadId()
+    attached = False
+    if foreground_thread and foreground_thread != current_thread:
+        attached = bool(user32.AttachThreadInput(foreground_thread, current_thread, True))
+
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        user32.SetActiveWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(foreground_thread, current_thread, False)
+        if timeout_changed:
+            # SPI_SETFOREGROUNDLOCKTIMEOUT 的 pvParam 是超时数值。
+            # 传 byref(old_timeout) 会把指针地址误写成超时。
+            user32.SystemParametersInfoW(
+                set_timeout, 0, ctypes.c_void_p(old_timeout.value), 0
+            )
+
+    return user32.GetForegroundWindow() == hwnd
+
+
 def activate_window(win):
     user32 = ctypes.windll.user32
     hwnd = win._hWnd
@@ -160,33 +199,15 @@ def activate_window(win):
     except Exception as e:
         print("[WARN] ShowWindow failed:", e)
 
+    activated = False
     try:
-        # 先尝试 attach thread input：让当前线程和目标窗口线程共享输入状态，
-        # 这样 SetForegroundWindow / SetFocus 不会因为焦点窃取保护被拒。
-        kernel32 = ctypes.windll.kernel32
-        fg_thread = user32.GetWindowThreadProcessId(hwnd, None)
-        cur_thread = kernel32.GetCurrentThreadId()
-        attached = False
-        if fg_thread and fg_thread != cur_thread:
-            user32.AttachThreadInput(fg_thread, cur_thread, True)
-            attached = True
-
-        try:
-            # Alt 键模拟：发送一次 Alt down+up 让当前线程获得 SetForegroundWindow
-            # 权限，绕过 Windows 焦点窃取保护（后台进程不能直接抢前台焦点）。
-            user32.keybd_event(18, 0, 0, 0)   # VK_MENU down
-            time.sleep(0.05)
-            user32.keybd_event(18, 0, 2, 0)   # VK_MENU up
-            time.sleep(0.05)
-            user32.BringWindowToTop(hwnd)
-            user32.SetForegroundWindow(hwnd)
-            user32.SetActiveWindow(hwnd)
-        finally:
-            if attached:
-                user32.AttachThreadInput(fg_thread, cur_thread, False)
-
+        # 绕过 Windows 焦点窃取保护：临时将前台锁定超时设为 0，
+        # 这样 SetForegroundWindow 能直接成功，不需要 Alt 键模拟。
+        # Alt 键会激活 Electron/VSCode 内核 IDE（如 Trae）的菜单栏，
+        # 导致后续 Ctrl+V 被菜单拦截。Trae 近期更新后对此更敏感。
+        activated = _bring_window_to_foreground(hwnd, user32=user32)
         actual_fore = user32.GetForegroundWindow()
-        if actual_fore != hwnd:
+        if not activated:
             actual_title = ""
             try:
                 length = user32.GetWindowTextLengthW(actual_fore) + 1
@@ -202,6 +223,7 @@ def activate_window(win):
         print("[WARN] Foreground force activation failed:", e)
 
     time.sleep(0.4)
+    return activated
 
 
 def focus_calibrated_input(target, win):
@@ -244,7 +266,8 @@ def focus_calibrated_input(target, win):
 
         click_x = origin.x + point[0]
         click_y = origin.y + point[1]
-        activate_window(win)
+        if not activate_window(win):
+            return False
         time.sleep(0.2)
         print(f"[INFO] Clicking calibrated input for {target.upper()} at ({click_x}, {click_y})")
         pyautogui.click(click_x, click_y)
@@ -413,7 +436,8 @@ def paste_current_clipboard(target):
     if not win:
         print(f"[ERROR] Cannot resolve window for clipboard paste target: {target}")
         return False
-    activate_window(win)
+    if not activate_window(win):
+        return False
     focus_result = focus_calibrated_input(target, win)
     if focus_result is False:
         return False
@@ -436,7 +460,8 @@ def inject(target, text, worktree_path=None):
             print(f"Error: Window containing '{title_keyword}' not found!")
             return False
         win = win or wins[0]
-        activate_window(win)
+        if not activate_window(win):
+            return False
 
         if not robust_copy(text):
             print("Error: Clipboard copy failed completely!")
@@ -471,197 +496,6 @@ def inject(target, text, worktree_path=None):
         time.sleep(0.25)
         pyautogui.press('enter')
 
-    elif target in ("trae", "trae_cn"):
-        # GUI IDE: 按 GetForegroundWindow() 当前前台窗口优先（Trae 当前激活的可能是
-        # Electron 子窗口，pygetwindow.getAllWindows() 不一定包含它）。
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-
-        def _title_of(hwnd):
-            try:
-                length = user32.GetWindowTextLengthW(hwnd) + 1
-                buf = ctypes.create_unicode_buffer(length)
-                user32.GetWindowTextW(hwnd, buf, length)
-                return buf.value or ""
-            except Exception:
-                return ""
-
-        fg_hwnd = user32.GetForegroundWindow()
-        fg_title = _title_of(fg_hwnd)
-        print(f"[INFO] Current foreground hwnd={fg_hwnd}, title={fg_title!r}")
-
-        # 找出真正持有键盘焦点的窗口（可能是 Trae 的某个子窗口/输入控件）
-        focused_hwnd = None
-        try:
-            class GUITHREADINFO(ctypes.Structure):
-                _fields_ = [
-                    ("cbSize", ctypes.c_ulong),
-                    ("flags", ctypes.c_ulong),
-                    ("hwndActive", ctypes.c_ulong),
-                    ("hwndFocus", ctypes.c_ulong),
-                    ("hwndCapture", ctypes.c_ulong),
-                    ("hwndMenuOwner", ctypes.c_ulong),
-                    ("hwndMoveSize", ctypes.c_ulong),
-                    ("hwndCaret", ctypes.c_ulong),
-                    ("rcCaret", ctypes.wintypes.RECT),
-                ]
-            gui = GUITHREADINFO()
-            gui.cbSize = ctypes.sizeof(GUITHREADINFO)
-            if user32.GetGUIThreadInfo(0, ctypes.byref(gui)):
-                focused_hwnd = gui.hwndFocus
-                focused_title = _title_of(focused_hwnd)
-                print(f"[INFO] Current keyboard focus hwnd={focused_hwnd}, title={focused_title!r}")
-        except Exception as e:
-            print(f"[WARN] GetGUIThreadInfo failed: {e}")
-
-        win = None
-        if "trae" in fg_title.lower() or (focused_hwnd and "trae" in _title_of(focused_hwnd).lower()):
-            # 直接复用前台窗口——这就是用户当前活动的 Trae 窗口，焦点已经在输入框了
-            win = type("Window", (), {})()  # 占位对象
-            win._hWnd = fg_hwnd
-            win.title = fg_title
-            try:
-                rect = ctypes.wintypes.RECT()
-                user32.GetWindowRect(fg_hwnd, ctypes.byref(rect))
-                win.left = rect.left
-                win.top = rect.top
-                win.width = rect.right - rect.left
-                win.height = rect.bottom - rect.top
-            except Exception:
-                win.left = win.top = 0
-                win.width = win.height = 0
-            print(f"[INFO] Reusing current foreground Trae window hwnd={fg_hwnd}")
-        else:
-            # 前台不是 Trae，回退到 pygetwindow 搜索所有 Trae 标题的窗口
-            all_wins = [w for w in gw.getAllWindows() if w.width > 0 and w.height > 0 and "trae" in w.title.lower()]
-            if not all_wins:
-                print("Error: Window containing 'Trae' not found and current foreground is not Trae!")
-                return False
-            candidates = sorted(all_wins, key=lambda w: w.width * w.height, reverse=True)
-            titles = [f"hwnd={w._hWnd}/{w.width}x{w.height}/title={w.title!r}" for w in candidates]
-            print(f"[INFO] Foreground is not Trae, trying candidates: {titles}")
-
-            # 尝试用 LockSetForegroundWindow 解除焦点窃取保护
-            LSFW_UNLOCK = 2
-            try:
-                user32.LockSetForegroundWindow(LSFW_UNLOCK)
-            except Exception:
-                pass
-
-            for cand in candidates:
-                try:
-                    if user32.IsIconic(cand._hWnd):
-                        print(f"[INFO] Skip iconic hwnd={cand._hWnd}/title={cand.title!r}")
-                        continue
-                    if not user32.IsWindowVisible(cand._hWnd):
-                        print(f"[INFO] Skip invisible hwnd={cand._hWnd}/title={cand.title!r}")
-                        continue
-                    fg_thread = user32.GetWindowThreadProcessId(cand._hWnd, None)
-                    cur_thread = kernel32.GetCurrentThreadId()
-                    attached = False
-                    if fg_thread and fg_thread != cur_thread:
-                        attached = user32.AttachThreadInput(fg_thread, cur_thread, True)
-                    try:
-                        # Alt 键模拟：绕过焦点窃取保护
-                        user32.keybd_event(18, 0, 0, 0)   # VK_MENU down
-                        time.sleep(0.05)
-                        user32.keybd_event(18, 0, 2, 0)   # VK_MENU up
-                        time.sleep(0.05)
-                        user32.BringWindowToTop(cand._hWnd)
-                        user32.SetForegroundWindow(cand._hWnd)
-                        user32.SetActiveWindow(cand._hWnd)
-                    finally:
-                        if attached:
-                            user32.AttachThreadInput(fg_thread, cur_thread, False)
-                    time.sleep(0.3)
-                    new_fg = user32.GetForegroundWindow()
-                    if new_fg == cand._hWnd:
-                        win = cand
-                        print(f"[INFO] Picked Trae window hwnd={cand._hWnd}/{cand.width}x{cand.height}/title={cand.title!r}")
-                        break
-                    else:
-                        new_fg_title = _title_of(new_fg)
-                        print(f"[WARN] Activate failed for hwnd={cand._hWnd}, foreground is still hwnd={new_fg}/title={new_fg_title!r}")
-                except Exception as e:
-                    print(f"[WARN] Activate attempt failed for hwnd={getattr(cand, '_hWnd', '?')}: {e}")
-
-        if win is None:
-            # 所有候选窗口都激活失败。可能是系统 UI（如搜索栏）锁住了前台。
-            # 尝试发送 ESC 关闭遮挡 UI，然后重试一次最大的候选窗口。
-            best = candidates[0] if candidates else None
-            if best:
-                print(f"[INFO] All candidates failed; sending ESC to dismiss blocking UI, then retry on hwnd={best._hWnd}")
-                VK_ESCAPE = 0x1B
-                user32.keybd_event(VK_ESCAPE, 0, 0, 0)
-                time.sleep(0.05)
-                user32.keybd_event(VK_ESCAPE, 0, 2, 0)
-                time.sleep(0.3)
-                # 重试激活
-                fg_thread = user32.GetWindowThreadProcessId(best._hWnd, None)
-                cur_thread = kernel32.GetCurrentThreadId()
-                attached = False
-                if fg_thread and fg_thread != cur_thread:
-                    attached = user32.AttachThreadInput(fg_thread, cur_thread, True)
-                try:
-                    user32.keybd_event(18, 0, 0, 0)   # VK_MENU down
-                    time.sleep(0.05)
-                    user32.keybd_event(18, 0, 2, 0)   # VK_MENU up
-                    time.sleep(0.05)
-                    user32.BringWindowToTop(best._hWnd)
-                    user32.SetForegroundWindow(best._hWnd)
-                    user32.SetActiveWindow(best._hWnd)
-                finally:
-                    if attached:
-                        user32.AttachThreadInput(fg_thread, cur_thread, False)
-                time.sleep(0.3)
-                new_fg = user32.GetForegroundWindow()
-                if new_fg == best._hWnd:
-                    win = best
-                    print(f"[INFO] Retry succeeded: picked Trae window hwnd={best._hWnd}")
-                else:
-                    # 仍然失败——兜底用最大候选窗口继续粘贴，避免完全无法派发
-                    print(f"[WARN] Retry still failed (fg={new_fg}/{_title_of(new_fg)!r}), using fallback: proceed with hwnd={best._hWnd} anyway")
-                    win = best
-            else:
-                print("Error: No Trae candidate windows found!")
-                return False
-
-        if not robust_copy(text):
-            print("Error: Clipboard copy failed completely!")
-            return False
-
-        # robust_copy 可能把焦点抢走；重新确认前台窗口
-        print("[INFO] Re-checking foreground window after clipboard copy")
-        time.sleep(0.3)
-        post_fg = user32.GetForegroundWindow()
-        post_title = _title_of(post_fg)
-        if post_fg != win._hWnd:
-            print(f"[WARN] Foreground changed after clipboard: expected hwnd={win._hWnd}/title={win.title!r}, got hwnd={post_fg}/title={post_title!r}")
-            # 尝试再次把 Trae 抢回来
-            fg_thread = user32.GetWindowThreadProcessId(win._hWnd, None)
-            cur_thread = kernel32.GetCurrentThreadId()
-            attached = False
-            if fg_thread and fg_thread != cur_thread:
-                attached = user32.AttachThreadInput(fg_thread, cur_thread, True)
-            try:
-                user32.BringWindowToTop(win._hWnd)
-                user32.SetForegroundWindow(win._hWnd)
-            finally:
-                if attached:
-                    user32.AttachThreadInput(fg_thread, cur_thread, False)
-            time.sleep(0.3)
-        final_fg = user32.GetForegroundWindow()
-        print(f"[INFO] Pre-paste foreground hwnd={final_fg}, title={_title_of(final_fg)!r}")
-
-        if focus_calibrated_input(target, win) is False:
-            return False
-
-        # Trae 激活后焦点通常在对话输入框，不点击，直接 Ctrl+V 粘贴
-        # 用 SendInput 而不是 pyautogui：pythonw.exe 子进程的 pyautogui 在
-        # 一些 Windows session 下不会真正把键发到目标窗口的输入框。
-        print(f"[INFO] Pasting via SendInput Ctrl+V in Trae window (title='{win.title}')")
-        _paste_and_enter()
-
     elif target in ("mimo", "mimocode"):
         # CLI IDE: 通过进程查找终端窗口
         win = find_saved_window(target) or find_terminal_window_for_process("mimo")
@@ -669,7 +503,8 @@ def inject(target, text, worktree_path=None):
             print("Error: Cannot find terminal window running MiMoCode!")
             print("Please make sure MiMoCode is running in a terminal (cmd/powershell).")
             return False
-        activate_window(win)
+        if not activate_window(win):
+            return False
 
         if not robust_copy(text):
             print("Error: Clipboard copy failed completely!")
@@ -697,7 +532,8 @@ def inject(target, text, worktree_path=None):
             print("Error: Cannot find window running OpenCode!")
             print("Please make sure OpenCode is running.")
             return False
-        activate_window(win)
+        if not activate_window(win):
+            return False
         time.sleep(0.5)
 
         if not robust_copy(text):
@@ -747,7 +583,8 @@ def inject(target, text, worktree_path=None):
                 print("Error: Cannot find window for Codex!")
                 print("Please make sure Codex IDE / ChatGPT window is running.")
                 return False
-        activate_window(win)
+        if not activate_window(win):
+            return False
         time.sleep(0.5)
 
         if not robust_copy(text):
@@ -791,7 +628,8 @@ def inject(target, text, worktree_path=None):
             print("Please make sure the IDE window is already open.")
             return False
 
-        activate_window(win)
+        if not activate_window(win):
+            return False
         time.sleep(0.5)
 
         if not robust_copy(text):
@@ -805,25 +643,19 @@ def inject(target, text, worktree_path=None):
         post_fg = user32.GetForegroundWindow()
         if post_fg != win._hWnd:
             print(f"[WARN] Foreground changed after clipboard copy, re-activating {target.upper()} window")
-            fg_thread = user32.GetWindowThreadProcessId(win._hWnd, None)
-            cur_thread = kernel32.GetCurrentThreadId()
-            attached = False
-            if fg_thread and fg_thread != cur_thread:
-                attached = user32.AttachThreadInput(fg_thread, cur_thread, True)
-            try:
-                user32.BringWindowToTop(win._hWnd)
-                user32.SetForegroundWindow(win._hWnd)
-            finally:
-                if attached:
-                    user32.AttachThreadInput(fg_thread, cur_thread, False)
+            _bring_window_to_foreground(win._hWnd, user32=user32, kernel32=kernel32)
             time.sleep(0.3)
 
-        if focus_calibrated_input(target, win) is False:
+        calibrated = focus_calibrated_input(target, win)
+        if calibrated is False:
             return False
 
-        # 不点击输入框，直接用 SendInput 发送 Ctrl+V + Enter。
+        # 通用粘贴路径：直接用 SendInput 发送 Ctrl+V + Enter。
         # SendInput 走内核输入路径，比 pyautogui 更可靠（不受
         # pythonw.exe session / 焦点窃取限制影响）。任何 IDE 通用。
+        # 是否点击输入框由校准页面的复选框开关（focus_input_enabled）控制。
+        # 注意：Trae 更新后，关闭校准开关时可能无法聚焦输入框（侧边栏
+        # 抢占焦点），此时需用户在校准页面打开"派发前点击"开关。
         print(f"[INFO] Pasting via SendInput Ctrl+V in {target.upper()} window (title='{win.title}')")
         _paste_and_enter()
 
