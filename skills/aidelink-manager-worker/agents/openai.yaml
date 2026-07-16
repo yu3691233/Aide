@@ -1,0 +1,4 @@
+interface:
+  display_name: "AideLink Manager Worker"
+  short_description: "Coordinate low-cost IDE delegation and verified feedback"
+  default_prompt: "Use $aidelink-manager-worker to delegate or complete this task through AideLink with explicit confirmation and verified feedback."

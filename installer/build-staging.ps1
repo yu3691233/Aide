@@ -10,6 +10,7 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $OutputDir) { $OutputDir = Join-Path $scriptRoot "staging\AideLink" }
 $repo = (Resolve-Path (Join-Path $scriptRoot "..")).Path
 $server = Join-Path $repo "server"
+$skills = Join-Path $repo "skills"
 if (-not $RuntimeSource) { $RuntimeSource = Join-Path $scriptRoot "runtime-build" }
 if (-not (Test-Path (Join-Path $RuntimeSource "python.exe")) -and -not (Test-Path (Join-Path $RuntimeSource "Scripts\python.exe"))) {
     throw "未找到 embedded Runtime，请先运行 prepare-embedded-runtime.ps1，或显式传入 -RuntimeSource。"
@@ -24,8 +25,12 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 $serverOut = Join-Path $OutputDir "server"
 $runtimeOut = Join-Path $OutputDir "runtime"
+$skillsOut = Join-Path $OutputDir "skills"
 Copy-Item -LiteralPath $server -Destination $serverOut -Recurse -Force
 Copy-Item -LiteralPath $RuntimeSource -Destination $runtimeOut -Recurse -Force
+if (Test-Path $skills) {
+    Copy-Item -LiteralPath $skills -Destination $skillsOut -Recurse -Force
+}
 
 if (-not (Test-Path (Join-Path $runtimeOut "pythonw.exe")) -and -not (Test-Path (Join-Path $runtimeOut "Scripts\pythonw.exe"))) {
     throw "staging 缺少可执行的 pythonw.exe"

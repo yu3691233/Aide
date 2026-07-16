@@ -9,10 +9,12 @@ if (-not $StagingDir) { $StagingDir = Join-Path $scriptRoot "staging\AideLink" }
 $python = Join-Path $StagingDir "runtime\python.exe"
 if (-not (Test-Path $python)) { $python = Join-Path $StagingDir "runtime\Scripts\python.exe" }
 $server = Join-Path $StagingDir "server"
+$managerWorkerSkill = Join-Path $StagingDir "skills\aidelink-manager-worker\SKILL.md"
 
 if (-not (Test-Path $python)) { throw "缺少内置 Python: $python" }
 if (-not (Test-Path (Join-Path $server "start_services.py"))) { throw "缺少服务启动入口" }
 if (-not (Test-Path (Join-Path $server "start_services.vbs"))) { throw "缺少 Windows 启动入口" }
+if (-not (Test-Path $managerWorkerSkill)) { throw "缺少 AideLink 经理/员工协作技能" }
 
 & $python -m pip check
 if ($LASTEXITCODE -ne 0) { throw "内置 Runtime 依赖存在冲突" }

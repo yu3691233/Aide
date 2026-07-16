@@ -1,6 +1,7 @@
 import sys
 import os
 import subprocess
+import shutil
 import threading
 import time
 import ctypes
@@ -14,6 +15,26 @@ from manager_utils import logger
 from paths import BRIDGE_DIR as BASE_DIR
 
 ide_bp = Blueprint('ides', __name__)
+
+
+def _install_aidelink_skill(key, home_dir=None, source_dir=None):
+    """Install the bundled manager/worker skill for IDEs that discover SKILL.md folders."""
+    source = Path(source_dir) if source_dir else BASE_DIR.parent / "skills" / "aidelink-manager-worker"
+    if not (source / "SKILL.md").is_file():
+        return 0
+    home = Path(home_dir) if home_dir else Path.home()
+    roots = []
+    if key in {"codex", "openai-codex", "openaicodex"}:
+        roots.append(home / ".codex" / "skills")
+    if key in {"trae", "trae_cn", "trae_solo", "trae_solo_cn"}:
+        roots.append(home / ".trae" / "skills")
+    installed = 0
+    for root in roots:
+        target = root / source.name
+        root.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target, dirs_exist_ok=True)
+        installed += 1
+    return installed
 
 
 # ============================================================
@@ -1461,8 +1482,8 @@ def api_ide_install_mcp():
             except Exception:
                 pass
 
-        if key in ("trae", "trae_cn"):
-            appdata_names = ["TRAE SOLO"] if key == "trae" else ["TRAE SOLO CN"]
+        if key in ("trae", "trae_cn", "trae_solo", "trae_solo_cn"):
+            appdata_names = ["TRAE SOLO"] if key in {"trae", "trae_solo"} else ["TRAE SOLO CN"]
             appdata = os.environ.get("APPDATA", "")
             injected = 0
             for dn in appdata_names:
@@ -1507,7 +1528,7 @@ def api_ide_install_mcp():
             else:
                 message = "未找到 OpenAI Codex 的 config.toml"
 
-        elif key in ("antigravity_ide", "trae_solo", "mimo", "minimax"):
+        elif key in ("antigravity_ide", "mimo", "minimax"):
             # VSCode 内核系 IDE：统一写入 User/mcp.json（Trae 官方格式）
             key_to_appdata_name = {
                 "antigravity_ide":        ["Antigravity IDE", "Antigravity"],
@@ -1532,5 +1553,10 @@ def api_ide_install_mcp():
             message = f"暂不支持自动配置 {key} 的 MCP，请手动配置"
     except Exception as e:
         success, message = False, f"配置 MCP 失败: {e}"
+
+    if success:
+        installed_skills = _install_aidelink_skill(key)
+        if installed_skills:
+            message += f"；已安装 AideLink 经理/员工技能（{installed_skills} 个目录）"
 
     return jsonify({"success": success, "message": message})

@@ -69,6 +69,49 @@ class IdeRunningStatusTests(unittest.TestCase):
 
         self.assertFalse(statuses["oc"])
 
+    def test_minimax_mcp_helper_is_not_reported_as_minimax_code(self):
+        minimax = {
+            "key": "minimax",
+            "name": "MiniMax Code",
+            "path": r"C:\Apps\MiniMax Code\MiniMax Code.exe",
+        }
+        fake_psutil = types.SimpleNamespace(
+            process_iter=lambda _attrs: [
+                _Process("minimax-mcp.exe", r"C:\Tools\minimax-mcp.exe", ["minimax-mcp"])
+            ],
+            NoSuchProcess=RuntimeError,
+            AccessDenied=PermissionError,
+        )
+        with patch.dict(sys.modules, {"psutil": fake_psutil}):
+            statuses = get_ide_running_statuses([minimax])
+
+        self.assertFalse(statuses["minimax"])
+
+    def test_exact_ide_process_requires_a_visible_window(self):
+        trae = {
+            "key": "trae_solo_cn",
+            "name": "TRAE SOLO CN",
+            "path": r"C:\Apps\TRAE SOLO CN\TRAE SOLO CN.exe",
+        }
+        fake_psutil = types.SimpleNamespace(
+            process_iter=lambda _attrs: [
+                _Process("TRAE SOLO CN.exe", r"C:\Apps\TRAE SOLO CN\TRAE SOLO CN.exe", [])
+            ],
+            NoSuchProcess=RuntimeError,
+            AccessDenied=PermissionError,
+        )
+        with patch("dispatch_utils._has_visible_window_for_pid", return_value=False), patch.dict(
+            sys.modules, {"psutil": fake_psutil}
+        ):
+            hidden = get_ide_running_statuses([trae])
+        with patch("dispatch_utils._has_visible_window_for_pid", return_value=True), patch.dict(
+            sys.modules, {"psutil": fake_psutil}
+        ):
+            visible = get_ide_running_statuses([trae])
+
+        self.assertFalse(hidden["trae_solo_cn"])
+        self.assertTrue(visible["trae_solo_cn"])
+
 
 if __name__ == "__main__":
     unittest.main()

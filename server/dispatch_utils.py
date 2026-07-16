@@ -31,23 +31,22 @@ def _process_matches_ide(ide_info, proc_name, proc_exe, cmdline):
     exe_filename = os.path.basename(ide_path).lower() if ide_path else ""
     proc_filename = os.path.basename(proc_exe).lower() if proc_exe else ""
 
-    # ChatGPT Desktop intentionally keeps ChatGPT.exe in the tray after its
-    # window is closed.  That background process must not make the IDE appear
-    # "running", otherwise AideLink refuses to open a new window.
-    if ide_key == "codex" and proc_filename == "chatgpt.exe":
-        return _has_visible_window_for_pid(proc_exe)
-
     # `opencode serve` is OC Web, not the OpenCode desktop application.
     if ide_key == "oc" and "serve" in cmdline:
         return False
 
+    # A desktop IDE counts as open only when its configured executable owns a
+    # visible top-level window.  Exact executable matching prevents helper
+    # processes such as `minimax-mcp.exe` from being mistaken for MiniMax Code.
     if exe_filename and proc_filename == exe_filename:
-        return True
-    if ide_name and ide_name in proc_name:
-        return True
-    # Short keys such as `oc` must never be substring-matched against arbitrary
-    # process names (for example svchost.exe).
-    return len(ide_key) > 2 and ide_key in proc_name
+        return _has_visible_window_for_pid(proc_exe)
+    if exe_filename:
+        return False
+
+    normalized_proc_name = os.path.splitext(proc_name)[0].strip()
+    if ide_name and normalized_proc_name == ide_name:
+        return _has_visible_window_for_pid(proc_exe)
+    return len(ide_key) > 2 and normalized_proc_name == ide_key and _has_visible_window_for_pid(proc_exe)
 
 
 def _has_visible_window_for_pid(proc_exe):

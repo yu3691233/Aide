@@ -1,5 +1,6 @@
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -9,6 +10,7 @@ SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
 import mcp_server
+from task_runtime import TaskRuntime
 
 
 class _Response:
@@ -56,9 +58,11 @@ class McpServerTests(unittest.TestCase):
         names = {tool["name"] for tool in mcp_server.get_tool_definitions()}
         self.assertTrue({
             "prepare_aidelink_delegation",
+            "get_aidelink_workflow",
             "delegate_aidelink_task",
             "get_delegated_aidelink_task",
             "report_delegated_aidelink_task",
+            "fail_delegated_aidelink_task",
             "verify_delegated_aidelink_task",
         }.issubset(names))
 
@@ -117,7 +121,11 @@ class McpServerTests(unittest.TestCase):
                 return {"task_id": "task-1", "status": "draft"}
 
             def assign_task(self, task_id, ide):
-                return {"task_id": task_id, "target_ide": ide, "source": "primary_ide"}
+                return {"task_id": task_id, "target_ide": ide, "source": "primary_ide", "status": "queued"}
+
+            def update_task(self, task_id, **fields):
+                self.updated = (task_id, fields)
+                return {"task_id": task_id, "status": "draft", **fields}
 
         runtime = Runtime()
         with patch("mcp_server.get_runtime", return_value=runtime):
@@ -128,8 +136,10 @@ class McpServerTests(unittest.TestCase):
                 })
 
         self.assertFalse(result.get("isError", False))
-        self.assertIn("primary_ide", result["content"][0]["text"])
+        payload = json.loads(result["content"][0]["text"])
+        self.assertEqual("task-1", payload["task_id"])
         self.assertEqual(["tests/server"], runtime.created[1]["owned_paths"])
+        self.assertIn("report_delegated_aidelink_task", runtime.updated[1]["text"])
 
     def test_prepare_delegation_is_read_only_and_recommends_open_idle_worker(self):
         class Runtime:
@@ -160,9 +170,9 @@ class McpServerTests(unittest.TestCase):
 
         payload = json.loads(result["content"][0]["text"])
         self.assertEqual("trae", payload["recommended_ide"])
-        self.assertTrue(next(item for item in payload["ide_candidates"] if item["key"] == "codex")["is_manager"])
+        self.assertEqual(["trae"], [item["key"] for item in payload["ide_candidates"]])
         self.assertEqual("complete_here", payload["choices"][0]["id"])
-        self.assertTrue(payload["task_package"]["contract"]["result_ref_preferred"])
+        self.assertTrue(payload["task_package"]["contract"]["result_ref_required"])
         self.assertIn("new_codex_session", {choice["id"] for choice in payload["choices"]})
 
     def test_delegate_requires_explicit_user_confirmation_without_creating_task(self):
@@ -197,6 +207,109 @@ class McpServerTests(unittest.TestCase):
         self.assertTrue(result["isError"])
         self.assertIn("必须声明 owned_paths", result["content"][0]["text"])
         runtime.create_task.assert_not_called()
+
+    def test_worker_report_requires_result_ref_for_new_delegations(self):
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-1", "source": "primary_ide", "status": "running",
+            "metadata": {"result_ref_required": True},
+        }
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_report_delegated_task({"task_id": "task-1", "summary": "通过"})
+
+        self.assertTrue(result["isError"])
+        self.assertIn("result_ref", result["content"][0]["text"])
+        runtime.mark_task_done.assert_not_called()
+
+    def test_worker_report_moves_task_to_pending_test_with_evidence(self):
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-1", "source": "primary_ide", "status": "running",
+            "metadata": {"result_ref_required": True},
+        }
+        runtime.mark_task_done.return_value = {"task_id": "task-1", "status": "pending_test"}
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_report_delegated_task({
+                "task_id": "task-1", "summary": "测试通过", "result_ref": "test:python -m unittest",
+            })
+
+        payload = json.loads(result["content"][0]["text"])
+        self.assertEqual("pending_test", payload["status"])
+        runtime.mark_task_done.assert_called_once_with(
+            "task-1", summary="测试通过", result_ref="test:python -m unittest"
+        )
+
+    def test_manager_verification_only_completes_pending_test_task(self):
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-1", "source": "primary_ide", "status": "pending_test",
+            "metadata": {"result_ref_required": True}, "result_ref": "commit:abc123",
+        }
+        runtime.confirm_task_done.return_value = {"task_id": "task-1", "status": "done"}
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_verify_delegated_task({
+                "task_id": "task-1", "verification_summary": "tests passed",
+            })
+
+        payload = json.loads(result["content"][0]["text"])
+        self.assertEqual("done", payload["status"])
+        runtime.confirm_task_done.assert_called_once_with("task-1")
+
+    def test_manager_cannot_complete_new_delegation_without_result_ref(self):
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-1", "source": "primary_ide", "status": "pending_test",
+            "metadata": {"result_ref_required": True}, "result_ref": None,
+        }
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_verify_delegated_task({
+                "task_id": "task-1", "verification_summary": "looks fine",
+            })
+
+        self.assertTrue(result["isError"])
+        runtime.confirm_task_done.assert_not_called()
+
+    def test_worker_can_report_failure_without_marking_done(self):
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-1", "source": "primary_ide", "status": "running",
+        }
+        runtime.mark_task_failed.return_value = {"task_id": "task-1", "status": "failed"}
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_fail_delegated_task({
+                "task_id": "task-1", "error": "dependency missing",
+            })
+
+        payload = json.loads(result["content"][0]["text"])
+        self.assertEqual("failed", payload["status"])
+        runtime.confirm_task_done.assert_not_called()
+
+    def test_real_runtime_delegation_report_and_manager_verification_loop(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            TaskRuntime, "_ensure_timeout_scanner"
+        ):
+            runtime = TaskRuntime(temp_dir)
+            with patch("mcp_server.get_runtime", return_value=runtime):
+                delegated = mcp_server.handle_delegate_task({
+                    "task": "验证闭环", "target_ide": "trae_solo_cn",
+                    "user_confirmed": True, "dispatch": False,
+                    "task_type": "test", "owned_paths": ["tests/server"],
+                })
+                task_id = json.loads(delegated["content"][0]["text"])["task_id"]
+                runtime.mark_task_running(task_id, "trae_solo_cn")
+                reported = mcp_server.handle_report_delegated_task({
+                    "task_id": task_id, "summary": "定向测试通过",
+                    "result_ref": "test:python -m unittest tests.server.test_mcp_server",
+                })
+                verified = mcp_server.handle_verify_delegated_task({
+                    "task_id": task_id, "verification_summary": "主 IDE 复跑测试通过",
+                })
+
+            self.assertEqual("pending_test", json.loads(reported["content"][0]["text"])["status"])
+            self.assertEqual("done", json.loads(verified["content"][0]["text"])["status"])
+            final_task = runtime.get_task(task_id)
+            self.assertEqual("done", final_task["status"])
+            self.assertEqual("主 IDE 复跑测试通过", final_task["metadata"]["manager_verification"])
 
 
 if __name__ == "__main__":

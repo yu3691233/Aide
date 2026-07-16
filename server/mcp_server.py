@@ -67,7 +67,7 @@ def _paths_overlap(left, right):
     return conflicts
 
 
-def _manager_ide_candidates(runtime, main_ide="codex"):
+def _manager_ide_candidates(runtime, main_ide="codex", include_stopped=False, limit=5):
     """List configured IDEs, preferring an open idle non-primary worker."""
     import ide_scanner
     from dispatch_utils import get_ide_running_statuses
@@ -91,6 +91,10 @@ def _manager_ide_candidates(runtime, main_ide="codex"):
             "is_manager": is_manager,
             "available": bool(available),
         })
+    candidates = [
+        item for item in candidates
+        if not item["is_manager"] and (item["running"] or include_stopped)
+    ]
     candidates.sort(key=lambda item: (
         not (item["running"] and item["available"] and not item["is_manager"]),
         not item["running"],
@@ -102,7 +106,7 @@ def _manager_ide_candidates(runtime, main_ide="codex"):
         item["key"] for item in candidates
         if item["running"] and item["available"] and not item["is_manager"]
     ), None)
-    return candidates, recommended
+    return candidates[:max(1, min(int(limit or 5), 20))], recommended
 
 
 def _compact_task_package(arguments):
@@ -113,7 +117,6 @@ def _compact_task_package(arguments):
     main_owned_paths = _string_list(arguments.get("main_owned_paths"))
     worker_owned_paths = _string_list(arguments.get("worker_owned_paths"))
     result_ref = str(arguments.get("result_ref") or "").strip()
-    result_ref_preferred = task_type in {"read_only", "research", "test", "summary"}
     package = {
         "objective": objective,
         "task_type": task_type,
@@ -128,7 +131,7 @@ def _compact_task_package(arguments):
         "contract": {
             "do_not_modify_main_owned_paths": True,
             "return_via": "report_delegated_aidelink_task",
-            "result_ref_preferred": result_ref_preferred,
+            "result_ref_required": True,
             "main_ide_verifies": True,
         },
     }
@@ -147,7 +150,12 @@ def handle_prepare_delegation(arguments):
     if conflicts:
         blockers.append("worker_paths_overlap_main_paths")
     main_ide = str(arguments.get("main_ide") or "codex").strip().lower()
-    candidates, recommended = _manager_ide_candidates(get_runtime(), main_ide=main_ide)
+    candidates, recommended = _manager_ide_candidates(
+        get_runtime(),
+        main_ide=main_ide,
+        include_stopped=bool(arguments.get("include_stopped", False)),
+        limit=arguments.get("candidate_limit", 5),
+    )
     payload = {
         "task_package": package,
         "ide_candidates": candidates,
@@ -162,6 +170,49 @@ def handle_prepare_delegation(arguments):
         ],
     }
     return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]}
+
+
+def _worker_task_prompt(task_id, text, task_type, main_owned_paths, owned_paths):
+    return "\n".join([
+        "[AideLink 员工任务]",
+        f"task_id: {task_id}",
+        f"task_type: {task_type}",
+        f"目标: {text}",
+        f"主 IDE 占用范围（禁止修改）: {json.dumps(main_owned_paths, ensure_ascii=False)}",
+        f"员工可修改范围: {json.dumps(owned_paths, ensure_ascii=False)}",
+        "完成要求: 只处理本任务；运行约定验证；不要自行把任务标记 done。",
+        "成功回传: 调用 report_delegated_aidelink_task，提交 summary 和 result_ref。",
+        "result_ref 示例: commit:<sha>、file:<path>、test:<command/result>、inline:<evidence>。",
+        "失败回传: 调用 fail_delegated_aidelink_task，说明 error 和已有 result_ref。",
+        "主 IDE 将读取回传、独立验证，再调用 verify_delegated_aidelink_task 完成任务。",
+    ])
+
+
+def handle_get_workflow(arguments):
+    role = str(arguments.get("role") or "manager").strip().lower()
+    if role == "worker":
+        workflow = {
+            "role": "worker",
+            "steps": [
+                "用 get_delegated_aidelink_task 读取 task_id",
+                "只在 owned_paths 内工作，不修改 main_owned_paths",
+                "完成验证并保存证据引用",
+                "成功调用 report_delegated_aidelink_task；失败调用 fail_delegated_aidelink_task",
+                "等待主 IDE 验证，不自行调用 verify",
+            ],
+        }
+    else:
+        workflow = {
+            "role": "manager",
+            "steps": [
+                "用 prepare_aidelink_delegation 生成紧凑包和真实打开的候选",
+                "向用户展示主 IDE 完成、新 Codex 会话、员工 IDE 三类选择",
+                "仅在用户明确同意后调用 delegate_aidelink_task",
+                "用 get_delegated_aidelink_task 检查 summary 与 result_ref 并独立验证",
+                "验证通过后调用 verify_delegated_aidelink_task；证据不足则不要完成",
+            ],
+        }
+    return {"content": [{"type": "text", "text": json.dumps(workflow, ensure_ascii=False, separators=(",", ":"))}]}
 
 
 def handle_delegate_task(arguments):
@@ -202,18 +253,30 @@ def handle_delegate_task(arguments):
             "worker_role": "employee",
             "task_type": task_type,
             "main_owned_paths": main_owned_paths,
-            "result_ref_preferred": task_type in {"read_only", "research", "test", "summary"},
+            "result_ref_required": True,
+            "objective": text,
         },
+    )
+    task = runtime.update_task(
+        task["task_id"],
+        text=_worker_task_prompt(task["task_id"], text, task_type, main_owned_paths, owned_paths),
     )
     task = runtime.assign_task(task["task_id"], target_ide)
     if not task:
         return {"isError": True, "content": [{"type": "text", "text": "任务创建后无法分配到目标 IDE"}]}
-    if arguments.get("dispatch", True):
+    should_dispatch = bool(arguments.get("dispatch", True))
+    if should_dispatch:
         from dispatch_utils import dispatch_task
         ok, detail = dispatch_task(task, runtime)
         if not ok:
-            return {"isError": True, "content": [{"type": "text", "text": f"任务已入队，但派发失败: {detail}\n{_task_text(task)}"}]}
-    return {"content": [{"type": "text", "text": f"已派发员工任务：\n{_task_text(task)}"}]}
+            return {"isError": True, "content": [{"type": "text", "text": f"任务 {task['task_id']} 已入队，但派发失败: {detail}"}]}
+    result = {
+        "task_id": task["task_id"],
+        "status": "running" if should_dispatch else task.get("status"),
+        "target_ide": target_ide,
+        "next": "等待员工 result_ref 回传" if should_dispatch else "任务已入队，尚未注入 IDE",
+    }
+    return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, separators=(",", ":"))}]}
 
 
 def handle_create_inspiration(arguments):
@@ -254,7 +317,12 @@ def handle_get_delegated_task(arguments):
     task = get_runtime().get_task(task_id)
     if not task or task.get("source") != "primary_ide":
         return {"isError": True, "content": [{"type": "text", "text": "未找到主 IDE 委派任务"}]}
-    return {"content": [{"type": "text", "text": _task_text(task)}]}
+    fields = (
+        "task_id", "title", "text", "status", "target_ide", "owned_paths",
+        "summary", "result_ref", "error", "updated_at", "metadata",
+    )
+    payload = {key: task.get(key) for key in fields}
+    return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]}
 
 
 def handle_report_delegated_task(arguments):
@@ -262,20 +330,62 @@ def handle_report_delegated_task(arguments):
     summary = (arguments.get("summary") or "").strip()
     if not task_id or not summary:
         return {"isError": True, "content": [{"type": "text", "text": "缺少必填参数 task_id 或 summary"}]}
-    task = get_runtime().mark_task_done(task_id, summary=summary, result_ref=arguments.get("result_ref"))
+    result_ref = str(arguments.get("result_ref") or "").strip()
+    runtime = get_runtime()
+    current = runtime.get_task(task_id)
+    if not current or current.get("source") != "primary_ide":
+        return {"isError": True, "content": [{"type": "text", "text": "未找到主 IDE 委派任务"}]}
+    if current.get("status") not in {"running", "dispatched"}:
+        return {"isError": True, "content": [{"type": "text", "text": f"任务当前状态 {current.get('status')} 不允许员工回传"}]}
+    if (current.get("metadata") or {}).get("result_ref_required") and not result_ref:
+        return {"isError": True, "content": [{"type": "text", "text": "缺少 result_ref；请提供 commit/file/test/inline 证据引用"}]}
+    task = runtime.mark_task_done(task_id, summary=summary, result_ref=result_ref or None)
     if not task:
         return {"isError": True, "content": [{"type": "text", "text": "未找到任务或回传失败"}]}
-    return {"content": [{"type": "text", "text": f"子 IDE 已回传，等待主 IDE 验证：\n{_task_text(task)}"}]}
+    result = {"task_id": task_id, "status": "pending_test", "summary": summary, "result_ref": result_ref, "next": "等待主 IDE 独立验证"}
+    return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, separators=(",", ":"))}]}
+
+
+def handle_fail_delegated_task(arguments):
+    task_id = str(arguments.get("task_id") or "").strip()
+    error = str(arguments.get("error") or "").strip()
+    if not task_id or not error:
+        return {"isError": True, "content": [{"type": "text", "text": "缺少必填参数 task_id 或 error"}]}
+    runtime = get_runtime()
+    current = runtime.get_task(task_id)
+    if not current or current.get("source") != "primary_ide":
+        return {"isError": True, "content": [{"type": "text", "text": "未找到主 IDE 委派任务"}]}
+    if current.get("status") not in {"running", "dispatched"}:
+        return {"isError": True, "content": [{"type": "text", "text": f"任务当前状态 {current.get('status')} 不允许失败回传"}]}
+    result_ref = str(arguments.get("result_ref") or "").strip()
+    task = runtime.mark_task_failed(task_id, error=error)
+    if result_ref:
+        task = runtime.update_task(task_id, result_ref=result_ref)
+    result = {"task_id": task_id, "status": "failed", "error": error, "result_ref": result_ref or None}
+    return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, separators=(",", ":"))}]}
 
 
 def handle_verify_delegated_task(arguments):
     task_id = (arguments.get("task_id") or "").strip()
-    if not task_id:
-        return {"isError": True, "content": [{"type": "text", "text": "缺少必填参数 task_id"}]}
-    task = get_runtime().confirm_task_done(task_id)
+    verification_summary = str(arguments.get("verification_summary") or "").strip()
+    if not task_id or not verification_summary:
+        return {"isError": True, "content": [{"type": "text", "text": "缺少必填参数 task_id 或 verification_summary"}]}
+    runtime = get_runtime()
+    current = runtime.get_task(task_id)
+    if not current or current.get("source") != "primary_ide":
+        return {"isError": True, "content": [{"type": "text", "text": "未找到主 IDE 委派任务"}]}
+    if current.get("status") != "pending_test":
+        return {"isError": True, "content": [{"type": "text", "text": f"仅 pending_test 任务可验证，当前为 {current.get('status')}"}]}
+    if (current.get("metadata") or {}).get("result_ref_required") and not current.get("result_ref"):
+        return {"isError": True, "content": [{"type": "text", "text": "员工任务缺少 result_ref，不能标记完成"}]}
+    metadata = dict(current.get("metadata") or {})
+    metadata["manager_verification"] = verification_summary
+    runtime.update_task(task_id, metadata=metadata)
+    task = runtime.confirm_task_done(task_id)
     if not task:
         return {"isError": True, "content": [{"type": "text", "text": "任务不存在或无法验证"}]}
-    return {"content": [{"type": "text", "text": f"主 IDE 已验证通过：\n{_task_text(task)}"}]}
+    result = {"task_id": task_id, "status": "done", "verification_summary": verification_summary}
+    return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, separators=(",", ":"))}]}
 
 def write_tasks(tasks):
     try:
@@ -428,6 +538,13 @@ def get_tool_definitions():
             },
         },
         {
+            "name": "get_aidelink_workflow",
+            "description": "获取主 IDE 经理或辅助 IDE 员工的最小协作步骤，避免加载完整历史",
+            "inputSchema": {"type": "object", "properties": {
+                "role": {"type": "string", "enum": ["manager", "worker"], "default": "manager"}
+            }},
+        },
+        {
             "name": "prepare_aidelink_delegation",
             "description": "经理模式只读准备：生成紧凑任务包和 IDE 候选，优先推荐已打开空闲 IDE，但始终保留由主 Codex 完成；不会创建或派发任务",
             "inputSchema": {"type": "object", "properties": {
@@ -441,7 +558,9 @@ def get_tool_definitions():
                 "worker_owned_paths": {"type": "array", "items": {"type": "string"}},
                 "validation_commands": {"type": "array", "items": {"type": "string"}},
                 "context_refs": {"type": "array", "items": {"type": "string"}},
-                "result_ref": {"type": "string"}
+                "result_ref": {"type": "string"},
+                "include_stopped": {"type": "boolean", "default": False},
+                "candidate_limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5}
             }, "required": ["objective"]},
         },
         {
@@ -472,15 +591,24 @@ def get_tool_definitions():
         },
         {
             "name": "report_delegated_aidelink_task",
-            "description": "子 IDE 回传主 IDE 派发任务的执行摘要，进入待验证状态",
+            "description": "辅助 IDE 回传执行摘要和证据引用，任务进入 pending_test 等待主 IDE 验证",
             "inputSchema": {"type": "object", "properties": {
                 "task_id": {"type": "string"}, "summary": {"type": "string"}, "result_ref": {"type": "string"}
-            }, "required": ["task_id", "summary"]},
+            }, "required": ["task_id", "summary", "result_ref"]},
+        },
+        {
+            "name": "fail_delegated_aidelink_task",
+            "description": "辅助 IDE 无法完成任务时回传失败原因和已有证据，释放 IDE 占用",
+            "inputSchema": {"type": "object", "properties": {
+                "task_id": {"type": "string"}, "error": {"type": "string"}, "result_ref": {"type": "string"}
+            }, "required": ["task_id", "error"]},
         },
         {
             "name": "verify_delegated_aidelink_task",
-            "description": "主 IDE 完成验证后确认员工任务，结束任务闭环",
-            "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
+            "description": "主 IDE 独立检查 result_ref 后确认 pending_test 员工任务，标记为 done",
+            "inputSchema": {"type": "object", "properties": {
+                "task_id": {"type": "string"}, "verification_summary": {"type": "string"}
+            }, "required": ["task_id", "verification_summary"]},
         },
     ]
 
@@ -532,6 +660,8 @@ def process_message(line):
             result = handle_update_task(arguments)
         elif tool_name == "ask_aide":
             result = handle_ask_aide(arguments)
+        elif tool_name == "get_aidelink_workflow":
+            result = handle_get_workflow(arguments)
         elif tool_name == "prepare_aidelink_delegation":
             result = handle_prepare_delegation(arguments)
         elif tool_name == "delegate_aidelink_task":
@@ -542,6 +672,8 @@ def process_message(line):
             result = handle_get_delegated_task(arguments)
         elif tool_name == "report_delegated_aidelink_task":
             result = handle_report_delegated_task(arguments)
+        elif tool_name == "fail_delegated_aidelink_task":
+            result = handle_fail_delegated_task(arguments)
         elif tool_name == "verify_delegated_aidelink_task":
             result = handle_verify_delegated_task(arguments)
         else:
