@@ -87,6 +87,33 @@ class TaskMonitor:
         except Exception as e:
             logger.error(f"Git check error: {e}")
 
+    # 委派任务类型集合：result_ref_required=true 时这些类型不得被 git commit 自动推进。
+    # 目的：防止 read_only/research/test/summary 或 owned_paths=[] 的委派任务被
+    # 主 IDE 在任务开始前留下的旧提交抢先推进 pending_test，造成 result_ref=null 死锁。
+    # 仅作用于 metadata.result_ref_required=true 的委派任务；普通任务保持既有自动完成语义。
+    _NO_AUTO_COMPLETE_TYPES = {"read_only", "research", "test", "summary"}
+
+    @staticmethod
+    def _skip_auto_complete(task):
+        """是否跳过 git commit 自动完成（仅保护 result_ref_required=true 的委派任务）。
+
+        - 非 result_ref_required 的普通任务：一律不跳过，保持既有自动完成语义；
+        - result_ref_required=true 且 read_only/research/test/summary：无文件归属证据，跳过；
+        - result_ref_required=true 且 owned_paths=[]：无文件匹配证据，跳过；
+        - result_ref_required=true 且 code+owned_paths 非空：允许自动完成，
+          调用方写入 commit:<hash> result_ref 以满足 verify 闭环。
+        """
+        metadata = task.get("metadata") or {}
+        if not metadata.get("result_ref_required"):
+            # 普通任务（包括 research/test/summary 或 owned_paths=[]）保持原自动完成行为。
+            return False
+        task_type = str(metadata.get("task_type") or "").lower()
+        if task_type in TaskMonitor._NO_AUTO_COMPLETE_TYPES:
+            return True
+        if not task.get("owned_paths"):
+            return True
+        return False
+
     def _on_new_commit(self, commit_hash):
         try:
             flags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
@@ -119,7 +146,17 @@ class TaskMonitor:
                 if not task or task.get("status") not in ("running", "dispatched"):
                     continue
 
+                # 只读/测试/总结/无 owned_paths 委派任务不得仅凭 git commit 自动推进；
+                # 旧提交（含任务开始前主 IDE 的提交）会落入此分支被跳过，等待 worker 显式回传。
+                if self._skip_auto_complete(task):
+                    logger.info(
+                        f"[TaskMonitor] Skip auto-complete for task {task_id} ({ide}): "
+                        f"no file ownership evidence, awaiting worker report"
+                    )
+                    continue
+
                 owned = task.get("owned_paths", [])
+                # 有 owned_paths 的代码任务：保持既有文件匹配语义。
                 if owned and changed_files:
                     matched = any(
                         any(f.startswith(op.rstrip("/")) or op.rstrip("/").startswith(f) for op in owned)
@@ -128,8 +165,20 @@ class TaskMonitor:
                     if not matched:
                         continue
 
+                # 委派任务（result_ref_required）必须带可验证的 result_ref 才能进入 pending_test，
+                # 否则 verify 闭环拒绝（mcp_server.handle_verify_delegated_task L379-380）形成死锁。
+                # 非 result_ref_required 的旧 code 任务保持原行为（result_ref=None）。
+                metadata = task.get("metadata") or {}
+                result_ref = (
+                    f"commit:{commit_hash}"
+                    if metadata.get("result_ref_required") else None
+                )
                 short_hash = commit_hash[:8]
-                runtime.mark_task_done(task_id, summary=f"Git commit: {short_hash} - {commit_msg}")
+                runtime.mark_task_done(
+                    task_id,
+                    summary=f"Git commit: {short_hash} - {commit_msg}",
+                    result_ref=result_ref,
+                )
                 logger.info(f"[TaskMonitor] Task {task_id} ({ide}) done (commit {short_hash})")
 
                 from event_bus import bus
@@ -232,14 +281,35 @@ class TaskMonitor:
                 if prev_pids and not current_pids:
                     task = runtime.get_task(task_id)
                     if task and task.get("status") == "running":
-                        runtime.mark_task_done(task_id, summary=f"IDE {ide} 进程退出，自动标记完成")
-                        logger.info(f"[TaskMonitor] Task {task_id} ({ide}) done (process exit)")
-                        from event_bus import bus
-                        bus.publish("task.done", {
-                            "task_id": task_id,
-                            "target_ide": ide,
-                            "reason": "ide_process_exit",
-                        })
+                        # result_ref_required 委派任务进程退出可能是崩溃而非显式完成：
+                        # mark_task_done 不带 result_ref 会进入 pending_test 死锁
+                        # （verify 闭环 mcp_server.handle_verify_delegated_task L379-380 拒绝）。
+                        # 改为 mark_task_failed 让主 IDE 决定重派或读取已有证据，
+                        # worker 仍可通过 fail_delegated_aidelink_task 补传 result_ref。
+                        metadata = task.get("metadata") or {}
+                        if metadata.get("result_ref_required"):
+                            runtime.mark_task_failed(
+                                task_id,
+                                error=f"IDE {ide} 进程退出（result_ref_required 任务不得自动完成，等待 worker 显式回传）",
+                            )
+                            logger.info(
+                                f"[TaskMonitor] Task {task_id} ({ide}) failed (process exit, result_ref_required)"
+                            )
+                            from event_bus import bus
+                            bus.publish("task.failed", {
+                                "task_id": task_id,
+                                "target_ide": ide,
+                                "reason": "ide_process_exit_result_ref_required",
+                            })
+                        else:
+                            runtime.mark_task_done(task_id, summary=f"IDE {ide} 进程退出，自动标记完成")
+                            logger.info(f"[TaskMonitor] Task {task_id} ({ide}) done (process exit)")
+                            from event_bus import bus
+                            bus.publish("task.done", {
+                                "task_id": task_id,
+                                "target_ide": ide,
+                                "reason": "ide_process_exit",
+                            })
 
                 self._known_ide_pids[ide] = current_pids
         except Exception as e:

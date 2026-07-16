@@ -287,7 +287,7 @@ class McpServerTests(unittest.TestCase):
     def test_real_runtime_delegation_report_and_manager_verification_loop(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(
             TaskRuntime, "_ensure_timeout_scanner"
-        ):
+        ), patch.object(TaskRuntime, "_try_dispatch_next_queued", return_value=None):
             runtime = TaskRuntime(temp_dir)
             with patch("mcp_server.get_runtime", return_value=runtime):
                 delegated = mcp_server.handle_delegate_task({
@@ -310,6 +310,159 @@ class McpServerTests(unittest.TestCase):
             final_task = runtime.get_task(task_id)
             self.assertEqual("done", final_task["status"])
             self.assertEqual("主 IDE 复跑测试通过", final_task["metadata"]["manager_verification"])
+
+    def test_worker_report_supplements_missing_result_ref_for_pending_test(self):
+        """补报路径：pending_test + result_ref=null 时 worker 可补传 result_ref，状态不变。"""
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-stuck", "source": "primary_ide", "status": "pending_test",
+            "metadata": {"result_ref_required": True}, "result_ref": None,
+        }
+        runtime.update_task.return_value = {"task_id": "task-stuck", "status": "pending_test"}
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_report_delegated_task({
+                "task_id": "task-stuck",
+                "summary": "补报：实际完成证据",
+                "result_ref": "commit:abc123",
+            })
+
+        self.assertFalse(result.get("isError", False))
+        payload = json.loads(result["content"][0]["text"])
+        self.assertEqual("pending_test", payload["status"])
+        self.assertEqual("commit:abc123", payload["result_ref"])
+        # 关键：不调 mark_task_done（避免重置状态机），只 update_task 补写 result_ref
+        runtime.mark_task_done.assert_not_called()
+        runtime.update_task.assert_called_once_with(
+            "task-stuck", summary="补报：实际完成证据", result_ref="commit:abc123"
+        )
+
+    def test_worker_report_still_rejects_missing_result_ref_for_pending_test(self):
+        """补报路径仍要求 result_ref：result_ref_required 任务缺 result_ref 一律拒绝。"""
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-stuck", "source": "primary_ide", "status": "pending_test",
+            "metadata": {"result_ref_required": True}, "result_ref": None,
+        }
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_report_delegated_task({
+                "task_id": "task-stuck", "summary": "缺证据",
+            })
+
+        self.assertTrue(result["isError"])
+        self.assertIn("result_ref", result["content"][0]["text"])
+        runtime.update_task.assert_not_called()
+        runtime.mark_task_done.assert_not_called()
+
+    def test_worker_report_rejects_supplement_when_result_ref_already_present(self):
+        """补报路径禁止覆盖：pending_test + 已有 result_ref 拒绝补报。"""
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-stuck", "source": "primary_ide", "status": "pending_test",
+            "metadata": {"result_ref_required": True}, "result_ref": "commit:orig",
+        }
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_report_delegated_task({
+                "task_id": "task-stuck",
+                "summary": "试图覆盖原证据",
+                "result_ref": "commit:new",
+            })
+
+        self.assertTrue(result["isError"])
+        self.assertIn("已有 result_ref", result["content"][0]["text"])
+        runtime.update_task.assert_not_called()
+        runtime.mark_task_done.assert_not_called()
+
+    def test_worker_fail_recovers_pending_test_deadlock(self):
+        """pending_test 死锁任务可经 fail 路径释放为 failed，交主 IDE 决策。"""
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-stuck", "source": "primary_ide", "status": "pending_test",
+            "metadata": {"result_ref_required": True}, "result_ref": None,
+        }
+        runtime.mark_task_failed.return_value = {"task_id": "task-stuck", "status": "failed"}
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_fail_delegated_task({
+                "task_id": "task-stuck",
+                "error": "被自动推进死锁，转 failed 释放",
+                "result_ref": "inline:部分证据",
+            })
+
+        payload = json.loads(result["content"][0]["text"])
+        self.assertEqual("failed", payload["status"])
+        self.assertEqual("inline:部分证据", payload["result_ref"])
+        runtime.mark_task_failed.assert_called_once_with("task-stuck", error="被自动推进死锁，转 failed 释放")
+        runtime.update_task.assert_called_once_with("task-stuck", result_ref="inline:部分证据")
+
+    def test_worker_fail_rejected_when_result_ref_already_present(self):
+        """fail 路径禁止降级：pending_test + 已有 result_ref 拒绝降为 failed。"""
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-stuck", "source": "primary_ide", "status": "pending_test",
+            "metadata": {"result_ref_required": True}, "result_ref": "commit:orig",
+        }
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_fail_delegated_task({
+                "task_id": "task-stuck", "error": "试图降级",
+            })
+
+        self.assertTrue(result["isError"])
+        self.assertIn("已有 result_ref", result["content"][0]["text"])
+        runtime.mark_task_failed.assert_not_called()
+
+    def test_verify_keeps_result_ref_hard_gate_after_supplement_path(self):
+        """补报路径不放宽 verify：pending_test + result_ref=null 仍被 verify 拒绝。"""
+        runtime = Mock()
+        runtime.get_task.return_value = {
+            "task_id": "task-stuck", "source": "primary_ide", "status": "pending_test",
+            "metadata": {"result_ref_required": True}, "result_ref": None,
+        }
+        with patch("mcp_server.get_runtime", return_value=runtime):
+            result = mcp_server.handle_verify_delegated_task({
+                "task_id": "task-stuck", "verification_summary": "试图绕过 result_ref",
+            })
+
+        self.assertTrue(result["isError"])
+        self.assertIn("result_ref", result["content"][0]["text"])
+        runtime.confirm_task_done.assert_not_called()
+
+    def test_real_runtime_supplement_then_verify_loop(self):
+        """端到端：pending_test+result_ref=null → 补报 → verify 通过。"""
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            TaskRuntime, "_ensure_timeout_scanner"
+        ), patch.object(TaskRuntime, "_try_dispatch_next_queued", return_value=None):
+            runtime = TaskRuntime(temp_dir)
+            with patch("mcp_server.get_runtime", return_value=runtime):
+                delegated = mcp_server.handle_delegate_task({
+                    "task": "验证补报闭环", "target_ide": "trae_solo_cn",
+                    "user_confirmed": True, "dispatch": False,
+                    "task_type": "test", "owned_paths": ["tests/server"],
+                })
+                task_id = json.loads(delegated["content"][0]["text"])["task_id"]
+                runtime.mark_task_running(task_id, "trae_solo_cn")
+                # 模拟 TaskMonitor 抢跑：直接调 mark_task_done 不带 result_ref
+                runtime.mark_task_done(task_id, summary="抢跑：无 result_ref")
+                self.assertEqual("pending_test", runtime.get_task(task_id)["status"])
+                self.assertIsNone(runtime.get_task(task_id)["result_ref"])
+                # 此时 report/fail 原本被状态守卫拒绝；现在 report 可补报
+                supplemented = mcp_server.handle_report_delegated_task({
+                    "task_id": task_id,
+                    "summary": "补报：测试通过证据",
+                    "result_ref": "test:python -m unittest tests.server.test_mcp_server",
+                })
+                self.assertEqual(
+                    "pending_test",
+                    json.loads(supplemented["content"][0]["text"])["status"],
+                )
+                self.assertEqual(
+                    "test:python -m unittest tests.server.test_mcp_server",
+                    runtime.get_task(task_id)["result_ref"],
+                )
+                # verify 现在可通过
+                verified = mcp_server.handle_verify_delegated_task({
+                    "task_id": task_id, "verification_summary": "主 IDE 确认补报证据",
+                })
+                self.assertEqual("done", json.loads(verified["content"][0]["text"])["status"])
+                self.assertEqual("done", runtime.get_task(task_id)["status"])
 
 
 if __name__ == "__main__":

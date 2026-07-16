@@ -335,15 +335,32 @@ def handle_report_delegated_task(arguments):
     current = runtime.get_task(task_id)
     if not current or current.get("source") != "primary_ide":
         return {"isError": True, "content": [{"type": "text", "text": "未找到主 IDE 委派任务"}]}
-    if current.get("status") not in {"running", "dispatched"}:
-        return {"isError": True, "content": [{"type": "text", "text": f"任务当前状态 {current.get('status')} 不允许员工回传"}]}
-    if (current.get("metadata") or {}).get("result_ref_required") and not result_ref:
+    current_status = current.get("status")
+    requires_ref = bool((current.get("metadata") or {}).get("result_ref_required"))
+    if requires_ref and not result_ref:
         return {"isError": True, "content": [{"type": "text", "text": "缺少 result_ref；请提供 commit/file/test/inline 证据引用"}]}
-    task = runtime.mark_task_done(task_id, summary=summary, result_ref=result_ref or None)
-    if not task:
-        return {"isError": True, "content": [{"type": "text", "text": "未找到任务或回传失败"}]}
-    result = {"task_id": task_id, "status": "pending_test", "summary": summary, "result_ref": result_ref, "next": "等待主 IDE 独立验证"}
-    return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, separators=(",", ":"))}]}
+
+    if current_status in {"running", "dispatched"}:
+        # 正常回传：进入 pending_test 等待主 IDE 验证。
+        task = runtime.mark_task_done(task_id, summary=summary, result_ref=result_ref or None)
+        if not task:
+            return {"isError": True, "content": [{"type": "text", "text": "未找到任务或回传失败"}]}
+        result = {"task_id": task_id, "status": "pending_test", "summary": summary, "result_ref": result_ref, "next": "等待主 IDE 独立验证"}
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, separators=(",", ":"))}]}
+
+    if current_status == "pending_test":
+        # 补报路径：仅当任务被自动完成路径推进到 pending_test 且 result_ref 仍为空（死锁）时允许。
+        # 已有有效 result_ref 的 pending_test 任务禁止覆盖，交主 IDE verify 决策。
+        # verify 闭环对 result_ref 的硬要求不变（handle_verify_delegated_task L379-380）。
+        if current.get("result_ref"):
+            return {"isError": True, "content": [{"type": "text", "text": "任务已有 result_ref，补报路径不允许覆盖；请等待主 IDE 验证"}]}
+        task = runtime.update_task(task_id, summary=summary, result_ref=result_ref or None)
+        if not task:
+            return {"isError": True, "content": [{"type": "text", "text": "补报失败：任务不存在或写入失败"}]}
+        result = {"task_id": task_id, "status": "pending_test", "summary": summary, "result_ref": result_ref, "next": "已补报 result_ref，等待主 IDE 独立验证"}
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, separators=(",", ":"))}]}
+
+    return {"isError": True, "content": [{"type": "text", "text": f"任务当前状态 {current_status} 不允许员工回传"}]}
 
 
 def handle_fail_delegated_task(arguments):
@@ -355,8 +372,13 @@ def handle_fail_delegated_task(arguments):
     current = runtime.get_task(task_id)
     if not current or current.get("source") != "primary_ide":
         return {"isError": True, "content": [{"type": "text", "text": "未找到主 IDE 委派任务"}]}
-    if current.get("status") not in {"running", "dispatched"}:
-        return {"isError": True, "content": [{"type": "text", "text": f"任务当前状态 {current.get('status')} 不允许失败回传"}]}
+    current_status = current.get("status")
+    # pending_test 仅当 result_ref 缺失（死锁）时允许失败回传释放给主 IDE；
+    # 已有有效 result_ref 的 pending_test 任务禁止降级为 failed，交主 IDE verify 决策。
+    if current_status == "pending_test" and current.get("result_ref"):
+        return {"isError": True, "content": [{"type": "text", "text": "任务已有 result_ref，pending_test 不允许降级为 failed；请等待主 IDE 验证"}]}
+    if current_status not in {"running", "dispatched", "pending_test"}:
+        return {"isError": True, "content": [{"type": "text", "text": f"任务当前状态 {current_status} 不允许失败回传"}]}
     result_ref = str(arguments.get("result_ref") or "").strip()
     task = runtime.mark_task_failed(task_id, error=error)
     if result_ref:
