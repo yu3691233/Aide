@@ -65,18 +65,30 @@ def handle_delegate_task(arguments):
 
 
 def handle_create_inspiration(arguments):
-    """Create a project-level idea without binding or dispatching an IDE."""
+    """Create a project idea through the running bridge to avoid cross-process lost updates."""
     idea = (arguments.get("text") or arguments.get("idea") or "").strip()
     if not idea:
         return {"isError": True, "content": [{"type": "text", "text": "缺少必填参数 text"}]}
-    task = get_runtime().create_task(
-        idea,
-        title=arguments.get("title") or idea[:40],
-        source="primary_ide",
-        target_ide=None,
-        priority=arguments.get("priority", "medium"),
-        metadata={"created_via": "mcp", "content_kind": "inspiration"},
+    bridge_url = os.environ.get("AIDELINK_BRIDGE_URL", "http://127.0.0.1:5000").rstrip("/")
+    payload = json.dumps({
+        "text": idea,
+        "title": arguments.get("title") or idea[:40],
+        "priority": arguments.get("priority", "medium"),
+    }, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"{bridge_url}/api/tasks/inspiration",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return {"isError": True, "content": [{"type": "text", "text": f"灵感写入 Bridge 失败: {exc}"}]}
+    task = result.get("task") if result.get("ok") else None
+    if not isinstance(task, dict):
+        return {"isError": True, "content": [{"type": "text", "text": result.get("message", "灵感创建失败")}]}
     return {"content": [{"type": "text", "text": f"已记录项目灵感：\n{_task_text(task)}"}]}
 
 

@@ -66,18 +66,17 @@ class McpServerTests(unittest.TestCase):
         self.assertIn("create_aidelink_inspiration", names)
 
     def test_create_inspiration_has_no_ide_target(self):
-        class Runtime:
-            def create_task(self, text, **kwargs):
-                self.created = (text, kwargs)
-                return {"task_id": "idea-1", "text": text, "status": "draft", "target_ide": None}
-
-        runtime = Runtime()
-        with patch("mcp_server.get_runtime", return_value=runtime):
+        response = _Response({
+            "ok": True,
+            "task": {"task_id": "idea-1", "text": "later", "status": "draft", "target_ide": None},
+        })
+        with patch("mcp_server.urllib.request.urlopen", return_value=response) as urlopen:
             result = mcp_server.handle_create_inspiration({"text": "later", "title": "idea"})
 
         self.assertFalse(result.get("isError", False))
-        self.assertIsNone(runtime.created[1]["target_ide"])
-        self.assertEqual("inspiration", runtime.created[1]["metadata"]["content_kind"])
+        request = urlopen.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/api/tasks/inspiration"))
+        self.assertEqual("later", json.loads(request.data.decode("utf-8"))["text"])
 
     def test_delegate_task_marks_primary_ide_source(self):
         class Runtime:

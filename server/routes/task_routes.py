@@ -382,6 +382,26 @@ def api_tasks_create():
     return jsonify({"ok": True, "task_id": task["task_id"]})
 
 
+@task_bp.route("/api/tasks/inspiration", methods=["POST"])
+def api_tasks_create_inspiration():
+    """Create an unassigned project inspiration through the bridge process."""
+    data = request.get_json(force=True)
+    text = str(data.get("text") or "").strip()
+    if not text:
+        return jsonify({"ok": False, "message": "灵感内容不能为空"}), 400
+
+    from shared_runtime import runtime
+    task = runtime.create_task(
+        text=text,
+        title=str(data.get("title") or text[:40]).strip(),
+        source="primary_ide",
+        target_ide=None,
+        priority=str(data.get("priority") or "medium"),
+        metadata={"created_via": "mcp", "content_kind": "inspiration"},
+    )
+    return jsonify({"ok": True, "task": task})
+
+
 
 
 
