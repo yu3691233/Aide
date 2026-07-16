@@ -9,6 +9,7 @@ data class AideTask(
     val text: String = "",
     val status: String = "draft",
     val target_ide: String? = null,
+    val project: String? = null,
     val priority: String? = "medium",
     val source: String? = null,
     val task_origin: String? = null,

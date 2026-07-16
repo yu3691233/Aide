@@ -2887,33 +2887,14 @@ class AideLinkChatViewModel @Inject constructor(
 
             _state.value = _state.value.copy(tasksLoading = true)
 
-            val currentTarget = _state.value.target.key
-
             // 服务端 TaskRuntime 已按当前目标项目选择独立任务文件。
             // 客户端再传可能过期的 project 会把新项目任务全部二次过滤掉。
             runCatching { bridgeApi.fetchTasks(targetIde = null, status = null, project = null) }
 
                 .onSuccess { list ->
 
-                    val filtered = if (currentTarget == Target.AIDELINK.key) {
-
-                        list
-
-                    } else {
-
-                        list.filter { task ->
-
-                            val s = task.status.lowercase()
-
-                            s in setOf("draft", "pending", "pending_dispatch", "pending_upload", "queued", "dispatched", "pending_test", "done", "failed") &&
-
-                            task.target_ide == currentTarget
-
-                        }
-
-                    }
-
-                    _state.value = _state.value.copy(tasks = filtered, tasksLoading = false)
+                    // 保留当前项目下所有 IDE 的任务；“当前/全部”只在列表组件中筛选。
+                    _state.value = _state.value.copy(tasks = list, tasksLoading = false)
 
                     // 保存任务列表到本地持久化缓存
 
@@ -2958,6 +2939,7 @@ class AideLinkChatViewModel @Inject constructor(
             currentProjectName = name,
             projects = projectResponse?.projects ?: _state.value.projects,
         )
+        loadOfflineTasks()
 
     }
 
@@ -3226,12 +3208,12 @@ class AideLinkChatViewModel @Inject constructor(
                     return@launch
                 }
 
-                saveOfflineTask(text = text, title = title, target = target)
+                saveOfflineTask(text = text, title = title)
 
             } catch (e: Exception) {
 
                 // 本地保存本身失败时才向用户报告创建失败；网络异常由离线缓存兜底。
-                _state.value = _state.value.copy(sending = false, errorMessage = e.message ?: "离线任务保存失败")
+                _state.value = _state.value.copy(sending = false, errorMessage = e.message ?: "灵感保存失败")
 
             }
 
@@ -3286,34 +3268,33 @@ class AideLinkChatViewModel @Inject constructor(
         val text = _state.value.input.trim()
         if (text.isEmpty() || _state.value.sending) return
 
-        val target = normalizeTaskTarget(_state.value.target.key)
         _state.value = _state.value.copy(input = "", sending = true)
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                saveOfflineTask(text = text, title = null, target = target)
+                saveOfflineTask(text = text, title = null)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     sending = false,
-                    errorMessage = e.message ?: "离线任务保存失败",
+                    errorMessage = e.message ?: "灵感保存失败",
                 )
             }
         }
     }
 
-    private suspend fun saveOfflineTask(text: String, title: String?, target: String) {
-        // 指定了 IDE 的任务待恢复连接后同步；未指定目标的任务保留为草稿。
-        val status = if (target.isNotBlank()) "pending_upload" else "draft"
+    private suspend fun saveOfflineTask(text: String, title: String?) {
+        // 灵感属于当前项目，不绑定 IDE；派发时再由用户选择目标。
+        val status = "draft"
         cc.aidelink.app.data.repository.OfflineTaskCache.save(
             appContext,
             title ?: text.take(40),
             text,
-            target,
+            _state.value.currentProjectPath,
             status,
         )
         _state.value = _state.value.copy(
             sending = false,
             errorMessage = null,
-            toastMessage = "已保存为离线任务，点击任务后同步并派发",
+            toastMessage = "已保存为灵感，可随时选择 IDE 派发",
         )
         loadOfflineTasks()
     }
@@ -3328,9 +3309,17 @@ class AideLinkChatViewModel @Inject constructor(
 
     private fun loadOfflineTasks() {
 
-        val offlineTasks = cc.aidelink.app.data.repository.OfflineTaskCache.getPending(appContext)
+        val projectPath = _state.value.currentProjectPath
+        cc.aidelink.app.data.repository.OfflineTaskCache.claimLegacyProject(appContext, projectPath)
+        val offlineTasks = cc.aidelink.app.data.repository.OfflineTaskCache.getPendingForProject(appContext, projectPath)
 
-        val currentTasks = _state.value.tasks.toMutableList()
+        val localIdeaIds = cc.aidelink.app.data.repository.OfflineTaskCache
+            .getPending(appContext)
+            .map { it.id }
+            .toSet()
+        val currentTasks = _state.value.tasks
+            .filterNot { it.task_id in localIdeaIds }
+            .toMutableList()
 
         for (ot in offlineTasks.reversed()) {
 
@@ -3344,7 +3333,8 @@ class AideLinkChatViewModel @Inject constructor(
 
                     text = ot.message,
 
-                    target_ide = ot.targetIde,
+                    target_ide = null,
+                    project = projectPath,
 
                     status = ot.status,
 
@@ -3372,7 +3362,11 @@ class AideLinkChatViewModel @Inject constructor(
 
         viewModelScope.launch(Dispatchers.IO) {
 
-            val synced = cc.aidelink.app.data.repository.OfflineTaskCache.syncToServer(appContext, bridgeApi)
+            val synced = cc.aidelink.app.data.repository.OfflineTaskCache.syncToServer(
+                appContext,
+                _state.value.currentProjectPath,
+                bridgeApi,
+            )
 
             if (synced > 0) {
 
@@ -3450,7 +3444,7 @@ class AideLinkChatViewModel @Inject constructor(
                 cc.aidelink.app.data.repository.OfflineTaskCache.remove(appContext, taskId)
                 _state.value = _state.value.copy(
                     tasks = _state.value.tasks.filterNot { it.task_id == taskId },
-                    toastMessage = "离线任务已删除",
+                    toastMessage = "灵感已删除",
                 )
                 return@launch
             }
@@ -3543,7 +3537,7 @@ class AideLinkChatViewModel @Inject constructor(
             } else {
                 loadOfflineTasks()
                 _state.value = _state.value.copy(
-                    toastMessage = "派发未成功，任务仍保存在离线任务中",
+                    toastMessage = "派发未成功，内容仍保存在灵感中",
                 )
 
             }

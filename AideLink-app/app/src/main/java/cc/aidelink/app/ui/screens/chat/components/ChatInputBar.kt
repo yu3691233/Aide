@@ -371,7 +371,7 @@ fun ChatInputBar(
                             when {
                                 taskEditMode -> "修改任务内容…"
                                 taskThreadMode -> "补充到当前任务…"
-                                offlineTaskMode -> "输入离线任务…"
+                                offlineTaskMode -> "记录灵感或笔记…"
                                 isOpenCodeWebTarget -> "输入新会话的第一条消息…"
                                 else -> "发消息…"
                             }

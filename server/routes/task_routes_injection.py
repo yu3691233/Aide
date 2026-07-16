@@ -1,8 +1,4 @@
 import logging
-import subprocess
-import sys
-from datetime import datetime
-
 from paths import BRIDGE_DIR as BASE_DIR
 
 
@@ -37,38 +33,9 @@ def _inject_to_ide(target_ide, message, task_id=""):
     except Exception:
         pass
 
-    log_file_path = BASE_DIR / "inject.log"
     try:
-        log_file = open(str(log_file_path), "a", encoding="utf-8")
-        log_file.write(f"\n--- Inject {task_id} to {target_ide} at {datetime.now().isoformat()} ---\n")
-        log_file.flush()
-
-        # 通过 stdin 传递消息，避免命令行参数截断/转义问题
-        flags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
-        proc = subprocess.Popen(
-            [sys.executable, str(BASE_DIR / "inject_to_ide.py"), target_ide, "--stdin"],
-            stdin=subprocess.PIPE,
-            stdout=log_file,
-            stderr=log_file,
-            creationflags=flags,
-        )
-        try:
-            stdout, stderr = proc.communicate(input=message.encode("utf-8"), timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            log_file.write(f"[ERROR] inject_to_ide.py timed out for {task_id}\n")
-            log_file.flush()
-            return False, f"注入超时（30s），请确认 {target_ide.upper()} 终端窗口已打开"
-
-        if proc.returncode != 0:
-            detail = (stderr or stdout or b"").decode("utf-8", errors="replace").strip()
-            log_file.write(f"[ERROR] inject_to_ide.py exited {proc.returncode}: {detail}\n")
-            log_file.flush()
-            return False, f"注入失败（exit={proc.returncode}）: {detail[:200]}"
-
-        log_file.write(f"[OK] inject_to_ide.py succeeded for {task_id}\n")
-        log_file.flush()
-        return True, "注入成功"
+        from dispatch_utils import inject_text_to_desktop
+        return inject_text_to_desktop(target_ide, message, task_id=task_id)
     except Exception as e:
         logger.error(f"Failed to inject: {e}")
         return False, f"注入异常: {e}"

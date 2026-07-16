@@ -10,7 +10,7 @@ import kotlinx.serialization.json.Json
 import java.util.UUID
 
 /**
- * 离线任务缓存：服务端未成功接收/派发时保存任务，由用户点击后同步并派发。
+ * 灵感缓存：尚未提交到服务端的项目级内容，由用户选择 IDE 后同步并派发。
  * 存储在 SharedPreferences 中，按任务 ID 去重。
  */
 object OfflineTaskCache {
@@ -26,6 +26,7 @@ object OfflineTaskCache {
         val id: String = UUID.randomUUID().toString().substring(0, 8),
         val title: String,
         val message: String,
+        val projectPath: String = "",
         val targetIde: String = "",
         val createdAt: Long = System.currentTimeMillis(),
         var synced: Boolean = false,
@@ -88,8 +89,14 @@ object OfflineTaskCache {
     /**
      * 保存一个离线任务
      */
-    fun save(context: Context, title: String, message: String, targetIde: String = "", status: String = "pending_upload"): CachedTask {
-        val task = CachedTask(title = title, message = message, targetIde = targetIde, status = status)
+    fun save(
+        context: Context,
+        title: String,
+        message: String,
+        projectPath: String = "",
+        status: String = "pending_upload",
+    ): CachedTask {
+        val task = CachedTask(title = title, message = message, projectPath = projectPath, status = status)
         val tasks = loadAll(context)
         tasks.add(task)
         saveAll(context, tasks)
@@ -102,6 +109,30 @@ object OfflineTaskCache {
     fun getPending(context: Context): List<CachedTask> {
         return loadAll(context).filter { !it.synced }
     }
+
+    fun getPendingForProject(context: Context, projectPath: String): List<CachedTask> {
+        val normalized = normalizeProjectPath(projectPath)
+        return loadAll(context).filter {
+            !it.synced && normalizeProjectPath(it.projectPath) == normalized
+        }
+    }
+
+    /** Assign legacy unscoped entries to the project active during migration. */
+    fun claimLegacyProject(context: Context, projectPath: String) {
+        if (projectPath.isBlank()) return
+        val tasks = loadAll(context)
+        var changed = false
+        val migrated = tasks.map { task ->
+            if (!task.synced && task.projectPath.isBlank()) {
+                changed = true
+                task.copy(projectPath = projectPath, targetIde = "")
+            } else task
+        }
+        if (changed) saveAll(context, migrated)
+    }
+
+    private fun normalizeProjectPath(path: String): String =
+        path.trim().replace('/', '\\').trimEnd('\\').lowercase()
 
     /**
      * 获取所有任务（含已同步）
@@ -151,15 +182,19 @@ object OfflineTaskCache {
      * 同步所有待同步任务到服务器
      * 返回成功同步的数量
      */
-    suspend fun syncToServer(context: Context, bridgeApi: cc.aidelink.app.data.api.BridgeApi): Int = withContext(Dispatchers.IO) {
-        val pending = getPending(context)
+    suspend fun syncToServer(
+        context: Context,
+        projectPath: String,
+        bridgeApi: cc.aidelink.app.data.api.BridgeApi,
+    ): Int = withContext(Dispatchers.IO) {
+        val pending = getPendingForProject(context, projectPath)
         var synced = 0
         for (task in pending) {
             try {
                 val ok = bridgeApi.createTask(
                     text = task.message,
                     title = task.title,
-                    targetIde = task.targetIde.ifBlank { null },
+                    targetIde = null,
                 )
                 if (ok) {
                     markSynced(context, task.id)

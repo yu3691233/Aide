@@ -57,6 +57,13 @@ private fun getIdeBadgeColors(ide: String): IdeBadgeColors = when (ide.lowercase
 
 private val offlineTaskStatuses = setOf("draft", "pending_upload")
 
+internal fun projectNameFromPath(path: String?): String = path
+    ?.trim()
+    ?.trimEnd('/', '\\')
+    ?.substringAfterLast('/')
+    ?.substringAfterLast('\\')
+    .orEmpty()
+
 internal fun taskStatusMatchesTab(status: String, tab: Int): Boolean {
     val normalized = status.lowercase()
     return when (tab) {
@@ -65,6 +72,18 @@ internal fun taskStatusMatchesTab(status: String, tab: Int): Boolean {
         2 -> normalized == "done"
         3 -> normalized in offlineTaskStatuses
         else -> true
+    }
+}
+
+internal fun filterTasksForIde(
+    tasks: List<AideTask>,
+    currentTarget: String,
+    currentOnly: Boolean,
+): List<AideTask> {
+    if (!currentOnly || currentTarget.isBlank()) return tasks
+    return tasks.filter {
+        taskStatusMatchesTab(it.status, 3) ||
+            it.target_ide?.equals(currentTarget, ignoreCase = true) == true
     }
 }
 
@@ -97,17 +116,13 @@ fun TaskListPanel(
     bridgeUrl: String = "",
     modifier: Modifier = Modifier
 ) {
-    // Tab 过滤状态：0=进行中 1=待测试 2=已完成 3=离线任务
+    // Tab 过滤状态：0=进行中 1=待测试 2=已完成 3=灵感
     // 当前IDE / 全部切换
     var filterCurrentIdeOnly by remember { mutableStateOf(true) }
 
     // 按 IDE 预筛选
     val filteredTasksByIde = remember(tasks, filterCurrentIdeOnly, currentTarget) {
-        if (filterCurrentIdeOnly && currentTarget.isNotBlank()) {
-            tasks.filter { it.target_ide?.lowercase() == currentTarget.lowercase() }
-        } else {
-            tasks
-        }
+        filterTasksForIde(tasks, currentTarget, filterCurrentIdeOnly)
     }
 
     val activeTasksCount = remember(filteredTasksByIde) {
@@ -151,7 +166,7 @@ fun TaskListPanel(
                     "进行中${if (activeTasksCount > 0) " $activeTasksCount" else ""}" to 0,
                     "待测试${if (pendingTestTasksCount > 0) " $pendingTestTasksCount" else ""}" to 1,
                     "已完成" to 2,
-                    "离线任务${if (offlineTasksCount > 0) " $offlineTasksCount" else ""}" to 3,
+                    "灵感${if (offlineTasksCount > 0) " $offlineTasksCount" else ""}" to 3,
                 )
                 tabs.forEach { (label, index) ->
                     val isSelected = selectedTab == index
@@ -568,7 +583,7 @@ fun TaskCard(
                         if (batchMode) {
                             onToggleSelect(task.task_id)
                         } else {
-                            // 离线任务点击时同步并派发，不进入任务会话。
+                            // 灵感点击时选择 IDE 同步并派发，不进入任务会话。
                             val s = task.status.lowercase()
                             if (s in offlineTaskStatuses) {
                                 onSyncOfflineTask(task.task_id)
@@ -659,12 +674,11 @@ fun TaskCard(
                             )
                         }
 
-                        // 标题异步出现前后都占用同一左侧区域，避免尾部 IDE 标签跳位。
-                        val displayTitle = task.title?.takeIf { it.isNotBlank() }
-                        if (displayTitle != null) {
+                        val projectName = projectNameFromPath(task.project)
+                        if (projectName.isNotBlank()) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = displayTitle,
+                                text = projectName,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
                                 maxLines = 1,
@@ -708,15 +722,6 @@ fun TaskCard(
                 )
 
                 if (expanded) {
-                    if (task.title != null && task.text.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = task.text,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
                     if (!task.summary.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
@@ -804,15 +809,15 @@ fun TaskCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        val displayVersion = task.git_version?.ifBlank { null }
-                            ?: task.app_version?.ifBlank { null }
+                        val displayVersion = task.app_version?.ifBlank { null }
+                            ?: task.git_version?.ifBlank { null }?.let { "git ${it.take(7)}" }
                         if (displayVersion != null) {
                             Surface(
                                 shape = RoundedCornerShape(3.dp),
                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                             ) {
                                 Text(
-                                    text = " $displayVersion ",
+                                    text = " ${if (displayVersion.startsWith("git ", true) || displayVersion.startsWith("v", true)) displayVersion else "v$displayVersion"} ",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                                 )
