@@ -335,6 +335,12 @@ def api_tasks_create():
     target_ide = data.get("target_ide", "auto").strip()
 
     auto_dispatch = data.get("auto_dispatch", True)
+    surface = str(data.get("surface") or "").strip().lower()
+    if surface not in {"android", "web", "windows"}:
+        surface = ""
+    source = str(data.get("source") or "app").strip().lower()
+    if source not in {"app", "floating_window", "web"}:
+        source = "app"
 
 
 
@@ -352,11 +358,23 @@ def api_tasks_create():
 
         title=title or text[:60],
 
-        source="app",
+        source=source,
 
-        target_ide=target_ide if target_ide != "auto" else None,
+        target_ide=(
+            target_ide
+            if auto_dispatch and target_ide != "auto"
+            else None
+        ),
 
-        metadata={"created_from": "app"},
+        metadata={
+            "created_from": source,
+            **(
+                {"preferred_target_ide": target_ide}
+                if not auto_dispatch and target_ide != "auto"
+                else {}
+            ),
+            **({"surface": surface} if surface else {}),
+        },
 
     )
 
@@ -403,7 +421,12 @@ def api_tasks_create():
 
 
 
-    return jsonify({"ok": True, "task_id": task["task_id"]})
+    return jsonify({
+        "ok": True,
+        "task_id": task["task_id"],
+        "surface": surface or None,
+        "version": task.get("app_version") or "",
+    })
 
 
 @task_bp.route("/api/tasks/inspiration", methods=["POST"])
@@ -737,6 +760,9 @@ def api_tasks_assign(task_id):
     data = request.get_json(force=True)
 
     target_ide = data.get("target_ide", "").strip()
+    surface = str(data.get("surface") or "").strip().lower()
+    if surface not in {"android", "web", "windows"}:
+        surface = ""
 
     if not target_ide:
 
@@ -745,6 +771,14 @@ def api_tasks_assign(task_id):
 
 
     from shared_runtime import runtime
+
+    if surface:
+        current = runtime.get_task(task_id)
+        if not current:
+            return jsonify({"success": False, "message": f"任务 {task_id} 不存在"}), 404
+        metadata = dict(current.get("metadata") or {})
+        metadata["surface"] = surface
+        runtime.update_task(task_id, metadata=metadata)
 
     task = runtime.assign_task(task_id, target_ide)
 

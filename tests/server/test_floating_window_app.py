@@ -14,6 +14,12 @@ import floating_window_app as fwa
 
 
 class FloatingWindowAppModelTests(unittest.TestCase):
+    def test_pending_test_and_completed_groups_are_collapsed_by_default(self):
+        self.assertEqual(
+            frozenset({"待测试", "已完成"}),
+            fwa.DEFAULT_COLLAPSED_GROUPS,
+        )
+
     def test_empty_bootstrap_renders_safe_empty_states(self):
         model = fwa.build_home_model({})
         self.assertEqual("暂无项目", model["title"])
@@ -71,7 +77,18 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         self.assertEqual("进行中", fwa._task_group_name({"status": "已派发"}))
         self.assertEqual("进行中", fwa._task_group_name({"status": "排队中"}))
         self.assertEqual("待测试", fwa._task_group_name({"status": "待测试"}))
+        self.assertEqual("待测试", fwa._task_group_name({"status": "超时"}))
         self.assertEqual("已完成", fwa._task_group_name({"status": "已完成"}))
+
+    def test_legacy_timeout_is_counted_as_pending_test(self):
+        model = fwa.build_home_model({
+            "task_summary": {
+                "by_status": {"draft": 1, "timeout": 2},
+            },
+        })
+
+        self.assertEqual(1, model["summary"]["待派发"])
+        self.assertEqual(2, model["summary"]["待测试"])
 
     def test_latest_running_task_uses_updated_time(self):
         tasks = [
@@ -151,14 +168,28 @@ class FloatingWindowAppModelTests(unittest.TestCase):
             app.window_width, app.min_window_height, app.max_window_height,
         ))
 
-    def test_expanded_task_actions_are_uniform_and_do_not_assign_ide(self):
+    def test_expanded_task_actions_add_pending_test_only_for_running_task(self):
         expected = (
             ("edit", "编辑"),
             ("smart_prompt", "智能提示词"),
             ("complete", "已完成"),
             ("delete", "删除"),
         )
-        self.assertEqual(expected, fwa.FloatingWindowApp._expanded_actions({}))
+        self.assertEqual(expected, fwa.FloatingWindowApp._expanded_actions({"status": "待派发"}))
+        self.assertEqual(
+            (
+                ("edit", "编辑"),
+                ("smart_prompt", "智能提示词"),
+                ("pending_test", "待测试"),
+                ("complete", "已完成"),
+                ("delete", "删除"),
+            ),
+            fwa.FloatingWindowApp._expanded_actions({"status": "执行中"}),
+        )
+        self.assertIn(
+            ("test_feedback", "测试反馈"),
+            fwa.FloatingWindowApp._expanded_actions({"status": "待测试"}),
+        )
 
     def test_copy_uses_full_body_and_removes_reasoning_fragments(self):
         copied = fwa.task_copy_text({
@@ -309,9 +340,77 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         self.assertEqual("/api/tasks/create", app._run_api.call_args.args[0])
         self.assertFalse(app._run_api.call_args.kwargs["payload"]["auto_dispatch"])
         self.assertEqual("auto", app._run_api.call_args.kwargs["payload"]["target_ide"])
+        self.assertEqual("floating_window", app._run_api.call_args.kwargs["payload"]["source"])
 
         app.save_inspiration()
         self.assertEqual("/api/tasks/inspiration", app._run_api.call_args.args[0])
+
+    def test_multiplatform_task_create_includes_selected_surface(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app._input_text = Mock(return_value="修复桌面浮窗")
+        app._run_api = Mock()
+        app.current_model = {"capabilities": ["android", "web", "windows"]}
+        app.selected_surface = "windows"
+
+        app.create_task()
+
+        payload = app._run_api.call_args.kwargs["payload"]
+        self.assertEqual("windows", payload["surface"])
+
+    def test_dispatch_existing_task_includes_selected_surface(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.selected_ide_key = "codex"
+        app.selected_surface = "web"
+        app._run_api = Mock()
+
+        app.execute_task_action("dispatch", {"task_id": "task-1"})
+
+        self.assertEqual("/api/tasks/dispatch", app._run_api.call_args.args[0])
+        self.assertEqual(
+            {
+                "task_ids": ["task-1"],
+                "target_ide": "codex",
+                "surface": "web",
+            },
+            app._run_api.call_args.kwargs["payload"],
+        )
+
+    def test_single_platform_task_create_omits_surface_selector_value(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app._input_text = Mock(return_value="修复安卓页面")
+        app._run_api = Mock()
+        app.current_model = {"capabilities": ["android"]}
+        app.selected_surface = "android"
+
+        app.create_task()
+
+        self.assertNotIn("surface", app._run_api.call_args.kwargs["payload"])
+
+    def test_project_platforms_use_stable_display_order(self):
+        self.assertEqual(
+            ["android", "web", "windows"],
+            fwa._project_platforms(["windows", "android", "web"]),
+        )
+
+    def test_context_tools_require_selection_only_for_multiplatform_project(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.selected_surface = None
+        self.assertEqual("android", app._active_tool_surface(["android"]))
+        self.assertIsNone(app._active_tool_surface(["android", "web"]))
+        app.selected_surface = "web"
+        self.assertEqual("web", app._active_tool_surface(["android", "web"]))
+
+    def test_android_device_picker_prefers_connected_device(self):
+        result = {
+            "devices": [
+                {"alias": "offline"},
+                {"alias": "phone", "is_adb_connected": True},
+            ],
+        }
+        self.assertEqual(
+            "phone",
+            fwa.FloatingWindowApp._pick_android_device(result)["alias"],
+        )
 
     def test_created_task_is_optimistically_added_without_replacing_previous_pending(self):
         app = object.__new__(fwa.FloatingWindowApp)
@@ -354,6 +453,66 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         self.assertEqual("原输入", app.input_draft_before_task_edit)
         app._set_input_text.assert_called_once_with("任务正文")
 
+    def test_test_feedback_uses_original_context_but_submits_only_new_result(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app._input_text = Mock(return_value="原输入")
+        app._set_input_text = Mock()
+        app.input_box = Mock()
+        app._set_status = Mock()
+        app._run_api = Mock()
+
+        app.execute_task_action(
+            "test_feedback",
+            {"task_id": "task-1", "text": "原任务正文", "status": "待测试"},
+        )
+        context = app.test_feedback_context
+        self.assertIn("原任务正文", context)
+        self.assertTrue(context.endswith(fwa.TEST_FEEDBACK_MARKER))
+
+        app._input_text.return_value = context + "登录按钮仍然无响应"
+        app.create_task()
+
+        self.assertEqual("/api/tasks/feedback", app._run_api.call_args.args[0])
+        self.assertEqual(
+            {
+                "task_id": "task-1",
+                "feedback": "登录按钮仍然无响应",
+            },
+            app._run_api.call_args.kwargs["payload"],
+        )
+
+    def test_test_feedback_requires_content_after_context(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.test_feedback_task_id = "task-1"
+        app.test_feedback_context = "上下文" + fwa.TEST_FEEDBACK_MARKER
+        app._input_text = Mock(return_value=app.test_feedback_context)
+        app._set_status = Mock()
+        app._run_api = Mock()
+
+        app.create_task()
+
+        app._run_api.assert_not_called()
+        self.assertIn("测试反馈", app._set_status.call_args.args[0])
+
+    def test_test_feedback_ignores_modified_original_context(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.test_feedback_task_id = "task-1"
+        app.test_feedback_context = "原任务上下文：\n原文" + fwa.TEST_FEEDBACK_MARKER
+        app._input_text = Mock(
+            return_value="原任务上下文：\n被误改的原文"
+            + fwa.TEST_FEEDBACK_MARKER
+            + "测试仍然失败"
+        )
+        app._set_status = Mock()
+        app._run_api = Mock()
+
+        app.create_task()
+
+        self.assertEqual(
+            {"task_id": "task-1", "feedback": "测试仍然失败"},
+            app._run_api.call_args.kwargs["payload"],
+        )
+
     def test_complete_task_uses_manual_complete_route(self):
         app = object.__new__(fwa.FloatingWindowApp)
         app._run_api = Mock()
@@ -363,6 +522,22 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         self.assertEqual("/api/tasks/complete", app._run_api.call_args.args[0])
         self.assertEqual(
             {"task_id": "task-1", "manual": True},
+            app._run_api.call_args.kwargs["payload"],
+        )
+
+    def test_pending_test_action_uses_non_manual_complete_route(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app._run_api = Mock()
+
+        app.execute_task_action("pending_test", {"task_id": "task-1"})
+
+        self.assertEqual("/api/tasks/complete", app._run_api.call_args.args[0])
+        self.assertEqual(
+            {
+                "task_id": "task-1",
+                "manual": False,
+                "summary": "等待测试",
+            },
             app._run_api.call_args.kwargs["payload"],
         )
 

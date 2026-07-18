@@ -10,7 +10,7 @@ import kotlinx.serialization.json.Json
 import java.util.UUID
 
 /**
- * 灵感缓存：尚未提交到服务端的项目级内容，由用户选择 IDE 后同步并派发。
+ * 离线内容缓存：保存尚未提交到服务端的任务或随记。
  * 存储在 SharedPreferences 中，按任务 ID 去重。
  */
 object OfflineTaskCache {
@@ -31,6 +31,7 @@ object OfflineTaskCache {
         val createdAt: Long = System.currentTimeMillis(),
         var synced: Boolean = false,
         val status: String = "pending_upload",
+        val taskType: String = "inspiration",
     )
 
     private fun getPrefs(context: Context): SharedPreferences {
@@ -95,8 +96,15 @@ object OfflineTaskCache {
         message: String,
         projectPath: String = "",
         status: String = "pending_upload",
+        taskType: String = "inspiration",
     ): CachedTask {
-        val task = CachedTask(title = title, message = message, projectPath = projectPath, status = status)
+        val task = CachedTask(
+            title = title,
+            message = message,
+            projectPath = projectPath,
+            status = status,
+            taskType = taskType,
+        )
         val tasks = loadAll(context)
         tasks.add(task)
         saveAll(context, tasks)

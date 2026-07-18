@@ -27,8 +27,15 @@ WINDOW_WIDTH = 370
 SHOW_SIGNAL_PORT = int(os.environ.get("AIDELINK_FLOATING_WINDOW_PORT", "51231"))
 VISIBLE_TASK_ACTIONS = ("copy", "view", "more")
 DEFAULT_QUICK_REPLIES = ("继续", "安装到手机", "升级版本号并提交git")
+DEFAULT_COLLAPSED_GROUPS = frozenset({"待测试", "已完成"})
+TEST_FEEDBACK_MARKER = "\n\n---\n测试反馈："
 QUICK_REPLIES_FILE = Path(__file__).resolve().parent / "state" / "floating_quick_replies.json"
 WINDOW_STATE_FILE = Path(__file__).resolve().parent / "state" / "floating_window_state.json"
+PLATFORM_SPECS = (
+    ("android", "smartphone", "#35a853", "Android"),
+    ("web", "globe", "#0867f2", "Web"),
+    ("windows", "windows", "#0867f2", "Windows"),
+)
 
 
 def _project_name(project):
@@ -48,6 +55,11 @@ def _capability_badge(capabilities):
         + ("🌐" if "web" in capabilities else "")
         + ("🖥" if "windows" in capabilities else "")
     )
+
+
+def _project_platforms(capabilities):
+    available = {str(item).strip().lower() for item in (capabilities or [])}
+    return [key for key, _icon, _color, _label in PLATFORM_SPECS if key in available]
 
 
 def _task_surface(task, project_capabilities):
@@ -94,7 +106,7 @@ def _task_group_name(task):
     status = task.get("status") or ""
     if status == "已完成":
         return "已完成"
-    if status == "待测试":
+    if status in {"待测试", "超时"}:
         return "待测试"
     if status in {"执行中", "已派发", "排队中"}:
         return "进行中"
@@ -157,9 +169,9 @@ def build_home_model(payload):
     codex_quota = payload.get("codex_quota") or {}
 
     by_status = summary.get("by_status") or {}
-    pending_test = int(by_status.get("pending_test") or 0)
+    pending_test = int(by_status.get("pending_test") or 0) + int(by_status.get("timeout") or 0)
     running = int(by_status.get("running") or 0) + int(by_status.get("dispatched") or 0) + int(by_status.get("queued") or 0)
-    pending_dispatch = sum(int(by_status.get(status) or 0) for status in ("draft", "pending", "failed", "timeout", "test_failed", "merge_conflict"))
+    pending_dispatch = sum(int(by_status.get(status) or 0) for status in ("draft", "pending", "failed", "test_failed", "merge_conflict"))
     completed = int(by_status.get("done") or 0) + int(by_status.get("completed") or 0)
 
     capabilities = payload.get("capabilities") or project.get("capabilities") or ["general"]
@@ -169,6 +181,7 @@ def build_home_model(payload):
     return {
         "title": f"{project_name} {badge}".strip(),
         "project_name": _project_name(project),
+        "project_path": project.get("path") or "",
         "capabilities": capabilities,
         "ides": [
             {
@@ -285,9 +298,11 @@ class FloatingWindowApp:
         self.drag_moved = False
         self.is_topmost = True
         self.selected_ide_key = None
+        self.selected_surface = None
+        self.surface_project_key = None
         self.active_tab = "tasks"
         self.expanded_task_id = None
-        self.collapsed_groups = {"已完成"}
+        self.collapsed_groups = set(DEFAULT_COLLAPSED_GROUPS)
         self.completed_display_limit = 5
         self.input_expanded = False
         self.input_expand_after_id = None
@@ -299,6 +314,9 @@ class FloatingWindowApp:
         self.ui_callbacks = queue.Queue()
         self.editing_task_id = None
         self.input_draft_before_task_edit = ""
+        self.test_feedback_task_id = None
+        self.input_draft_before_test_feedback = ""
+        self.test_feedback_context = ""
         self.current_model = {}
         self.root = tk.Tk()
         self.icons = IconFactory(self.root)
@@ -436,6 +454,8 @@ class FloatingWindowApp:
         task_section.pack(fill="both", expand=True, padx=12, pady=(10, 0))
         self.summary_frame = tk.Frame(task_section, bg=bg)
         self.summary_frame.pack_forget()
+        self.context_tools_frame = tk.Frame(task_section, bg=bg)
+        self.context_tools_frame.pack(fill="x", pady=(0, 3))
         tabs = tk.Frame(task_section, bg=bg)
         tabs.pack(fill="x", pady=(0, 3))
         self.tab_buttons = {}
@@ -630,13 +650,20 @@ class FloatingWindowApp:
         return height
 
     @staticmethod
-    def _expanded_actions(_task):
-        return (
+    def _expanded_actions(task):
+        actions = [
             ("edit", "编辑"),
             ("smart_prompt", "智能提示词"),
+        ]
+        if _task_group_name(task) == "进行中":
+            actions.append(("pending_test", "待测试"))
+        if _task_group_name(task) == "待测试":
+            actions.append(("test_feedback", "测试反馈"))
+        actions.extend((
             ("complete", "已完成"),
             ("delete", "删除"),
-        )
+        ))
+        return tuple(actions)
 
     def _render_task_tab(self, tasks, summary_styles):
         tk = self.tk
@@ -735,6 +762,13 @@ class FloatingWindowApp:
 
     def _render(self, model):
         tk = self.tk
+        project_key = model.get("project_path") or model.get("project_name") or ""
+        if project_key != self.surface_project_key:
+            self.surface_project_key = project_key
+            self.selected_surface = None
+        platforms = _project_platforms(model.get("capabilities"))
+        if len(platforms) < 2 or self.selected_surface not in platforms:
+            self.selected_surface = None
         self.current_model = model
         self.selected_ide_key = choose_selected_ide(
             self.selected_ide_key,
@@ -776,6 +810,7 @@ class FloatingWindowApp:
         self.root.after_idle(lambda height=compact_height: self._ensure_window_visible(height))
         self.title_label.config(text=model["project_name"])
         self._render_capability_icons(model["capabilities"])
+        self._render_context_tools(model["capabilities"])
         self._render_codex_quota(model.get("codex_quota") or {})
         self._set_status("")
 
@@ -833,21 +868,27 @@ class FloatingWindowApp:
 
     def _render_capability_icons(self, capabilities):
         self._clear_rows(self.capability_frame)
-        specs = (
-            ("android", "smartphone", "#35a853"),
-            ("web", "globe", "#0867f2"),
-            ("windows", "windows", "#0867f2"),
-        )
+        platforms = _project_platforms(capabilities)
+        selectable = len(platforms) > 1
         rendered = False
-        for capability, icon_name, color in specs:
+        for capability, icon_name, color, label in PLATFORM_SPECS:
             if capability not in capabilities:
                 continue
-            self.tk.Label(
+            selected = self.selected_surface == capability
+            icon_color = color if (selected or not selectable) else "#a8b0bd"
+            widget = self.tk.Label(
                 self.capability_frame,
-                image=self.icons.get(icon_name, 17, color),
+                image=self.icons.get(icon_name, 17, icon_color),
                 bg="#ffffff",
                 padx=2,
-            ).pack(side="left")
+                cursor="hand2" if selectable else "",
+            )
+            widget.pack(side="left")
+            if selectable:
+                widget.bind(
+                    "<Button-1>",
+                    lambda _event, value=capability: self.select_surface(value),
+                )
             rendered = True
         if not rendered:
             self.tk.Label(
@@ -856,6 +897,177 @@ class FloatingWindowApp:
                 bg="#ffffff",
                 padx=2,
             ).pack(side="left")
+
+    def select_surface(self, surface):
+        platforms = _project_platforms(self.current_model.get("capabilities"))
+        if len(platforms) < 2 or surface not in platforms:
+            return
+        self.selected_surface = None if self.selected_surface == surface else surface
+        self._render(self.current_model)
+
+    def _active_tool_surface(self, capabilities):
+        platforms = _project_platforms(capabilities)
+        if len(platforms) == 1:
+            return platforms[0]
+        return self.selected_surface if self.selected_surface in platforms else None
+
+    def _render_context_tools(self, capabilities):
+        self._clear_rows(self.context_tools_frame)
+        surface = self._active_tool_surface(capabilities)
+        tools = {
+            "android": (
+                ("连接", "wifi", self.connect_android),
+                ("复制地址", "copy", self.copy_android_address),
+                ("截图反馈", "smartphone", self.android_screenshot_feedback),
+            ),
+            "web": (
+                ("刷新页面", "loader", self.refresh_web_page),
+                ("组件定位", "globe", self.open_web_component_locator),
+            ),
+            "windows": (
+                ("截图反馈", "windows", self.windows_screenshot_feedback),
+                ("窗口定位", "expand", self.locate_windows_target),
+            ),
+        }.get(surface, ())
+        if not tools:
+            self.context_tools_frame.pack_forget()
+            return
+        if not self.context_tools_frame.winfo_manager():
+            self.context_tools_frame.pack(fill="x", pady=(0, 3), before=self.context_tools_frame.master.winfo_children()[2])
+        for label, icon, command in tools:
+            button = self._rounded_button(
+                self.context_tools_frame,
+                label,
+                command,
+                width=82,
+                height=27,
+                fill="#ffffff",
+                outline="#e1e6ed",
+                fg="#526078",
+                font_size=7,
+                icon_name=icon,
+                icon_size=12,
+                radius=9,
+            )
+            button.pack(side="left", padx=(0, 4))
+
+    @staticmethod
+    def _pick_android_device(result):
+        devices = result.get("devices") or []
+        return next(
+            (
+                item for item in devices
+                if item.get("is_adb_connected") or item.get("is_online") or item.get("is_active")
+            ),
+            devices[0] if devices else None,
+        )
+
+    def _load_android_device(self, callback, busy_text):
+        def loaded(result):
+            device = self._pick_android_device(result)
+            if not device:
+                self._set_status("没有已登记的 Android 设备", "#b42318")
+                return
+            callback(device)
+
+        self._run_api("/api/devices", on_success=loaded, busy_text=busy_text)
+
+    def connect_android(self):
+        def connect(device):
+            payload = {
+                "alias": device.get("alias"),
+                "ip": device.get("online_ip") or device.get("ip"),
+                "port": device.get("adb_port") or 5555,
+                "auto_enable": True,
+            }
+            self._run_api(
+                "/api/adb/ensure",
+                method="POST",
+                payload=payload,
+                on_success=lambda result: self._set_status(
+                    result.get("message") or "ADB 已连接", "#239957", 2200
+                ),
+                busy_text="正在连接 ADB…",
+            )
+
+        self._load_android_device(connect, "正在读取 Android 设备…")
+
+    def copy_android_address(self):
+        def copy_address(device):
+            ip = device.get("online_ip") or device.get("ip")
+            port = device.get("adb_port") or 5555
+            if not ip:
+                self._set_status("设备没有可复制的 IP", "#b42318")
+                return
+            address = f"{ip}:{port}"
+            self.root.clipboard_clear()
+            self.root.clipboard_append(address)
+            self.root.update_idletasks()
+            self._set_status(f"已复制 {address}", "#239957", 1800)
+
+        self._load_android_device(copy_address, "正在读取设备地址…")
+
+    def android_screenshot_feedback(self):
+        def captured(result):
+            screen_url = result.get("screen_url") or "/ui-locator/screen.png"
+            webbrowser.open(f"{BRIDGE_URL.rstrip('/')}{screen_url}")
+            self._set_status("手机截图已生成", "#239957", 2200)
+
+        self._run_api(
+            "/ui-locator/screenshot",
+            method="POST",
+            payload={},
+            on_success=captured,
+            busy_text="正在截取手机屏幕…",
+        )
+
+    def refresh_web_page(self):
+        self._run_api(
+            "/api/floating-window/web-refresh",
+            method="POST",
+            payload={},
+            busy_text="正在刷新浏览器页面…",
+        )
+
+    def open_web_component_locator(self):
+        webbrowser.open(BRIDGE_URL.rstrip("/") + "/")
+        self._set_status("已打开 Web 组件地图", "#239957", 1800)
+
+    def windows_screenshot_feedback(self):
+        self._run_api(
+            "/api/trigger-screenshot",
+            method="POST",
+            payload={},
+            on_success=lambda _result: self._set_status(
+                "请框选 Windows 区域，截图将进入剪贴板", "#239957", 2600
+            ),
+            busy_text="正在启动 Windows 截图…",
+        )
+
+    def locate_windows_target(self):
+        if not self.selected_ide_key:
+            self._set_status("请先选择一个 IDE", "#b42318", 1800)
+            return
+
+        def located(result):
+            window = result.get("window") or {}
+            detail = (
+                f"{self.selected_ide_key}: "
+                f"{window.get('left', 0)},{window.get('top', 0)} "
+                f"{window.get('width', 0)}x{window.get('height', 0)}"
+            )
+            self.root.clipboard_clear()
+            self.root.clipboard_append(detail)
+            self.root.update_idletasks()
+            self._set_status("窗口位置已复制", "#239957", 1800)
+
+        self._run_api(
+            "/api/ide-screenshot",
+            method="POST",
+            payload={"key": self.selected_ide_key},
+            on_success=located,
+            busy_text="正在定位 Windows 窗口…",
+        )
 
     def _render_codex_quota(self, quota):
         self.quota_canvas.delete("all")
@@ -1202,6 +1414,33 @@ class FloatingWindowApp:
         if not text:
             self._set_status("请先输入任务内容", "#b42318", 1800)
             return
+        if getattr(self, "test_feedback_task_id", None):
+            feedback = text
+            if TEST_FEEDBACK_MARKER in feedback:
+                feedback = feedback.rsplit(TEST_FEEDBACK_MARKER, 1)[1]
+            feedback = feedback.strip()
+            if not feedback:
+                self._set_status("请在“测试反馈”后输入测试结果", "#b42318", 1800)
+                return
+            task_id = self.test_feedback_task_id
+
+            def feedback_saved(_result):
+                draft = self.input_draft_before_test_feedback
+                self.test_feedback_task_id = None
+                self.input_draft_before_test_feedback = ""
+                self.test_feedback_context = ""
+                self._set_input_text(draft)
+                self._set_status("测试反馈已提交", "#239957", 1800)
+                self.refresh()
+
+            self._run_api(
+                "/api/tasks/feedback",
+                method="POST",
+                payload={"task_id": task_id, "feedback": feedback},
+                on_success=feedback_saved,
+                busy_text="正在提交测试反馈…",
+            )
+            return
         if getattr(self, "editing_task_id", None):
             task_id = self.editing_task_id
 
@@ -1210,7 +1449,7 @@ class FloatingWindowApp:
                 self.editing_task_id = None
                 self.input_draft_before_task_edit = ""
                 self._set_input_text(draft)
-                self._set_status("任务已更新", "#239957", 1800)
+                self._set_status("任务已更新并退回待派发", "#239957", 1800)
                 self.refresh()
 
             self._run_api(
@@ -1225,7 +1464,12 @@ class FloatingWindowApp:
             "text": text,
             "target_ide": "auto",
             "auto_dispatch": False,
+            "source": "floating_window",
         }
+        current_model = getattr(self, "current_model", {}) or {}
+        selected_surface = getattr(self, "selected_surface", None)
+        if len(_project_platforms(current_model.get("capabilities"))) > 1 and selected_surface:
+            payload["surface"] = selected_surface
 
         def created(result):
             task_id = result.get("task_id") or ""
@@ -1236,8 +1480,8 @@ class FloatingWindowApp:
                 "status": "待派发",
                 "target_ide": "未分配",
                 "surface": _task_surface(
-                    {"title": text, "text": text},
-                    self.current_model.get("capabilities") or ["general"],
+                    {"title": text, "text": text, "metadata": {"surface": selected_surface}},
+                    current_model.get("capabilities") or ["general"],
                 ),
                 "progress": 0,
                 "allowed_actions": ["view", "edit", "delete"],
@@ -1338,11 +1582,26 @@ class FloatingWindowApp:
             self._set_status("任务缺少 ID", "#b42318")
             return
         if action == "edit":
+            self.test_feedback_task_id = None
+            self.input_draft_before_test_feedback = ""
+            self.test_feedback_context = ""
             self.input_draft_before_task_edit = self._input_text()
             self.editing_task_id = task_id
             self._set_input_text(task.get("text") or task.get("title") or "")
             self.input_box.focus_set()
             self._set_status("正在编辑任务，按 Enter 保存", "#0867f2")
+            return
+        if action == "test_feedback":
+            body = _clean_task_text(task.get("text") or task.get("title")) or "无任务正文"
+            self.editing_task_id = None
+            self.input_draft_before_task_edit = ""
+            self.input_draft_before_test_feedback = self._input_text()
+            self.test_feedback_task_id = task_id
+            self.test_feedback_context = f"原任务上下文：\n{body}{TEST_FEEDBACK_MARKER}"
+            self._set_input_text(self.test_feedback_context)
+            self.input_box.focus_set()
+            self.input_box.mark_set("insert", "end-1c")
+            self._set_status("补充测试结果后按 Enter 提交", "#0867f2")
             return
         if action in {"feedback", "feedback_note"}:
             from tkinter import simpledialog
@@ -1368,6 +1627,9 @@ class FloatingWindowApp:
             else:
                 path = "/api/tasks/dispatch"
                 payload = {"task_ids": [task_id], "target_ide": self.selected_ide_key}
+            selected_surface = getattr(self, "selected_surface", None)
+            if selected_surface in {"android", "web", "windows"}:
+                payload["surface"] = selected_surface
             self._run_api(
                 path,
                 method="POST",
@@ -1378,6 +1640,11 @@ class FloatingWindowApp:
             return
 
         route_map = {
+            "pending_test": (
+                "/api/tasks/complete",
+                "POST",
+                {"task_id": task_id, "manual": False, "summary": "等待测试"},
+            ),
             "complete": ("/api/tasks/complete", "POST", {"task_id": task_id, "manual": True}),
             "confirm_done": (f"/api/tasks/{quote(task_id)}/confirm", "POST", {}),
             "retry": (f"/api/tasks/{quote(task_id)}/retry", "POST", {}),

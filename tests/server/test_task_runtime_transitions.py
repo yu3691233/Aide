@@ -24,7 +24,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "server"))
 
 import task_runtime
-from task_runtime import TaskRuntime, TaskStatusError
+from task_runtime import (
+    TASK_TIMEOUT_SCAN_INTERVAL_SECONDS,
+    TASK_TIMEOUT_SECONDS,
+    TaskRuntime,
+    TaskStatusError,
+)
 
 
 def _make_runtime():
@@ -61,6 +66,41 @@ def _create_task(runtime, status="draft"):
 
 
 class TaskRuntimeTransitionTests(unittest.TestCase):
+    def test_timeout_policy_is_fifteen_minutes_with_minute_scans(self):
+        self.assertEqual(15 * 60, TASK_TIMEOUT_SECONDS)
+        self.assertEqual(60, TASK_TIMEOUT_SCAN_INTERVAL_SECONDS)
+
+    def test_timeout_moves_running_task_to_pending_test(self):
+        runtime, _ = _make_runtime()
+        task_id = _create_task(runtime, status="running")
+
+        with unittest.mock.patch.object(
+            runtime, "_try_dispatch_next_queued", return_value=None
+        ):
+            task = runtime.mark_task_timeout(task_id)
+
+        self.assertEqual("pending_test", task["status"])
+        self.assertIn("15 分钟", task["error"])
+        self.assertIsNotNone(task.get("timeout_at"))
+        self.assertIsNone(task.get("completed_at"))
+        self.assertEqual("pending_test", runtime.get_task(task_id)["status"])
+
+    def test_editing_running_task_reopens_it_as_unassigned_draft(self):
+        runtime, _ = _make_runtime()
+        task_id = _create_task(runtime, status="running")
+        runtime.set_ide_status("codex", "busy", current_task_id=task_id)
+
+        with unittest.mock.patch.object(
+            runtime, "_try_dispatch_next_queued", return_value=None
+        ):
+            task = runtime.reopen_task_as_draft(task_id, "修改后的任务正文")
+
+        self.assertEqual("draft", task["status"])
+        self.assertEqual("修改后的任务正文", task["text"])
+        self.assertIsNone(task["target_ide"])
+        self.assertIsNone(task["started_at"])
+        self.assertEqual("idle", runtime.get_ide_status("codex")["status"])
+
     def test_illegal_running_to_done_rejected(self):
         """1. 非法 running → done 直接 update 被拒绝。"""
         runtime, _ = _make_runtime()

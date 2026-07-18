@@ -12,6 +12,10 @@ from json_utils import safe_read_json, safe_write_json
 from paths import PROJECT_ROOT
 
 
+TASK_TIMEOUT_SECONDS = 15 * 60
+TASK_TIMEOUT_SCAN_INTERVAL_SECONDS = 60
+
+
 class TaskStatusError(ValueError):
     """状态转换非法时抛出。
 
@@ -588,6 +592,42 @@ class TaskRuntime:
                 started_at=_now_iso(),
             )
 
+    def reopen_task_as_draft(self, task_id, text, title=None):
+        """编辑已派发任务并退回待派发，同时释放原 IDE 和租约。"""
+        with self._lock:
+            task = self.get_task(task_id)
+            if not task:
+                return None
+            self.release_leases(task_id)
+            released_ide = None
+            target_ide = task.get("target_ide")
+            if target_ide in SUPPORTED_IDES:
+                current = self.get_ide_status(target_ide)
+                if current.get("current_task_id") == task_id:
+                    self.release_ide(target_ide)
+                    released_ide = target_ide
+            updated = self.update_task(
+                task_id,
+                text=text,
+                title=title or text[:60],
+                status="draft",
+                target_ide=None,
+                dispatched_at=None,
+                started_at=None,
+                queued_at=None,
+                completed_at=None,
+                error=None,
+                summary=None,
+                _skip_status_check=True,
+            )
+        if released_ide:
+            threading.Thread(
+                target=self._try_dispatch_next_queued,
+                args=(released_ide,),
+                daemon=True,
+            ).start()
+        return updated
+
     def mark_task_done(self, task_id, summary=None, result_ref=None, is_manual=False):
         """IDE 报告完成 → 状态变为 pending_test（等待用户验证）"""
         with self._lock:
@@ -657,7 +697,7 @@ class TaskRuntime:
         return updated
 
     def mark_task_timeout(self, task_id):
-        """任务超时 → 状态置为 timeout，释放租约和 IDE 占用"""
+        """任务超时 → 转入待测试，释放租约和 IDE 占用。"""
         with self._lock:
             task = self.get_task(task_id)
             if not task:
@@ -671,14 +711,15 @@ class TaskRuntime:
                     released_ide = task.get("target_ide")
             updated = self.update_task(
                 task_id,
-                status="timeout",
-                error="任务执行超时（超过 30 分钟）",
-                completed_at=_now_iso(),
+                status="pending_test",
+                error="任务执行超时（超过 15 分钟），请检查执行结果",
+                timeout_at=_now_iso(),
             )
             bus.publish("task.timeout", {
                 "task_id": task_id,
                 "target_ide": task.get("target_ide"),
-                "error": "任务执行超时",
+                "status": "pending_test",
+                "error": "任务执行超时（超过 15 分钟），请检查执行结果",
                 "released_leases": released,
             })
         if released_ide:
@@ -1157,10 +1198,10 @@ class TaskRuntime:
         return True, None
 
     def _timeout_scanner_loop(self):
-        """后台守护线程：每 5 分钟扫描一次，将 dispatched/running 超过 30 分钟的任务标记为 timeout"""
+        """每分钟扫描一次，将执行超过 15 分钟的任务转入待测试。"""
         while True:
             try:
-                time.sleep(300)
+                time.sleep(TASK_TIMEOUT_SCAN_INTERVAL_SECONDS)
                 now = datetime.now()
                 with self._lock:
                     tasks = self.read_tasks()
@@ -1175,7 +1216,7 @@ class TaskRuntime:
                     ref_dt = _parse_iso(ref_str)
                     if not ref_dt:
                         continue
-                    if (now - ref_dt).total_seconds() > 30 * 60:
+                    if (now - ref_dt).total_seconds() >= TASK_TIMEOUT_SECONDS:
                         try:
                             self.mark_task_timeout(task.get("task_id"))
                         except Exception:

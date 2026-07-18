@@ -19,7 +19,7 @@ from manager_process import (
     is_flask_running, start_flask_service, stop_flask_service,
     get_service_status, PID_FILE,
 )
-from frp_service import is_frp_running, get_frp_status, start_frp_client, stop_frp_client
+from frp_service import is_frp_running, get_frp_status, start_frp_client
 from network_utils import ADB_PATH, get_local_ip
 import requests as _requests
 
@@ -680,7 +680,16 @@ def build_tray_menu():
         MenuItem("停止服务", _tray_stop_service, enabled=status["running"]),
         MenuItem("重启服务", _tray_restart_service),
         Menu.SEPARATOR,
-        MenuItem(f"FRP 穿透  ·  {'已开启' if frp_status['running'] else '未开启'}", _tray_toggle_frp),
+        MenuItem(
+            "FRP 随服务自动启动",
+            _tray_toggle_frp_auto_start,
+            checked=_is_frp_auto_start_enabled,
+        ),
+        MenuItem(
+            f"立即启用 FRP 穿透{'  ·  已运行' if frp_status['running'] else ''}",
+            _tray_start_frp_now,
+            enabled=not frp_status["running"],
+        ),
         Menu.SEPARATOR,
         MenuItem("选择目标项目", _build_project_menu()),
         Menu.SEPARATOR,
@@ -688,11 +697,25 @@ def build_tray_menu():
     )
 
 
-def _tray_toggle_frp():
-    if is_frp_running():
-        stop_frp_client()
-    else:
-        start_frp_client(force=True)
+def _is_frp_auto_start_enabled(_item=None):
+    config = load_config()
+    return bool((config.get("frp") or {}).get("enabled", False))
+
+
+def _tray_toggle_frp_auto_start(_icon=None, _item=None):
+    config = load_config()
+    frp_config = dict(config.get("frp") or {})
+    frp_config["enabled"] = not bool(frp_config.get("enabled", False))
+    config["frp"] = frp_config
+    ok, message = save_config(config)
+    if not ok:
+        logger.error("保存 FRP 自动启动设置失败: %s", message)
+    refresh_tray_menu()
+
+
+def _tray_start_frp_now(_icon=None, _item=None):
+    start_frp_client(force=True)
+    refresh_tray_menu()
 
 
 def _get_devspace_status():

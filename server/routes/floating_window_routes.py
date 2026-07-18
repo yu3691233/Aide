@@ -1,5 +1,6 @@
 import ctypes
 import os
+import time
 from ctypes import wintypes
 from datetime import datetime
 
@@ -29,6 +30,36 @@ def _executed_task_ids(tasks):
         and str(task.get("status") or "").strip().lower() in _EXECUTED_TASK_STATUSES
         and task.get("task_id")
     ]
+
+
+def _browser_window():
+    if os.name != "nt":
+        return None
+    supported = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe"}
+    matches = []
+    user32 = ctypes.windll.user32
+    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+    def visit(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        try:
+            name = psutil.Process(pid.value).name().lower()
+        except (psutil.Error, OSError):
+            return True
+        if name in supported:
+            title = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, title, length + 1)
+            matches.append((int(hwnd), name, title.value))
+        return True
+
+    user32.EnumWindows(callback_type(visit), 0)
+    return matches[0] if matches else None
 
 
 def _current_project(settings):
@@ -198,4 +229,27 @@ def api_floating_window_bootstrap():
             for task in [*summary["tasks"], *completed[:50], *inspirations[:20]]
         ],
         "warnings": summary["warnings"],
+    })
+
+
+@floating_window_bp.route("/api/floating-window/web-refresh", methods=["POST"])
+def api_floating_window_web_refresh():
+    browser = _browser_window()
+    if not browser:
+        return jsonify({"ok": False, "message": "未找到可刷新的浏览器窗口"}), 404
+    hwnd, process_name, title = browser
+    try:
+        user32 = ctypes.windll.user32
+        user32.ShowWindow(hwnd, 9)
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.15)
+        import pyautogui
+        pyautogui.hotkey("ctrl", "r")
+    except (AttributeError, OSError) as exc:
+        return jsonify({"ok": False, "message": f"刷新浏览器失败：{exc}"}), 500
+    return jsonify({
+        "ok": True,
+        "message": "浏览器页面已刷新",
+        "browser": process_name,
+        "title": title,
     })

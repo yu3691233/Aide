@@ -16,6 +16,29 @@ from .task_routes import task_bp
 
 logger = logging.getLogger("manager")
 
+_SURFACE_LABELS = {
+    "android": "Android",
+    "web": "Web",
+    "windows": "Windows",
+}
+
+
+def _dispatch_prefix(dispatch_items):
+    surfaces = {
+        str((item.get("metadata") or {}).get("surface") or "").strip().lower()
+        for item in dispatch_items
+    }
+    surfaces.discard("")
+    if len(surfaces) == 1 and all(
+        str((item.get("metadata") or {}).get("surface") or "").strip().lower() in surfaces
+        for item in dispatch_items
+    ):
+        surface = next(iter(surfaces))
+        label = _SURFACE_LABELS.get(surface)
+        if label:
+            return f"[派发任务-{label}]"
+    return "[派发任务]"
+
 
 def _publish_task_feedback(task_id, target_ide, title, feedback, message, fb_count):
     bus.publish("task.feedback", {
@@ -36,6 +59,9 @@ def api_tasks_dispatch():
     print(f"[DEBUG] api_tasks_dispatch received: {data}", flush=True)
     task_ids = data.get("task_ids", [])
     target_ide = data.get("target_ide")
+    selected_surface = str(data.get("surface") or "").strip().lower()
+    if selected_surface not in _SURFACE_LABELS:
+        selected_surface = ""
     if not task_ids or not target_ide:
         print(f"[DEBUG] api_tasks_dispatch missing params. task_ids={task_ids}, target_ide={target_ide}", flush=True)
         return jsonify({"success": False, "message": "缺少任务ID或目标 IDE"})
@@ -56,10 +82,14 @@ def api_tasks_dispatch():
         if not task_data:
             errors.append(f"任务 {tid} 未找到")
             continue
+        metadata = dict(task_data.get("metadata") or {})
+        if selected_surface:
+            metadata["surface"] = selected_surface
         dispatch_items.append({
             "task_id": tid,
             "title": task_data.get("title", tid),
             "message": task_data.get("message", ""),
+            "metadata": metadata,
         })
 
     if not dispatch_items:
@@ -67,14 +97,15 @@ def api_tasks_dispatch():
 
     representative = dispatch_items[0]
     merged_ids = [item["task_id"] for item in dispatch_items]
+    dispatch_prefix = _dispatch_prefix(dispatch_items)
 
     if len(dispatch_items) == 1:
         item = dispatch_items[0]
         merged_message = item.get("message") or item.get("title") or item["task_id"]
-        merged_message = "[派发任务]\n" + merged_message
+        merged_message = dispatch_prefix + "\n" + merged_message
     else:
         merged_message_parts = [
-            f"[派发任务]【AideLink 批量合并派发】目标IDE: {target_ide.upper()}, 共{len(dispatch_items)}个任务",
+            f"{dispatch_prefix}【AideLink 批量合并派发】目标IDE: {target_ide.upper()}, 共{len(dispatch_items)}个任务",
             "直接完成下面全部任务，按编号说明结果:",
         ]
         for index, item in enumerate(dispatch_items, start=1):
@@ -87,6 +118,8 @@ def api_tasks_dispatch():
         try:
             current = runtime.get_task(tid) or {}
             metadata = dict(current.get("metadata") or {})
+            if selected_surface:
+                metadata["surface"] = selected_surface
             metadata["merged_dispatch_ids"] = merged_ids
             metadata["merged_dispatch_representative"] = representative["task_id"]
             runtime.update_task(
@@ -419,7 +452,7 @@ def api_tasks_feedback():
 
 @task_bp.route("/api/tasks/edit", methods=["POST"])
 def api_tasks_edit():
-    """编辑任务内容（仅限待处理/已队列的任务）"""
+    """编辑任务内容并退回待派发。"""
     data = request.get_json(force=True)
     task_id = data.get("task_id", "").strip()
     new_message = data.get("message", "").strip()
@@ -433,32 +466,33 @@ def api_tasks_edit():
     if not task_info:
         return jsonify({"success": False, "message": f"任务 {task_id} 不存在"})
 
-    if task_info.get("status") not in ("pending", "draft", "queued"):
-        return jsonify({"success": False, "message": "只能编辑待处理或已队列的任务"})
+    editable_statuses = {
+        "pending", "draft", "queued", "dispatched", "running",
+        "pending_test", "test_failed", "merge_conflict", "failed", "timeout",
+    }
+    if task_info.get("status") not in editable_statuses:
+        return jsonify({"success": False, "message": "当前状态不允许编辑"})
 
-    now = datetime.now().isoformat()
     try:
-        runtime.update_task(
+        updated = runtime.reopen_task_as_draft(
             task_id,
             text=new_message,
             title=new_message[:60] if new_message else task_id,
-            updated_at=now,
         )
+        if not updated:
+            return jsonify({"success": False, "message": f"任务 {task_id} 不存在"})
     except Exception as e:
         logger.error(f"Failed to update task in edit: {e}")
+        return jsonify({"success": False, "message": f"任务更新失败: {e}"}), 500
 
     target_ide = task_info.get("target_ide") or ""
     if target_ide:
         queue_file = BASE_DIR / "state" / f"task_queue_{target_ide}.json"
         queue = _load_queue(queue_file)
-        for item in queue:
-            if item["task_id"] == task_id:
-                item["message"] = new_message
-                item["title"] = new_message[:60]
-                break
+        queue = [item for item in queue if item.get("task_id") != task_id]
         _save_queue(queue_file, queue)
 
-    return jsonify({"success": True, "message": "任务已更新"})
+    return jsonify({"success": True, "message": "任务已更新并退回待派发"})
 
 
 @task_bp.route("/api/tasks/test", methods=["POST"])

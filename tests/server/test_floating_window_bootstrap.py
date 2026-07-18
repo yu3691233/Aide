@@ -160,6 +160,14 @@ class FloatingWindowBootstrapTests(unittest.TestCase):
         returned_ids = {task["task_id"] for task in data["tasks"]}
         self.assertTrue(set(task_ids).issubset(returned_ids))
 
+    @patch("routes.floating_window_routes._browser_window", return_value=None)
+    def test_web_refresh_reports_missing_browser_cleanly(self, _browser):
+        response = self.app.test_client().post("/api/floating-window/web-refresh")
+
+        self.assertEqual(404, response.status_code)
+        self.assertFalse(response.get_json()["ok"])
+        self.assertIn("浏览器", response.get_json()["message"])
+
     @patch("routes.floating_window_routes._foreground_ide_key", return_value="trae")
     def test_selected_target_prefers_foreground_supported_ide(self, _foreground):
         ides = [

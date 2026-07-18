@@ -82,6 +82,72 @@ class TaskCreateDispatchFallbackTests(unittest.TestCase):
         self.assertEqual("primary_ide", task["source"])
         self.assertEqual("inspiration", task["metadata"]["content_kind"])
 
+    def test_multiplatform_surface_is_persisted_in_task_metadata(self):
+        with patch("shared_runtime.runtime", self.runtime):
+            response = self.client.post(
+                "/api/tasks/create",
+                json={
+                    "text": "fix desktop float",
+                    "target_ide": "auto",
+                    "auto_dispatch": False,
+                    "surface": "windows",
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("windows", self.runtime.tasks[0]["metadata"]["surface"])
+        self.assertEqual("windows", response.get_json()["surface"])
+
+    def test_floating_window_source_is_persisted(self):
+        with patch("shared_runtime.runtime", self.runtime):
+            response = self.client.post(
+                "/api/tasks/create",
+                json={
+                    "text": "created from desktop cockpit",
+                    "target_ide": "auto",
+                    "auto_dispatch": False,
+                    "source": "floating_window",
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("floating_window", self.runtime.tasks[0]["source"])
+        self.assertEqual(
+            "floating_window",
+            self.runtime.tasks[0]["metadata"]["created_from"],
+        )
+
+    def test_unknown_task_source_falls_back_to_app(self):
+        with patch("shared_runtime.runtime", self.runtime):
+            response = self.client.post(
+                "/api/tasks/create",
+                json={
+                    "text": "unknown client",
+                    "target_ide": "auto",
+                    "auto_dispatch": False,
+                    "source": "spoofed-client",
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("app", self.runtime.tasks[0]["source"])
+
+    def test_non_dispatch_create_stays_unassigned_for_pending_list(self):
+        with patch("shared_runtime.runtime", self.runtime):
+            response = self.client.post(
+                "/api/tasks/create",
+                json={
+                    "text": "create without dispatch",
+                    "target_ide": "codex",
+                    "auto_dispatch": False,
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        task = self.runtime.tasks[0]
+        self.assertIsNone(task["target_ide"])
+        self.assertEqual("codex", task["metadata"]["preferred_target_ide"])
+
 
 if __name__ == "__main__":
     unittest.main()

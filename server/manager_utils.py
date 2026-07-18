@@ -138,15 +138,6 @@ def kill_existing_processes(exclude_pid=None):
             break
         time.sleep(0.2)
 
-    for proc in psutil.process_iter(attrs=["pid", "name", "cmdline"]):
-        try:
-            name = (proc.info.get("name") or "").lower()
-            cmd_str = " ".join(proc.info.get("cmdline") or []).lower()
-            if name in ("frpc.exe", "frpc") and _is_aidelink_process(proc, cmd_str, curr_dir):
-                subprocess.run(["taskkill", "/F", "/PID", str(proc.info["pid"])], capture_output=True, creationflags=creationflags)
-        except Exception:
-            pass
-
     for conn in psutil.net_connections(kind="tcp"):
         if conn.laddr.port in (FLASK_SERVICE_PORT, 5001) and conn.pid and conn.pid != my_pid:
             try:

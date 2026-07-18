@@ -551,7 +551,7 @@ fun TaskCard(
         "running", "dispatched" -> "运行中"
         "pending_test" -> "待测试"
         "queued" -> "排队中"
-        "draft" -> "草稿"
+        "draft" -> "待派发"
         "pending_dispatch" -> "待派发"
         "pending_upload" -> "待同步"
         "offline" -> "离线"
@@ -564,6 +564,7 @@ fun TaskCard(
         "user" -> "用户"
         "web" -> "Web"
         "app" -> "APP"
+        "floating_window" -> "浮窗"
         else -> task.source ?: ""
     }
     val originLabel = task.task_origin_label ?: if (task.task_origin == "agent" || task.source == "primary_ide") "Agent任务" else "用户任务"

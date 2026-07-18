@@ -3208,12 +3208,12 @@ class AideLinkChatViewModel @Inject constructor(
                     return@launch
                 }
 
-                saveOfflineTask(text = text, title = title)
+                saveOfflineTask(text = text, title = title, isInspiration = false)
 
             } catch (e: Exception) {
 
                 // 本地保存本身失败时才向用户报告创建失败；网络异常由离线缓存兜底。
-                _state.value = _state.value.copy(sending = false, errorMessage = e.message ?: "随记保存失败")
+                _state.value = _state.value.copy(sending = false, errorMessage = e.message ?: "任务保存失败")
 
             }
 
@@ -3271,7 +3271,7 @@ class AideLinkChatViewModel @Inject constructor(
         _state.value = _state.value.copy(input = "", sending = true)
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                saveOfflineTask(text = text, title = null)
+                saveOfflineTask(text = text, title = null, isInspiration = true)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     sending = false,
@@ -3281,8 +3281,11 @@ class AideLinkChatViewModel @Inject constructor(
         }
     }
 
-    private suspend fun saveOfflineTask(text: String, title: String?) {
-        // 灵感属于当前项目，不绑定 IDE；派发时再由用户选择目标。
+    private suspend fun saveOfflineTask(
+        text: String,
+        title: String?,
+        isInspiration: Boolean,
+    ) {
         val status = "draft"
         cc.aidelink.app.data.repository.OfflineTaskCache.save(
             appContext,
@@ -3290,11 +3293,12 @@ class AideLinkChatViewModel @Inject constructor(
             text,
             _state.value.currentProjectPath,
             status,
+            taskType = if (isInspiration) "inspiration" else "code",
         )
         _state.value = _state.value.copy(
             sending = false,
             errorMessage = null,
-            toastMessage = "已保存为随记，可随时选择 IDE 派发",
+            toastMessage = if (isInspiration) "已加入随记" else "已加入待派发",
         )
         loadOfflineTasks()
     }
@@ -3337,7 +3341,7 @@ class AideLinkChatViewModel @Inject constructor(
                     project = projectPath,
 
                     status = ot.status,
-                    task_type = "inspiration",
+                    task_type = ot.taskType,
 
                     created_at = java.time.Instant.ofEpochMilli(ot.createdAt).toString(),
 

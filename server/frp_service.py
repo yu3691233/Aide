@@ -2,7 +2,6 @@ import os
 import json
 import shutil
 import subprocess
-import atexit
 from paths import BRIDGE_DIR, CONFIG_FILE
 from json_utils import safe_read_json
 
@@ -10,11 +9,35 @@ _frp_proc = None
 _frp_log_file = None
 
 
+def _find_running_frp_process():
+    try:
+        import psutil
+
+        bridge_dir = os.path.normcase(os.path.abspath(str(BRIDGE_DIR)))
+        for proc in psutil.process_iter(attrs=["pid", "name", "cmdline"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                if name not in {"frpc.exe", "frpc"}:
+                    continue
+                cmdline = " ".join(proc.info.get("cmdline") or [])
+                normalized_cmdline = os.path.normcase(cmdline)
+                if bridge_dir in normalized_cmdline:
+                    return proc
+                cwd = os.path.normcase(os.path.abspath(proc.cwd()))
+                if cwd == bridge_dir:
+                    return proc
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def is_frp_running():
     global _frp_proc
-    if _frp_proc is None:
-        return False
-    return _frp_proc.poll() is None
+    if _frp_proc is not None and _frp_proc.poll() is None:
+        return True
+    return _find_running_frp_process() is not None
 
 
 def get_frp_status():
@@ -30,7 +53,11 @@ def get_frp_status():
         pass
     return {
         "running": running,
-        "pid": _frp_proc.pid if running and _frp_proc else None,
+        "pid": (
+            _frp_proc.pid
+            if running and _frp_proc and _frp_proc.poll() is None
+            else getattr(_find_running_frp_process(), "pid", None)
+        ),
         "public_url": public_url if running else None,
     }
 
@@ -112,7 +139,6 @@ def start_frp_client(force=False):
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
 
-        atexit.register(stop_frp_client)
         print(f"[FRP] frpc process started with PID {_frp_proc.pid}", flush=True)
         return True
 
@@ -123,15 +149,17 @@ def start_frp_client(force=False):
 
 def stop_frp_client():
     global _frp_proc, _frp_log_file
-    if _frp_proc is None:
+    external_proc = None if _frp_proc is not None else _find_running_frp_process()
+    if _frp_proc is None and external_proc is None:
         return
     try:
         print("[FRP] Stopping frpc client...", flush=True)
-        _frp_proc.terminate()
-        _frp_proc.wait(timeout=3)
+        proc = _frp_proc or external_proc
+        proc.terminate()
+        proc.wait(timeout=3)
     except Exception:
         try:
-            _frp_proc.kill()
+            (_frp_proc or external_proc).kill()
         except Exception:
             pass
     _frp_proc = None
