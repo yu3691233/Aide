@@ -55,7 +55,7 @@ _ALLOWED_TRANSITIONS = {
     "running":       {"pending_test", "failed", "timeout", "cancelled", "dispatched"},
     "pending_test":  {"merging", "failed", "test_failed", "merge_conflict", "timeout", "cancelled"},
     "merging":       {"done", "pending_test", "failed", "test_failed", "merge_conflict", "timeout", "cancelled"},
-    "test_failed":   {"failed", "pending_test", "merging", "timeout", "cancelled"},
+    "test_failed":   {"running", "queued", "failed", "pending_test", "merging", "timeout", "cancelled"},
     "merge_conflict":{"failed", "pending_test", "merging", "timeout", "cancelled"},
     "done":          {"failed", "cancelled"},
     "failed":        {"running", "queued", "draft", "cancelled"},

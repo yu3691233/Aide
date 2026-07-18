@@ -67,6 +67,7 @@ from routes.task_routes_scanner import (
 )
 
 from routes.task_routes_prompt import build_prompt_candidates, read_prompt_history
+from task_contracts import task_allowed_actions
 
 
 
@@ -92,6 +93,27 @@ def _import_manager_utils():
     from manager_utils import safe_load_tasks, LOG_FILE
 
     return safe_load_tasks, LOG_FILE
+
+
+def map_task_for_client(t):
+    """将 state/tasks.json 格式映射为前端期望的字段名。"""
+    t = dict(t)
+    t["message"] = t.pop("text", t.get("message", ""))
+    t["text"] = t["message"]
+    if "time" not in t and "created_at" in t:
+        t["time"] = t["created_at"]
+    if not t.get("task_type"):
+        t["task_type"] = _task_type_for_list(t)
+    t["version"] = t.get("app_version") or t.get("version") or ""
+    metadata = t.get("metadata") or {}
+    if "feedbacks" not in t and "feedbacks" in metadata:
+        t["feedbacks"] = metadata["feedbacks"]
+    t["device_label"] = metadata.get("device_label", "")
+    delegated = t.get("source") == "primary_ide" or metadata.get("delegated_by") == "primary_ide"
+    t["task_origin"] = "agent" if delegated else "user"
+    t["task_origin_label"] = "Agent任务" if delegated else "用户任务"
+    t["allowed_actions"] = task_allowed_actions(t)
+    return t
 
 
 
@@ -610,54 +632,7 @@ def api_tasks():
 
     # 字段映射：兼容前端期望的字段名
 
-    def _map_task(t):
-
-        """将 state/tasks.json 格式映射为前端期望的字段名"""
-
-        t = dict(t)  # 不修改原数据
-
-        # 前端期望 message，后端用 text
-
-        t["message"] = t.pop("text", t.get("message", ""))
-
-        t["text"] = t["message"]  # APP 端 AideTask 识别 text 字段
-
-        # 前端期望 time，后端用 created_at
-
-        if "time" not in t and "created_at" in t:
-
-            t["time"] = t["created_at"]
-
-        # 前端期望 task_type，后端没有，尝试从 title 推断或默认 chat
-
-        if not t.get("task_type"):
-
-            t["task_type"] = _task_type_for_list(t)
-
-        # 前端期望 version
-
-        t["version"] = t.get("app_version") or t.get("version") or ""
-
-        # 提取 feedbacks 到顶层（从 metadata.feedbacks）
-
-        metadata = t.get("metadata") or {}
-
-        if "feedbacks" not in t and "feedbacks" in metadata:
-
-            t["feedbacks"] = metadata["feedbacks"]
-
-        # 提取设备别名
-
-        t["device_label"] = metadata.get("device_label", "")
-        delegated = t.get("source") == "primary_ide" or metadata.get("delegated_by") == "primary_ide"
-        t["task_origin"] = "agent" if delegated else "user"
-        t["task_origin_label"] = "Agent任务" if delegated else "用户任务"
-
-        return t
-
-
-
-    tasks_list = [_map_task(t) for t in tasks_list]
+    tasks_list = [map_task_for_client(t) for t in tasks_list]
     tasks_list = [t for t in tasks_list if (t.get("task_type") or "").lower() != "chat"]
 
     tasks_list.sort(key=lambda x: x.get("created_at", x.get("time", "")), reverse=True)

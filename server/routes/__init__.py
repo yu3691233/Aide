@@ -28,6 +28,7 @@ def register_all_routes(app):
     from .oc_web_routes import oc_web_bp
     from .devspace_mcp_routes import devspace_bp
     from .prompt_routes import prompt_bp
+    from .floating_window_routes import floating_window_bp
     from . import task_routes_flow  # noqa: F401
     from . import task_routes_management  # noqa: F401
     from . import task_routes_workflow  # noqa: F401
@@ -50,3 +51,4 @@ def register_all_routes(app):
     app.register_blueprint(oc_web_bp)
     app.register_blueprint(devspace_bp)
     app.register_blueprint(prompt_bp)
+    app.register_blueprint(floating_window_bp)

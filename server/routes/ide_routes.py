@@ -245,57 +245,51 @@ def api_launch_ide_status():
 def get_active_ide_status():
     """获取所有 IDE 当前的活动状态（是否启动、是否正忙等）"""
     import ide_scanner
+    from dispatch_utils import get_ide_running_statuses
     from shared_runtime import runtime
     
     all_ides = ide_scanner.get_all_ides()
+    running_statuses = get_ide_running_statuses(all_ides)
     result = []
     
     for ide_info in all_ides:
         ide_key = ide_info["key"]
         ide_name = ide_info.get("name", ide_key)
-        
-        # 检查是否在运行
-        running = False
-        try:
-            # 兼容 python_chat_bridge 的 _is_ide_running 实现
-            if ide_key == "oc" and _is_port_in_use_local(4096):
-                running = True
-            else:
-                exe_filename = os.path.basename(ide_info.get("path", "")).lower() if ide_info.get("path") else ""
-                for proc in psutil.process_iter(['name', 'exe']):
-                    try:
-                        proc_info = proc.info
-                        pname = (proc_info.get('name') or '').lower()
-                        pexe = (proc_info.get('exe') or '').lower()
-                        if len(ide_key) <= 2:
-                            if (ide_name.lower() in pname or exe_filename and exe_filename in pexe):
-                                running = True
-                                break
-                        else:
-                            if (ide_key in pname or ide_name.lower() in pname or exe_filename and exe_filename in pexe):
-                                running = True
-                                break
-                    except Exception:
-                        continue
-        except Exception:
-            pass
+        running = bool(running_statuses.get(ide_key, False))
             
         busy_status = "idle"
         current_task_id = None
+        lease_expires_at = None
+        error = None
         try:
             current = runtime.get_ide_status(ide_key)
             if current:
                 busy_status = current.get("status", "idle")
                 current_task_id = current.get("current_task_id")
+                lease_expires_at = current.get("lease_expires_at")
+                error = current.get("error")
         except Exception:
             pass
+
+        busy = busy_status == "busy"
+        blocking_reasons = []
+        if not running:
+            blocking_reasons.append("ide_not_running")
+        if busy:
+            blocking_reasons.append("ide_busy")
             
         result.append({
             "key": ide_key,
             "name": ide_name,
             "running": running,
             "status": busy_status,
-            "current_task_id": current_task_id
+            "busy": busy,
+            "current_task_id": current_task_id,
+            "dispatchable": running and not busy,
+            "blocking_reasons": blocking_reasons,
+            "block_reason": blocking_reasons[0] if blocking_reasons else None,
+            "lease_expires_at": lease_expires_at,
+            "error": error,
         })
     
     return jsonify({"ides": result})

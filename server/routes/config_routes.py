@@ -11,6 +11,7 @@ from config import (
     SETTINGS_SCHEMA,
 )
 from android_project import inspect_android_project
+from project_capabilities import enrich_project, inspect_project_capabilities
 
 config_bp = Blueprint('config', __name__)
 
@@ -280,9 +281,7 @@ def get_projects():
     settings = _load_settings()
     projects = []
     for project in settings.get("projects", []):
-        enriched = dict(project)
-        enriched["android"] = inspect_android_project(project.get("path", ""))
-        projects.append(enriched)
+        projects.append(enrich_project(project))
     return jsonify({
         "projects": projects,
         "current_project": settings.get("current_project", ""),
@@ -365,7 +364,7 @@ def select_project():
         "ok": True,
         "current_project": path,
         "name": os.path.basename(path),
-        "android": inspect_android_project(path),
+        **inspect_project_capabilities(path),
     })
 
 

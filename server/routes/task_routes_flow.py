@@ -312,7 +312,7 @@ def api_tasks_feedback():
             f"请在已有实现基础上修改，仅处理最新反馈中提到的内容。"
         )
 
-    try:
+    def _save_feedback_metadata(extra_fields=None):
         tasks = runtime.read_tasks()
         for t in tasks:
             if t.get("task_id") == task_id:
@@ -321,8 +321,13 @@ def api_tasks_feedback():
                 t["metadata"]["feedbacks"] = feedbacks
                 t["metadata"]["original_message"] = orig_message
                 t["metadata"]["response_preview"] = f"第 {fb_count} 次补充反馈"
+                if extra_fields:
+                    t.update(extra_fields)
                 break
         runtime.write_tasks(tasks)
+
+    try:
+        _save_feedback_metadata()
     except Exception as e:
         logger.error(f"Failed to save feedbacks metadata: {e}")
 
@@ -358,12 +363,35 @@ def api_tasks_feedback():
     dispatch_msg = ""
     from task_runtime import SUPPORTED_IDES
 
+    if status == "pending_test":
+        try:
+            runtime.update_task(
+                task_id,
+                status="test_failed",
+                error=f"用户反馈待修复: {feedback[:200]}",
+                updated_at=now,
+            )
+        except Exception as e:
+            logger.error(f"Failed to move pending_test task to test_failed before feedback dispatch: {e}")
+            return jsonify({
+                "success": False,
+                "message": f"任务状态转换失败，未派发反馈: {e}",
+            }), 409
+
     if target_ide in SUPPORTED_IDES:
         inject_ok, inject_detail = _inject_to_ide(target_ide, combined, task_id)
         if inject_ok:
-            runtime.mark_task_running(task_id, target_ide)
-            runtime.set_ide_status(target_ide, "busy", current_task_id=task_id)
-            dispatch_msg = f"，已派发到 {target_ide.upper()}"
+            try:
+                runtime.mark_task_running(task_id, target_ide)
+                runtime.set_ide_status(target_ide, "busy", current_task_id=task_id)
+                dispatch_msg = f"，已派发到 {target_ide.upper()}"
+            except Exception as e:
+                logger.error(f"Feedback injected but task state update failed for {task_id}: {e}")
+                runtime.mark_task_failed(task_id, f"反馈已注入但状态转换失败: {e}")
+                return jsonify({
+                    "success": False,
+                    "message": f"反馈已注入，但任务状态转换失败: {e}",
+                }), 500
         else:
             dispatch_msg = f"，派发失败: {inject_detail}"
     else:

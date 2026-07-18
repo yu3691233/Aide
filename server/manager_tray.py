@@ -195,6 +195,25 @@ def show_main_window():
     webbrowser.open("http://127.0.0.1:5000")
 
 
+def show_floating_window():
+    try:
+        from floating_window_app import open_floating_window
+        open_floating_window()
+    except Exception:
+        logger.exception("打开桌面浮窗失败")
+
+
+def toggle_floating_window():
+    """Close the live float or start a fresh floating-window process."""
+    try:
+        from floating_window_app import close_floating_window
+        if close_floating_window():
+            return
+        show_floating_window()
+    except Exception:
+        logger.exception("切换桌面浮窗失败")
+
+
 def _get_target_projects():
     """Read the same target-project list shown by the Web manager."""
     try:
@@ -650,7 +669,8 @@ def build_tray_menu():
     return Menu(
         MenuItem(f"AideLink  ·  {status_text}", None, enabled=False),
         Menu.SEPARATOR,
-        MenuItem("打开管理面板", lambda: show_main_window(), default=True),
+        MenuItem("关闭 / 开启浮窗", lambda _icon, _item: toggle_floating_window(), default=True),
+        MenuItem("打开管理面板", lambda: show_main_window()),
         MenuItem("开机启动 AideLink", _tray_toggle_auto_start, checked=_is_auto_start_enabled),
         Menu.SEPARATOR,
         MenuItem("设备连接", Menu(*device_menu_items)),
@@ -758,8 +778,8 @@ def run_manager():
         menu=build_tray_menu(),
     )
 
-    # 双击或点击默认打开浏览器面板
-    tray_icon.on_click = lambda icon: show_main_window()
+    # pystray 的 Windows 后端在 WM_LBUTTONUP 时执行 default 菜单项，
+    # 因此单击托盘会直接开启浮窗，右键仍显示完整管理菜单。
 
     # 定期刷新托盘菜单（更新设备列表）
     def _auto_refresh():

@@ -9,6 +9,7 @@ SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
 from dispatch_utils import get_ide_running_statuses
+from routes.ide_routes import get_active_ide_status
 
 
 class _Process:
@@ -111,6 +112,31 @@ class IdeRunningStatusTests(unittest.TestCase):
 
         self.assertFalse(hidden["trae_solo_cn"])
         self.assertTrue(visible["trae_solo_cn"])
+
+    def test_active_status_combines_presence_and_runtime_busy(self):
+        from flask import Flask
+
+        app = Flask(__name__)
+        runtime = types.SimpleNamespace(
+            get_ide_status=lambda key: {
+                "status": "busy",
+                "current_task_id": "task-1",
+                "lease_expires_at": "2026-07-18T12:00:00",
+                "error": None,
+            }
+        )
+        with app.test_request_context("/api/ide/active_status"), \
+             patch("ide_scanner.get_all_ides", return_value=[self.ides[1]]), \
+             patch("dispatch_utils.get_ide_running_statuses", return_value={"codex": True}), \
+             patch("shared_runtime.runtime", runtime):
+            response = get_active_ide_status()
+
+        data = response.get_json()
+        self.assertEqual("codex", data["ides"][0]["key"])
+        self.assertTrue(data["ides"][0]["running"])
+        self.assertTrue(data["ides"][0]["busy"])
+        self.assertFalse(data["ides"][0]["dispatchable"])
+        self.assertEqual(["ide_busy"], data["ides"][0]["blocking_reasons"])
 
 
 if __name__ == "__main__":
