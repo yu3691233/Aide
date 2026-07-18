@@ -20,6 +20,10 @@ class TaskListClassificationTests(unittest.TestCase):
         task = {"title": "日志异常", "metadata": {"bug_signature": "abc"}}
         self.assertEqual("bug_fix", _task_type_for_list(task))
 
+    def test_inspiration_metadata_is_exposed_to_app_as_note_type(self):
+        task = {"title": "随记", "metadata": {"content_kind": "inspiration"}}
+        self.assertEqual("inspiration", _task_type_for_list(task))
+
 
 if __name__ == "__main__":
     unittest.main()

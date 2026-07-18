@@ -56,6 +56,8 @@ def _is_web_root(path):
 
     if "package.json" in names and names.intersection(_WEB_DIR_MARKERS):
         marker_hits.append("package.json+web_dirs")
+    if {"templates", "static"}.issubset(names):
+        marker_hits.append("templates+static")
 
     return {
         "is_web": bool(marker_hits),
@@ -95,6 +97,26 @@ def inspect_web_project(path):
     }
 
 
+def inspect_windows_project(path):
+    root = Path(path)
+    markers = []
+    candidates = (root, root / "server")
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        try:
+            names = {item.name.lower() for item in candidate.iterdir()}
+        except OSError:
+            continue
+        for marker in ("floating_window_app.py", "manager_tray.py"):
+            if marker in names:
+                markers.append(str((candidate / marker).relative_to(root)).replace(os.sep, "/"))
+        for item in candidate.iterdir():
+            if item.suffix.lower() in {".sln", ".csproj", ".vcxproj"}:
+                markers.append(str(item.relative_to(root)).replace(os.sep, "/"))
+    return {"is_windows": bool(markers), "markers": list(dict.fromkeys(markers))}
+
+
 def inspect_project_capabilities(path):
     path = str(path or "").strip()
     cache_key = os.path.normcase(os.path.abspath(path)) if path else ""
@@ -105,11 +127,14 @@ def inspect_project_capabilities(path):
 
     android = inspect_android_project(path)
     web = inspect_web_project(path)
+    windows = inspect_windows_project(path)
     capabilities = []
     if web.get("is_web"):
         capabilities.append("web")
     if android.get("is_android"):
         capabilities.append("android")
+    if windows.get("is_windows"):
+        capabilities.append("windows")
     if not capabilities:
         capabilities.append("general")
 
@@ -124,6 +149,7 @@ def inspect_project_capabilities(path):
         "preferred_surface": preferred_surface,
         "android": android,
         "web": web,
+        "windows": windows,
     }
     _CACHE[cache_key] = {"signature": signature, "value": value}
     return dict(value)

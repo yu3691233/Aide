@@ -27,6 +27,7 @@ data class DesktopIde(
     val running: Boolean = false,
     val is_primary: Boolean = false,
     val icon: String = "",
+    val icon_url: String = "",
     val color: String = "#90A4AE",
     val profile_version: String = "",
     val profile_source: String = "",

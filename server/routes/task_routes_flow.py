@@ -159,14 +159,17 @@ def api_tasks_complete():
     if manual:
         try:
             runtime.mark_task_done(task_id, summary=data.get("summary", "已完成"), is_manual=True)
-            runtime.confirm_task_done(task_id, is_manual=True)
-            for merged_tid in merged_ids:
-                if merged_tid == task_id:
-                    continue
-                runtime.mark_task_done(merged_tid, summary=data.get("summary", "已完成"), is_manual=True)
-                runtime.confirm_task_done(merged_tid, is_manual=True)
         except Exception:
             pass
+        runtime.confirm_task_done(task_id, is_manual=True)
+        for merged_tid in merged_ids:
+            if merged_tid == task_id:
+                continue
+            try:
+                runtime.mark_task_done(merged_tid, summary=data.get("summary", "已完成"), is_manual=True)
+            except Exception:
+                pass
+            runtime.confirm_task_done(merged_tid, is_manual=True)
         return jsonify({"success": True, "message": f"任务 {task_id} 已完成"})
 
     try:

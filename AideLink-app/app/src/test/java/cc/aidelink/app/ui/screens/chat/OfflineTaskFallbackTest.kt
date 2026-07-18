@@ -32,20 +32,21 @@ class OfflineTaskFallbackTest {
     }
 
     @Test
-    fun separatesOfflineTasksFromActiveTab() {
-        assertTrue(taskStatusMatchesTab("pending_upload", 3))
-        assertTrue(taskStatusMatchesTab("draft", 3))
-        assertFalse(taskStatusMatchesTab("pending_upload", 0))
-        assertFalse(taskStatusMatchesTab("draft", 0))
-        assertTrue(taskStatusMatchesTab("queued", 0))
+    fun separatesPendingRunningCompletedAndNotesTabs() {
+        assertTrue(taskStatusMatchesTab("draft", 0))
+        assertTrue(taskStatusMatchesTab("pending_dispatch", 0))
+        assertTrue(taskStatusMatchesTab("queued", 1))
+        assertTrue(taskStatusMatchesTab("pending_test", 1))
         assertFalse(taskStatusMatchesTab("failed", 2))
         assertTrue(taskStatusMatchesTab("done", 2))
+        assertTrue(taskStatusMatchesTab("draft", 3, "inspiration"))
+        assertFalse(taskStatusMatchesTab("draft", 0, "inspiration"))
     }
 
     @Test
     fun successfulDispatchAlwaysMovesToActiveTab() {
-        assertEquals(0, taskTabAfterDispatch(currentTab = 3, success = true))
-        assertEquals(0, taskTabAfterDispatch(currentTab = 2, success = true))
+        assertEquals(1, taskTabAfterDispatch(currentTab = 3, success = true))
+        assertEquals(1, taskTabAfterDispatch(currentTab = 2, success = true))
         assertEquals(3, taskTabAfterDispatch(currentTab = 3, success = false))
     }
 
@@ -54,7 +55,7 @@ class OfflineTaskFallbackTest {
         val tasks = listOf(
             AideTask(task_id = "agy", text = "a", target_ide = "antigravity_ide", status = "queued"),
             AideTask(task_id = "trae", text = "b", target_ide = "trae", status = "queued"),
-            AideTask(task_id = "idea", text = "c", target_ide = null, status = "draft"),
+            AideTask(task_id = "idea", text = "c", target_ide = null, status = "draft", task_type = "inspiration"),
         )
 
         assertEquals(listOf("agy", "idea"), filterTasksForIde(tasks, "antigravity_ide", true).map { it.task_id })

@@ -389,7 +389,10 @@ function renderIdesTable(ides) {
       <td style="font-weight:600;">${escapeHtml(ide.exe_key || ide.key)}</td>
 
       <td>
-        <div style="font-weight:500;">${escapeHtml(ide.name || ide.key)}</div>
+        <div style="display:flex;align-items:center;gap:9px;font-weight:500;">
+          ${ide.icon_url ? `<img src="${escapeHtml(ide.icon_url)}" alt="" style="width:26px;height:26px;object-fit:contain;border-radius:6px;" onerror="this.style.display='none'" />` : ''}
+          <span>${escapeHtml(ide.name || ide.key)}</span>
+        </div>
       </td>
 
       <td style="font-family:monospace;font-size:12px;word-break:break-all;">${ide.path || '—'}</td>

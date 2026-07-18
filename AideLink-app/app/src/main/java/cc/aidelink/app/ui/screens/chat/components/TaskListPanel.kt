@@ -64,13 +64,15 @@ internal fun projectNameFromPath(path: String?): String = path
     ?.substringAfterLast('\\')
     .orEmpty()
 
-internal fun taskStatusMatchesTab(status: String, tab: Int): Boolean {
+internal fun taskStatusMatchesTab(status: String, tab: Int, taskType: String? = null): Boolean {
     val normalized = status.lowercase()
+    val isNote = taskType.equals("inspiration", ignoreCase = true)
     return when (tab) {
-        0 -> normalized !in setOf("done", "failed", "pending_test") && normalized !in offlineTaskStatuses
-        1 -> normalized == "pending_test"
-        2 -> normalized == "done"
-        3 -> normalized in offlineTaskStatuses
+        0 -> !isNote && normalized in setOf("draft", "pending", "pending_dispatch", "pending_upload")
+        1 -> !isNote && normalized !in setOf("done", "completed", "failed") &&
+            normalized !in setOf("draft", "pending", "pending_dispatch", "pending_upload")
+        2 -> !isNote && normalized in setOf("done", "completed")
+        3 -> isNote
         else -> true
     }
 }
@@ -82,7 +84,7 @@ internal fun filterTasksForIde(
 ): List<AideTask> {
     if (!currentOnly || currentTarget.isBlank()) return tasks
     return tasks.filter {
-        taskStatusMatchesTab(it.status, 3) ||
+        taskStatusMatchesTab(it.status, 3, it.task_type) ||
             it.target_ide?.equals(currentTarget, ignoreCase = true) == true
     }
 }
@@ -116,7 +118,7 @@ fun TaskListPanel(
     bridgeUrl: String = "",
     modifier: Modifier = Modifier
 ) {
-    // Tab 过滤状态：0=进行中 1=待测试 2=已完成 3=灵感
+    // Tab 过滤状态：0=待派发 1=运行中 2=已完成 3=随记
     // 当前IDE / 全部切换
     var filterCurrentIdeOnly by remember { mutableStateOf(true) }
 
@@ -126,13 +128,13 @@ fun TaskListPanel(
     }
 
     val activeTasksCount = remember(filteredTasksByIde) {
-        filteredTasksByIde.count { taskStatusMatchesTab(it.status, 0) }
+        filteredTasksByIde.count { taskStatusMatchesTab(it.status, 1, it.task_type) }
     }
-    val pendingTestTasksCount = remember(filteredTasksByIde) {
-        filteredTasksByIde.count { it.status.lowercase() == "pending_test" }
+    val pendingDispatchTasksCount = remember(filteredTasksByIde) {
+        filteredTasksByIde.count { taskStatusMatchesTab(it.status, 0, it.task_type) }
     }
-    val offlineTasksCount = remember(filteredTasksByIde) {
-        filteredTasksByIde.count { taskStatusMatchesTab(it.status, 3) }
+    val notesCount = remember(filteredTasksByIde) {
+        filteredTasksByIde.count { taskStatusMatchesTab(it.status, 3, it.task_type) }
     }
 
     // 排序：最新的在前
@@ -142,7 +144,7 @@ fun TaskListPanel(
 
     // 按 Tab 过滤
     val displayedTasks = remember(sortedTasks, selectedTab) {
-        sortedTasks.filter { taskStatusMatchesTab(it.status, selectedTab) }
+        sortedTasks.filter { taskStatusMatchesTab(it.status, selectedTab, it.task_type) }
     }
     val displayedTaskIds = remember(displayedTasks) { displayedTasks.map { it.task_id }.toSet() }
     val allDisplayedSelected = displayedTaskIds.isNotEmpty() && displayedTaskIds.all { it in selectedTaskIds }
@@ -163,10 +165,10 @@ fun TaskListPanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val tabs = listOf(
-                    "进行中${if (activeTasksCount > 0) " $activeTasksCount" else ""}" to 0,
-                    "待测试${if (pendingTestTasksCount > 0) " $pendingTestTasksCount" else ""}" to 1,
+                    "待派发${if (pendingDispatchTasksCount > 0) " $pendingDispatchTasksCount" else ""}" to 0,
+                    "运行中${if (activeTasksCount > 0) " $activeTasksCount" else ""}" to 1,
                     "已完成" to 2,
-                    "灵感${if (offlineTasksCount > 0) " $offlineTasksCount" else ""}" to 3,
+                    "随记${if (notesCount > 0) " $notesCount" else ""}" to 3,
                 )
                 tabs.forEach { (label, index) ->
                     val isSelected = selectedTab == index

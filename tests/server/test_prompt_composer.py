@@ -6,7 +6,7 @@ SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
-from prompt_composer import compose_prompt, infer_task_type
+from prompt_composer import _ai_messages, compose_prompt, infer_task_type
 
 
 class PromptComposerTests(unittest.TestCase):
@@ -79,6 +79,29 @@ class PromptComposerTests(unittest.TestCase):
 
     def test_bug_signal_wins_over_investigation_wording(self):
         self.assertEqual(infer_task_type("检查输入框为什么会变红"), "bug_fix")
+
+    def test_fallback_is_compact_and_avoids_implementation_tutorial(self):
+        result = compose_prompt({
+            "component": {"platform": "Desktop", "name": "浮窗输入框"},
+            "user_text": "第二行时自动向上扩展",
+        })
+
+        self.assertLess(len(result["prompt"]), 200)
+        self.assertIn("目标：", result["prompt"])
+        self.assertIn("定位：", result["prompt"])
+        self.assertNotIn("实现步骤", result["prompt"])
+
+    def test_ai_instruction_prioritizes_scope_over_implementation_steps(self):
+        messages = _ai_messages(
+            {"platform": "Desktop", "name": "浮窗", "page": "", "location": "", "type": "", "technical": {}},
+            "缩小输入框",
+            "feature_change",
+            "simple",
+        )
+        system = messages[0]["content"]
+        self.assertIn("不是教开发IDE如何写代码", system)
+        self.assertIn("禁止输出实现教程", system)
+        self.assertIn("禁止让IDE先扫描整个项目", system)
 
 
 if __name__ == "__main__":

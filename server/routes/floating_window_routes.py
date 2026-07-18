@@ -10,10 +10,25 @@ from config import load_settings, normalize_project_path, project_path_key
 from paths import BRIDGE_DIR as BASE_DIR
 from project_capabilities import enrich_project, inspect_project_capabilities
 from routes.task_routes import map_task_for_client
-from task_contracts import summarize_tasks_for_project
+from task_contracts import is_inspiration, summarize_tasks_for_project, task_matches_project
 
 
 floating_window_bp = Blueprint("floating_window", __name__)
+
+_EXECUTED_TASK_STATUSES = {
+    "queued", "dispatched", "running", "pending_test", "test_failed",
+    "done", "completed", "failed", "timeout",
+}
+
+
+def _executed_task_ids(tasks):
+    return [
+        task.get("task_id")
+        for task in tasks
+        if isinstance(task, dict)
+        and str(task.get("status") or "").strip().lower() in _EXECUTED_TASK_STATUSES
+        and task.get("task_id")
+    ]
 
 
 def _current_project(settings):
@@ -57,6 +72,10 @@ def _ide_statuses():
             "key": key,
             "name": ide_info.get("name", key),
             "path": ide_info.get("path", ""),
+            "icon_url": (
+                f"{request.host_url.rstrip('/')}/api/desktop-ides/{key}/icon"
+                if ide_info.get("path") and key else ""
+            ),
             "running": running,
             "status": runtime_state,
             "busy": busy,
@@ -127,13 +146,37 @@ def api_floating_window_bootstrap():
     from shared_runtime import runtime
 
     strict = request.args.get("strict_project", "1") != "0"
+    all_tasks = runtime.read_tasks()
     summary = summarize_tasks_for_project(
-        runtime.read_tasks(),
+        all_tasks,
         project_path=project_path,
         strict_project=strict,
+        limit=50,
+    )
+    inspirations = [
+        task for task in all_tasks
+        if isinstance(task, dict)
+        and is_inspiration(task)
+        and task_matches_project(task, project_path, strict_project=strict)
+    ]
+    inspirations.sort(
+        key=lambda task: str(task.get("updated_at") or task.get("created_at") or ""),
+        reverse=True,
+    )
+    completed = [
+        task for task in all_tasks
+        if isinstance(task, dict)
+        and not is_inspiration(task)
+        and (task.get("status") or "").lower() in {"done", "completed"}
+        and task_matches_project(task, project_path, strict_project=strict)
+    ]
+    completed.sort(
+        key=lambda task: str(task.get("completed_at") or task.get("updated_at") or ""),
+        reverse=True,
     )
     ides = _ide_statuses()
     selected = _selected_target(settings, ides)
+    from codex_quota import get_current_codex_quota
 
     return jsonify({
         "ok": True,
@@ -143,7 +186,16 @@ def api_floating_window_bootstrap():
         "capabilities": project.get("capabilities", ["general"]) if project else ["general"],
         "ides": ides,
         "selected_target": selected,
+        # This endpoint is polled only by the live floating window. The quota
+        # module keeps a five-minute cache and refreshes early after three newly
+        # executed tasks.
+        "codex_quota": get_current_codex_quota(
+            executed_task_ids=_executed_task_ids(all_tasks),
+        ),
         "task_summary": summary["summary"],
-        "tasks": [map_task_for_client(task) for task in summary["tasks"]],
+        "tasks": [
+            map_task_for_client(task)
+            for task in [*summary["tasks"], *completed[:50], *inspirations[:20]]
+        ],
         "warnings": summary["warnings"],
     })

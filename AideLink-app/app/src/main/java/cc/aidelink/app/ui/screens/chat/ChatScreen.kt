@@ -114,7 +114,7 @@ internal fun targetColor(target: String?): Color {
 }
 
 internal fun taskTabAfterDispatch(currentTab: Int, success: Boolean): Int {
-    return if (success) 0 else currentTab
+    return if (success) 1 else currentTab
 }
 
 @Composable

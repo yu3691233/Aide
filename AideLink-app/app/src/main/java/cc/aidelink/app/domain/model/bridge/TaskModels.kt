@@ -14,6 +14,7 @@ data class AideTask(
     val source: String? = null,
     val task_origin: String? = null,
     val task_origin_label: String? = null,
+    val task_type: String? = null,
     val error: String? = null,
     val summary: String? = null,
     val result: String? = null,

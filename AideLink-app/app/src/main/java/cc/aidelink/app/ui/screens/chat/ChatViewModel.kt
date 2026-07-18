@@ -3213,7 +3213,7 @@ class AideLinkChatViewModel @Inject constructor(
             } catch (e: Exception) {
 
                 // 本地保存本身失败时才向用户报告创建失败；网络异常由离线缓存兜底。
-                _state.value = _state.value.copy(sending = false, errorMessage = e.message ?: "灵感保存失败")
+                _state.value = _state.value.copy(sending = false, errorMessage = e.message ?: "随记保存失败")
 
             }
 
@@ -3275,7 +3275,7 @@ class AideLinkChatViewModel @Inject constructor(
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     sending = false,
-                    errorMessage = e.message ?: "灵感保存失败",
+                    errorMessage = e.message ?: "随记保存失败",
                 )
             }
         }
@@ -3294,7 +3294,7 @@ class AideLinkChatViewModel @Inject constructor(
         _state.value = _state.value.copy(
             sending = false,
             errorMessage = null,
-            toastMessage = "已保存为灵感，可随时选择 IDE 派发",
+            toastMessage = "已保存为随记，可随时选择 IDE 派发",
         )
         loadOfflineTasks()
     }
@@ -3337,6 +3337,7 @@ class AideLinkChatViewModel @Inject constructor(
                     project = projectPath,
 
                     status = ot.status,
+                    task_type = "inspiration",
 
                     created_at = java.time.Instant.ofEpochMilli(ot.createdAt).toString(),
 
@@ -3444,7 +3445,7 @@ class AideLinkChatViewModel @Inject constructor(
                 cc.aidelink.app.data.repository.OfflineTaskCache.remove(appContext, taskId)
                 _state.value = _state.value.copy(
                     tasks = _state.value.tasks.filterNot { it.task_id == taskId },
-                    toastMessage = "灵感已删除",
+                    toastMessage = "随记已删除",
                 )
                 return@launch
             }
@@ -3537,7 +3538,7 @@ class AideLinkChatViewModel @Inject constructor(
             } else {
                 loadOfflineTasks()
                 _state.value = _state.value.copy(
-                    toastMessage = "派发未成功，内容仍保存在灵感中",
+                    toastMessage = "派发未成功，内容仍保存在随记中",
                 )
 
             }

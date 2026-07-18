@@ -1,5 +1,6 @@
 import socket
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -20,6 +21,20 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         self.assertEqual([], model["tasks"])
         self.assertEqual("未选择 IDE", model["selected_target"])
 
+    def test_success_after_connection_error_forces_render_even_with_same_signature(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        model = fwa.build_home_model({})
+        app.connection_failed = True
+        app.last_render_signature = __import__("json").dumps(
+            model, ensure_ascii=False, sort_keys=True, default=str
+        )
+        app._render = Mock()
+
+        app._apply_refresh_result(fwa.RefreshResult(True, model))
+
+        app._render.assert_called_once_with(model)
+        self.assertFalse(app.connection_failed)
+
     def test_bootstrap_model_uses_project_ide_summary_and_tasks(self):
         model = fwa.build_home_model({
             "project": {"name": "AideLink", "capabilities": ["web", "android"]},
@@ -29,21 +44,41 @@ class FloatingWindowAppModelTests(unittest.TestCase):
                 {"key": "oc", "name": "OpenCode", "running": False, "dispatchable": False},
             ],
             "selected_target": {"key": "trae", "name": "Trae"},
+            "codex_quota": {"available": True, "remaining_percent": 73},
             "task_summary": {
                 "needs_user": 2,
-                "by_status": {"pending_test": 1, "running": 1, "queued": 1},
+                "by_status": {"draft": 2, "pending_test": 1, "running": 1, "queued": 1, "done": 3},
             },
             "tasks": [
-                {"title": "桌面浮窗服务端适配", "status": "running", "target_ide": "trae"},
+                {"title": "桌面浮窗服务端适配", "status": "running", "target_ide": "trae", "version": "1.0.1"},
             ],
         })
 
         self.assertEqual("AideLink 📱🌐", model["title"])
         self.assertEqual(["web", "android"], model["capabilities"])
         self.assertEqual(["●", "🟡", "○"], [item["dot"] for item in model["ides"]])
-        self.assertEqual({"待处理": 2, "待测试": 1, "进行中": 2}, model["summary"])
+        self.assertEqual({"待派发": 2, "待测试": 1, "进行中": 2, "已完成": 3}, model["summary"])
         self.assertEqual("执行中", model["tasks"][0]["status"])
         self.assertEqual("general", model["tasks"][0]["surface"])
+        self.assertEqual("1.0.1", model["tasks"][0]["version"])
+        self.assertEqual(
+            {"available": True, "remaining_percent": 73},
+            model["codex_quota"],
+        )
+
+    def test_task_groups_match_dispatch_and_completed_semantics(self):
+        self.assertEqual("待派发", fwa._task_group_name({"status": "待派发"}))
+        self.assertEqual("进行中", fwa._task_group_name({"status": "已派发"}))
+        self.assertEqual("进行中", fwa._task_group_name({"status": "排队中"}))
+        self.assertEqual("待测试", fwa._task_group_name({"status": "待测试"}))
+        self.assertEqual("已完成", fwa._task_group_name({"status": "已完成"}))
+
+    def test_latest_running_task_uses_updated_time(self):
+        tasks = [
+            {"task_id": "older", "updated_at": "2026-07-19T10:00:00"},
+            {"task_id": "newer", "updated_at": "2026-07-19T11:00:00"},
+        ]
+        self.assertEqual("newer", fwa._latest_task_id(tasks))
 
     def test_task_surface_groups_android_and_web_tasks(self):
         model = fwa.build_home_model({
@@ -83,9 +118,47 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         ))
 
     def test_visible_task_actions_are_uniform_for_every_status(self):
-        for status in ("待处理", "待测试", "执行中", "超时", "失败", "未派发"):
+        for status in ("待派发", "待测试", "执行中", "超时", "失败", "已完成"):
             with self.subTest(status=status):
                 self.assertEqual(("copy", "view", "more"), fwa.VISIBLE_TASK_ACTIONS)
+
+    def test_initial_window_position_restores_and_clamps_saved_coordinates(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.root = Mock()
+        app._virtual_screen_bounds = Mock(return_value=(0, 0, 1440, 900))
+        app._monitor_work_area_at = Mock(return_value=(0, 0, 1440, 900))
+        app.window_width = fwa.WINDOW_WIDTH
+        app.min_window_height = 500
+        app.max_window_height = 720
+        with tempfile.TemporaryDirectory() as folder:
+            state_file = Path(folder) / "window.json"
+            state_file.write_text('{"x": 2000, "y": 800}', encoding="utf-8")
+            with patch("floating_window_app.WINDOW_STATE_FILE", state_file):
+                position = app._initial_window_position(560)
+
+        self.assertEqual((1070, 340), position)
+
+    def test_monitor_profile_expands_on_large_external_display(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+
+        app._set_monitor_profile((0, 0, 1440, 900))
+        self.assertEqual((370, 500, 720), (
+            app.window_width, app.min_window_height, app.max_window_height,
+        ))
+
+        app._set_monitor_profile((1440, 0, 2560, 1440))
+        self.assertEqual((480, 760, 1040), (
+            app.window_width, app.min_window_height, app.max_window_height,
+        ))
+
+    def test_expanded_task_actions_are_uniform_and_do_not_assign_ide(self):
+        expected = (
+            ("edit", "编辑"),
+            ("smart_prompt", "智能提示词"),
+            ("complete", "已完成"),
+            ("delete", "删除"),
+        )
+        self.assertEqual(expected, fwa.FloatingWindowApp._expanded_actions({}))
 
     def test_copy_uses_full_body_and_removes_reasoning_fragments(self):
         copied = fwa.task_copy_text({
@@ -96,16 +169,121 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         self.assertNotIn("think", copied.lower())
         self.assertNotIn("The user wants", copied)
 
-    def test_select_ide_only_changes_ui_state(self):
+    def test_inspiration_kind_is_preserved_for_notes_tab(self):
+        model = fwa.build_home_model({
+            "tasks": [{
+                "title": "界面想法",
+                "metadata": {"content_kind": "inspiration"},
+            }],
+        })
+
+        self.assertEqual("inspiration", model["tasks"][0]["content_kind"])
+
+    def test_select_tab_rejects_unknown_values(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.active_tab = "tasks"
+        app.current_model = {}
+        app._render = Mock()
+
+        app.select_tab("unknown")
+
+        self.assertEqual("tasks", app.active_tab)
+        app._render.assert_not_called()
+
+    def test_task_card_height_grows_for_full_wrapped_title(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.expanded_task_id = None
+        short_height = app._task_card_height({"title": "短任务", "task_id": "1"})
+        long_height = app._task_card_height({"text": "较长任务正文" * 12, "task_id": "2"})
+
+        self.assertGreater(long_height, short_height)
+
+    def test_clicking_card_toggles_more_action(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.expanded_task_id = None
+        app.current_model = {}
+        app._render = Mock()
+
+        app.toggle_task_more("task-1")
+        self.assertEqual("task-1", app.expanded_task_id)
+        app.toggle_task_more("task-1")
+        self.assertIsNone(app.expanded_task_id)
+
+    def test_group_header_toggles_collapsed_state(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.collapsed_groups = set()
+        app.current_model = {}
+        app._render = Mock()
+
+        app.toggle_group("进行中")
+        self.assertIn("进行中", app.collapsed_groups)
+        app.toggle_group("进行中")
+        self.assertNotIn("进行中", app.collapsed_groups)
+
+    def test_show_more_completed_loads_next_five(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.completed_display_limit = 5
+        app.current_model = {}
+        app._render = Mock()
+
+        app.show_more_completed()
+
+        self.assertEqual(10, app.completed_display_limit)
+        app._render.assert_called_once_with({})
+
+    def test_select_ide_without_input_only_changes_ui_state(self):
         app = object.__new__(fwa.FloatingWindowApp)
         app.selected_ide_key = "codex"
         app.current_model = {}
         app._render = Mock()
+        app._input_text = Mock(return_value="")
+        app._send_input = Mock()
 
         app.select_ide("trae")
 
         self.assertEqual("trae", app.selected_ide_key)
         app._render.assert_called_once_with({})
+        app._send_input.assert_not_called()
+
+    def test_select_ide_with_input_switches_then_sends(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.selected_ide_key = "codex"
+        app.current_model = {}
+        app._render = Mock()
+        app._input_text = Mock(return_value="发送内容")
+        app._send_input = Mock()
+
+        app.select_ide("trae")
+
+        self.assertEqual("trae", app.selected_ide_key)
+        app._send_input.assert_called_once_with()
+
+    def test_return_saves_note_and_ctrl_return_inserts_newline(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.active_tab = "notes"
+        app.save_inspiration = Mock()
+        app._insert_input_newline = Mock(return_value="break")
+
+        plain_event = type("Event", (), {"state": 0})()
+        ctrl_event = type("Event", (), {"state": 0x0004})()
+
+        self.assertEqual("break", app._handle_input_return(plain_event))
+        app.save_inspiration.assert_called_once_with()
+        self.assertEqual("break", app._handle_input_return(ctrl_event))
+        app._insert_input_newline.assert_called_once_with()
+
+    def test_return_creates_task_on_task_tab(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.active_tab = "tasks"
+        app.create_task = Mock()
+        app._insert_input_newline = Mock(return_value="break")
+        plain_event = type("Event", (), {"state": 0})()
+        ctrl_event = type("Event", (), {"state": 0x0004})()
+
+        self.assertEqual("break", app._handle_input_return(plain_event))
+        app.create_task.assert_called_once_with()
+        self.assertEqual("break", app._handle_input_return(ctrl_event))
+        app._insert_input_newline.assert_called_once_with()
 
     def test_send_uses_selected_ide_and_send_route(self):
         app = object.__new__(fwa.FloatingWindowApp)
@@ -130,9 +308,30 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app.create_task()
         self.assertEqual("/api/tasks/create", app._run_api.call_args.args[0])
         self.assertFalse(app._run_api.call_args.kwargs["payload"]["auto_dispatch"])
+        self.assertEqual("auto", app._run_api.call_args.kwargs["payload"]["target_ide"])
 
         app.save_inspiration()
         self.assertEqual("/api/tasks/inspiration", app._run_api.call_args.args[0])
+
+    def test_created_task_is_optimistically_added_without_replacing_previous_pending(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app._input_text = Mock(return_value="第二条待派发")
+        app.current_model = {
+            "capabilities": ["general"],
+            "tasks": [{"task_id": "older", "status": "待派发", "text": "第一条待派发"}],
+        }
+        app._run_api = Mock()
+        app._render = Mock()
+        app._set_input_text = Mock()
+        app._set_status = Mock()
+        app.refresh = Mock()
+
+        app.create_task()
+        callback = app._run_api.call_args.kwargs["on_success"]
+        callback({"task_id": "newer"})
+
+        rendered_tasks = app._render.call_args.args[0]["tasks"]
+        self.assertEqual(["newer", "older"], [task["task_id"] for task in rendered_tasks])
 
     def test_task_confirm_uses_allowed_server_action_route(self):
         app = object.__new__(fwa.FloatingWindowApp)
@@ -141,6 +340,31 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app.execute_task_action("confirm_done", {"task_id": "task-1"})
 
         self.assertEqual("/api/tasks/task-1/confirm", app._run_api.call_args.args[0])
+
+    def test_edit_task_moves_content_into_shared_input(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app._input_text = Mock(return_value="原输入")
+        app._set_input_text = Mock()
+        app.input_box = Mock()
+        app._set_status = Mock()
+
+        app.execute_task_action("edit", {"task_id": "task-1", "text": "任务正文"})
+
+        self.assertEqual("task-1", app.editing_task_id)
+        self.assertEqual("原输入", app.input_draft_before_task_edit)
+        app._set_input_text.assert_called_once_with("任务正文")
+
+    def test_complete_task_uses_manual_complete_route(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app._run_api = Mock()
+
+        app.execute_task_action("complete", {"task_id": "task-1"})
+
+        self.assertEqual("/api/tasks/complete", app._run_api.call_args.args[0])
+        self.assertEqual(
+            {"task_id": "task-1", "manual": True},
+            app._run_api.call_args.kwargs["payload"],
+        )
 
     def test_window_signal_sends_requested_command(self):
         received = []

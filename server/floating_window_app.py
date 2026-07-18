@@ -1,6 +1,8 @@
 import ctypes
+from ctypes import wintypes
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -14,13 +16,19 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from floating_icons import IconFactory
+
 
 BRIDGE_URL = os.environ.get("AIDELINK_BRIDGE_URL", "http://127.0.0.1:5000")
 BOOTSTRAP_URL = f"{BRIDGE_URL.rstrip('/')}/api/floating-window/bootstrap"
 WINDOW_MUTEX_NAME = "Local\\AideLinkFloatingWindow"
 WINDOW_TITLE_FALLBACK = "暂无项目"
+WINDOW_WIDTH = 370
 SHOW_SIGNAL_PORT = int(os.environ.get("AIDELINK_FLOATING_WINDOW_PORT", "51231"))
 VISIBLE_TASK_ACTIONS = ("copy", "view", "more")
+DEFAULT_QUICK_REPLIES = ("继续", "安装到手机", "升级版本号并提交git")
+QUICK_REPLIES_FILE = Path(__file__).resolve().parent / "state" / "floating_quick_replies.json"
+WINDOW_STATE_FILE = Path(__file__).resolve().parent / "state" / "floating_window_state.json"
 
 
 def _project_name(project):
@@ -35,7 +43,11 @@ def _project_name(project):
 
 def _capability_badge(capabilities):
     capabilities = {str(item).lower() for item in (capabilities or [])}
-    return ("📱" if "android" in capabilities else "") + ("🌐" if "web" in capabilities else "")
+    return (
+        ("📱" if "android" in capabilities else "")
+        + ("🌐" if "web" in capabilities else "")
+        + ("🖥" if "windows" in capabilities else "")
+    )
 
 
 def _task_surface(task, project_capabilities):
@@ -69,11 +81,33 @@ def _status_label(status):
         "running": "执行中",
         "dispatched": "已派发",
         "queued": "排队中",
-        "draft": "未派发",
+        "draft": "待派发",
+        "pending": "待派发",
         "failed": "失败",
         "timeout": "超时",
         "done": "已完成",
+        "completed": "已完成",
     }.get(status or "", status or "未知")
+
+
+def _task_group_name(task):
+    status = task.get("status") or ""
+    if status == "已完成":
+        return "已完成"
+    if status == "待测试":
+        return "待测试"
+    if status in {"执行中", "已派发", "排队中"}:
+        return "进行中"
+    return "待派发"
+
+
+def _latest_task_id(tasks):
+    if not tasks:
+        return None
+    return max(
+        tasks,
+        key=lambda task: str(task.get("updated_at") or task.get("created_at") or ""),
+    ).get("task_id")
 
 
 def _task_title(task):
@@ -120,11 +154,13 @@ def build_home_model(payload):
     summary = payload.get("task_summary") or {}
     tasks = payload.get("tasks") or []
     selected = payload.get("selected_target") or {}
+    codex_quota = payload.get("codex_quota") or {}
 
-    needs_user = int(summary.get("needs_user") or 0)
     by_status = summary.get("by_status") or {}
     pending_test = int(by_status.get("pending_test") or 0)
     running = int(by_status.get("running") or 0) + int(by_status.get("dispatched") or 0) + int(by_status.get("queued") or 0)
+    pending_dispatch = sum(int(by_status.get(status) or 0) for status in ("draft", "pending", "failed", "timeout", "test_failed", "merge_conflict"))
+    completed = int(by_status.get("done") or 0) + int(by_status.get("completed") or 0)
 
     capabilities = payload.get("capabilities") or project.get("capabilities") or ["general"]
     project_name = _project_name(project)
@@ -143,15 +179,21 @@ def build_home_model(payload):
                 "dispatchable": bool(ide.get("dispatchable", ide.get("running"))),
                 "dot": "🟡" if ide.get("busy") else ("●" if ide.get("running") else "○"),
                 "current_task_id": ide.get("current_task_id"),
+                "path": ide.get("path") or "",
             }
             for ide in ides
         ],
         "selected_target": selected.get("name") or selected.get("key") or "未选择 IDE",
         "selected_target_key": selected.get("key"),
+        "codex_quota": {
+            "available": bool(codex_quota.get("available")),
+            "remaining_percent": codex_quota.get("remaining_percent"),
+        },
         "summary": {
-            "待处理": needs_user,
+            "待派发": pending_dispatch,
             "待测试": pending_test,
             "进行中": running,
+            "已完成": completed,
         },
         "tasks": [
             {
@@ -166,8 +208,11 @@ def build_home_model(payload):
                 "feedbacks": list(task.get("feedbacks") or (task.get("metadata") or {}).get("feedbacks") or []),
                 "summary": task.get("summary") or "",
                 "error": task.get("error") or "",
+                "updated_at": task.get("updated_at") or task.get("created_at") or "",
+                "content_kind": (task.get("metadata") or {}).get("content_kind") or "task",
+                "version": task.get("app_version") or task.get("version") or task.get("git_version") or "",
             }
-            for task in tasks[:5]
+            for task in tasks
         ],
     }
 
@@ -240,122 +285,198 @@ class FloatingWindowApp:
         self.drag_moved = False
         self.is_topmost = True
         self.selected_ide_key = None
+        self.active_tab = "tasks"
+        self.expanded_task_id = None
+        self.collapsed_groups = {"已完成"}
+        self.completed_display_limit = 5
+        self.input_expanded = False
+        self.input_expand_after_id = None
+        self.input_draft_after_id = None
+        self.refresh_in_progress = False
+        self.last_render_signature = None
+        self.connection_failed = False
+        self.status_detail = ""
+        self.ui_callbacks = queue.Queue()
+        self.editing_task_id = None
+        self.input_draft_before_task_edit = ""
         self.current_model = {}
         self.root = tk.Tk()
+        self.icons = IconFactory(self.root)
         self.root.title(WINDOW_TITLE_FALLBACK)
-        self.root.geometry("660x620+850+70")
-        self.root.minsize(580, 520)
+        self.window_width = WINDOW_WIDTH
+        self.min_window_height = 500
+        self.max_window_height = 720
+        default_x, default_y = self._initial_window_position(560)
+        initial_height = max(self.min_window_height, min(560, self.max_window_height))
+        self.root.geometry(f"{self.window_width}x{initial_height}{default_x:+d}{default_y:+d}")
+        self.root.minsize(min(350, self.window_width), self.min_window_height)
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.transparent_color = "#ff00ff"
-        self.root.configure(bg=self.transparent_color)
-        if os.name == "nt":
-            self.root.attributes("-transparentcolor", self.transparent_color)
+        self.root.configure(bg="#ffffff")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(0, self._enable_rounded_window)
         self._build_ui()
+        self._restore_input_draft()
+        self.root.after(25, self._drain_ui_callbacks)
         self.refresh()
         self._start_signal_server()
         self._schedule_refresh()
 
     def _build_ui(self):
         tk = self.tk
-        bg = "#f8fafc"
+        bg = "#ffffff"
         card = "#ffffff"
         border = "#dbe2ea"
         text = "#172033"
         muted = "#657084"
         blue = "#0867f2"
 
-        outer = tk.Canvas(self.root, bg=self.transparent_color, highlightthickness=0)
-        outer.pack(fill="both", expand=True)
-        shell = tk.Frame(outer, bg=bg)
-        shell_window = outer.create_window(8, 8, anchor="nw", window=shell)
-        def _resize_shell(event):
-            outer.delete("outer-shape")
-            self._draw_round_rect(outer, 1, 1, event.width - 1, event.height - 1, 30, fill=bg, outline="#cfd7e3", width=1, tags="outer-shape")
-            outer.tag_lower("outer-shape")
-            outer.itemconfigure(shell_window, width=max(1, event.width - 16), height=max(1, event.height - 16))
-        outer.bind("<Configure>", _resize_shell)
+        shell = tk.Frame(self.root, bg=bg, highlightbackground="#dbe2ea", highlightthickness=1)
+        shell.pack(fill="both", expand=True)
 
-        self.title_bar = tk.Frame(shell, bg=card, height=54, highlightthickness=0)
+        self.title_bar = tk.Frame(shell, bg=card, height=40, highlightthickness=0)
         self.title_bar.pack(fill="x")
         self.title_bar.pack_propagate(False)
         self.title_bar.bind("<ButtonPress-1>", self._start_drag)
         self.title_bar.bind("<B1-Motion>", self._drag)
+        self.title_bar.bind("<ButtonRelease-1>", self._finish_drag)
 
         project_box = tk.Frame(self.title_bar, bg=card, highlightthickness=0)
-        project_box.pack(side="left", padx=14, pady=7)
-        self.title_label = tk.Label(project_box, text=WINDOW_TITLE_FALLBACK, fg=text, bg=card, font=("Microsoft YaHei UI", 12, "bold"), anchor="w", padx=12)
+        project_box.pack(side="left", padx=8, pady=2)
+        self.title_label = tk.Label(project_box, text=WINDOW_TITLE_FALLBACK, fg=text, bg=card, font=("Microsoft YaHei UI", 10, "bold"), anchor="w", padx=4)
         self.title_label.pack(side="left", ipady=7)
         self.title_label.bind("<ButtonPress-1>", self._start_drag)
         self.title_label.bind("<B1-Motion>", self._drag)
         self.title_label.bind("<ButtonRelease-1>", self._open_project_picker)
-        tk.Label(project_box, text="⌄", fg=text, bg=card, font=("Segoe UI Symbol", 13)).pack(side="left", padx=(0, 10))
+        tk.Label(project_box, image=self.icons.get("chevron_down", 13), bg=card).pack(side="left", padx=(0, 6))
         tk.Frame(project_box, bg=border, width=1, height=28).pack(side="left", padx=2)
-        self.capability_label = tk.Label(project_box, text="📱  🌐", fg=blue, bg=card, font=("Segoe UI Emoji", 13), padx=10)
-        self.capability_label.pack(side="left")
+        self.capability_frame = tk.Frame(project_box, bg=card, highlightthickness=0)
+        self.capability_frame.pack(side="left", padx=(5, 2))
+
+        self.quota_frame = tk.Frame(self.title_bar, bg=card, highlightthickness=0)
+        self.quota_frame.place(relx=0.55, rely=0.5, anchor="center")
+        self.quota_canvas = tk.Canvas(
+            self.quota_frame, width=74, height=8, bg=card, highlightthickness=0
+        )
+        self.quota_canvas.pack(side="left", padx=(0, 4))
+        self.quota_label = tk.Label(
+            self.quota_frame, text="--%", fg="#657084", bg=card,
+            font=("Microsoft YaHei UI", 8), width=4, anchor="w",
+        )
+        self.quota_label.pack(side="left")
+        for widget in (self.quota_frame, self.quota_canvas, self.quota_label):
+            widget.bind("<ButtonPress-1>", self._start_drag)
+            widget.bind("<B1-Motion>", self._drag)
 
         actions = tk.Frame(self.title_bar, bg=card, highlightthickness=0)
-        actions.pack(side="right", padx=14, pady=7)
-        self.top_btn = self._flat_button(actions, "⌖  置顶", self.toggle_topmost)
+        actions.pack(side="right", padx=5, pady=2)
+        self.top_btn = self._icon_button(actions, "pin", self.toggle_topmost, size=16)
         self.top_btn.pack(side="left", padx=1)
-        self.close_btn = self._flat_button(actions, "✕  关闭", self.close)
+        self.close_btn = self._icon_button(actions, "x", self.close, size=16)
         self.close_btn.pack(side="left", padx=1)
-        self.settings_btn = self._flat_button(actions, "⚙  设置", self.open_settings)
-        self.settings_btn.pack(side="left", padx=1)
 
-        self.input_frame = tk.Frame(shell, bg=bg)
-        self.input_frame.pack(side="bottom", fill="x", padx=14, pady=(4, 10))
+        composer = tk.Frame(shell, bg=bg)
+        composer.pack(side="bottom", fill="x", padx=10, pady=(0, 8))
 
-        input_shell = tk.Canvas(self.input_frame, bg=bg, height=70, highlightthickness=0)
+        ide_row = tk.Frame(composer, bg=bg)
+        ide_row.pack(fill="x", pady=(0, 3))
+        self.ide_frame = tk.Frame(ide_row, bg=bg)
+        self.ide_frame.pack(side="left", fill="x", expand=True)
+
+        self.input_frame = tk.Frame(composer, bg=bg)
+        self.input_frame.pack(fill="x")
+
+        input_shell = tk.Canvas(self.input_frame, bg=bg, height=58, highlightthickness=0)
         input_shell.pack(fill="x")
-        self.input_box = tk.Text(input_shell, height=2, wrap="word", relief="flat", bd=0, bg=card, fg=text, insertbackground=text, font=("Microsoft YaHei UI", 10))
-        input_window = input_shell.create_window(12, 8, anchor="nw", window=self.input_box)
-        self.input_box.insert("1.0", "输入要发送的内容，修改要求或想法…")
+        self.input_shell = input_shell
+        self.input_box = tk.Text(input_shell, height=1, wrap="word", relief="flat", bd=0, bg=card, fg=text, insertbackground=text, font=("Microsoft YaHei UI", 9), undo=True, autoseparators=True, maxundo=-1)
+        input_window = input_shell.create_window(12, 9, anchor="nw", window=self.input_box)
+        self.input_box.insert("1.0", "随心输入…")
+        self.input_box.edit_reset()
         self.input_box.config(fg="#8a94a6")
         self.input_box.bind("<FocusIn>", self._clear_input_hint)
-        self.counter_label = tk.Label(input_shell, text="0/2000   ↗", bg=card, fg=muted)
-        counter_window = input_shell.create_window(620, 56, anchor="e", window=self.counter_label)
+        self.input_box.bind("<KeyRelease>", self._schedule_auto_expand)
+        self.input_box.bind("<Return>", self._handle_input_return)
+        self.input_box.bind("<Control-Return>", self._handle_input_ctrl_return)
+        self.input_box.bind("<Control-z>", self._handle_input_undo)
+        add_image = self.icons.get("plus", 20, "#283246")
+        expand_image = self.icons.get("expand", 17, "#657084")
+        prompt_image = self.icons.get("bot", 18, "#7757e8")
+        send_image = self.icons.get("send", 20, "#0867f2")
+        input_shell._action_images = (add_image, expand_image, prompt_image, send_image)
+        add_icon_item = input_shell.create_image(22, 40, image=add_image, tags="add-action")
+        expand_icon_item = input_shell.create_image(350, 12, image=expand_image, tags="expand-action")
+        prompt_icon_item = input_shell.create_image(330, 40, image=prompt_image, tags="prompt-action")
+        send_icon_item = input_shell.create_image(368, 40, image=send_image, tags=("send-action", "send-icon"))
+        input_shell.tag_bind("add-action", "<Button-1>", lambda _event: self.show_composer_menu())
+        input_shell.tag_bind("expand-action", "<Button-1>", lambda _event: self.toggle_input_expanded())
+        input_shell.tag_bind("prompt-action", "<Button-1>", lambda _event: self.compose_smart_prompt())
+        input_shell.tag_bind("send-action", "<Button-1>", lambda _event: self._send_input())
+        self.send_btn = input_shell
+        self.send_btn._text_item = "send-icon"
         def _resize_input(event):
             input_shell.delete("rounded-bg")
-            self._draw_round_rect(input_shell, 1, 1, event.width - 1, 69, 14, fill=card, outline="#aeb8c6", tags="rounded-bg")
+            action_y = event.height - 19
+            self._draw_round_rect(input_shell, 1, 1, event.width - 1, event.height - 1, 15, fill=card, outline="#dbe2ea", tags="rounded-bg")
             input_shell.tag_lower("rounded-bg")
-            input_shell.itemconfigure(input_window, width=max(100, event.width - 24), height=38)
-            input_shell.coords(counter_window, event.width - 10, 56)
+            input_shell.itemconfigure(input_window, width=max(100, event.width - 48), height=max(18, event.height - 37))
+            input_shell.coords(add_icon_item, 22, action_y)
+            input_shell.coords(expand_icon_item, event.width - 16, 14)
+            input_shell.coords(prompt_icon_item, event.width - 50, action_y)
+            input_shell.coords(send_icon_item, event.width - 19, action_y)
+            input_shell.tag_raise(add_icon_item)
+            input_shell.tag_raise(expand_icon_item)
+            input_shell.tag_raise(prompt_icon_item)
+            input_shell.tag_raise(send_icon_item)
         input_shell.bind("<Configure>", _resize_input)
-        self.input_box.bind("<KeyRelease>", self._update_counter)
-
-        bottom_actions = tk.Frame(self.input_frame, bg=bg)
-        bottom_actions.pack(fill="x", pady=(10, 0))
-        self.send_btn = self._rounded_button(bottom_actions, "✈  暂无可用 IDE", self._send_input, width=145, height=40, fill=blue, outline=blue, fg="#ffffff", bold=True)
-        self.send_btn.pack(side="left")
-        actions_map = (
-            ("快捷回复", "💬", self.show_quick_reply_menu),
-            ("智能提示词", "✦", self.compose_smart_prompt),
-            ("创建任务", "＋", self.create_task),
-            ("保存随记", "▱", self.save_inspiration),
-        )
-        for label, icon, command in actions_map:
-            short = {"创建任务": "创建", "保存随记": "随记"}.get(label, label)
-            self._rounded_button(bottom_actions, f"{icon} {short}", command, width=105, height=40, fill="#ffffff", outline=border, fg="#283246").pack(side="left", padx=(5, 0))
 
         body = tk.Frame(shell, bg=bg)
         body.pack(fill="both", expand=True)
-
-        ide_section = tk.Frame(body, bg=card)
-        ide_section.pack(fill="x", padx=14, pady=8)
-        self.ide_frame = tk.Frame(ide_section, bg=card)
-        self.ide_frame.pack(fill="x")
-
-        separator = tk.Frame(body, bg=border, height=1)
-        separator.pack(fill="x", pady=4)
         task_section = tk.Frame(body, bg=bg)
-        task_section.pack(fill="both", expand=True, padx=14, pady=(7, 0))
+        task_section.pack(fill="both", expand=True, padx=12, pady=(10, 0))
         self.summary_frame = tk.Frame(task_section, bg=bg)
-        self.summary_frame.pack(fill="x", pady=(5, 5))
-        self.task_frame = tk.Frame(task_section, bg=bg)
-        self.task_frame.pack(fill="both", expand=True)
+        self.summary_frame.pack_forget()
+        tabs = tk.Frame(task_section, bg=bg)
+        tabs.pack(fill="x", pady=(0, 3))
+        self.tab_buttons = {}
+        self.tab_lines = {}
+        for key, label in (("tasks", "任务"), ("notes", "随记"), ("tools", "工具")):
+            cell = tk.Frame(tabs, bg=bg)
+            cell.pack(side="left", fill="x", expand=True)
+            button = tk.Button(
+                cell,
+                text=label,
+                command=lambda value=key: self.select_tab(value),
+                relief="flat",
+                bd=0,
+                bg=bg,
+                fg="#657084",
+                activebackground=bg,
+                activeforeground="#0867f2",
+                font=("Microsoft YaHei UI", 8),
+                padx=6,
+                pady=1,
+                cursor="hand2",
+                highlightthickness=0,
+            )
+            button.pack(fill="x")
+            line = tk.Frame(cell, bg="#dbe2ea", height=2)
+            line.pack(fill="x", padx=12)
+            self.tab_buttons[key] = button
+            self.tab_lines[key] = line
+        self.task_canvas = tk.Canvas(task_section, bg=bg, highlightthickness=0, bd=0)
+        self.task_canvas.pack(fill="both", expand=True)
+        self.task_frame = tk.Frame(self.task_canvas, bg=bg)
+        self.task_canvas_window = self.task_canvas.create_window(0, 0, anchor="nw", window=self.task_frame)
+        self.task_frame.bind(
+            "<Configure>",
+            lambda _event: self.task_canvas.configure(scrollregion=self.task_canvas.bbox("all")),
+        )
+        self.task_canvas.bind(
+            "<Configure>",
+            lambda event: self.task_canvas.itemconfigure(self.task_canvas_window, width=event.width),
+        )
+        self.root.bind("<MouseWheel>", self._on_task_scroll)
         self.status_label = tk.Label(task_section, text="正在连接 AideLink 服务...", fg=muted, bg=bg, anchor="w")
         self.status_label.pack(fill="x", pady=(4, 0))
 
@@ -376,6 +497,20 @@ class FloatingWindowApp:
     def _flat_button(self, parent, text, command):
         return self.tk.Button(parent, text=text, command=command, relief="flat", bd=0, bg="#ffffff", fg="#283246", activebackground="#f1f5f9", activeforeground="#0867f2", font=("Microsoft YaHei UI", 9), padx=10, pady=7)
 
+    def _icon_button(self, parent, icon_name, command, size=18, color="#263246"):
+        return self.tk.Button(
+            parent,
+            image=self.icons.get(icon_name, size, color),
+            command=command,
+            relief="flat",
+            bd=0,
+            bg="#ffffff",
+            activebackground="#f1f5f9",
+            cursor="hand2",
+            padx=7,
+            pady=6,
+        )
+
     @staticmethod
     def _draw_round_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
         points = [
@@ -385,14 +520,214 @@ class FloatingWindowApp:
         ]
         return canvas.create_polygon(points, smooth=True, splinesteps=24, **kwargs)
 
-    def _rounded_button(self, parent, text, command, width, height, fill, outline, fg, bold=False):
+    def _rounded_button(self, parent, text, command, width, height, fill, outline, fg, bold=False, font_size=10, radius=16, icon_name=None, icon_size=17, dot_color=None):
         canvas = self.tk.Canvas(parent, width=width, height=height, bg=parent.cget("bg"), highlightthickness=0, cursor="hand2")
-        canvas._shape_item = self._draw_round_rect(canvas, 1, 1, width - 1, height - 1, 16, fill=fill, outline=outline, width=1)
+        canvas._shape_item = self._draw_round_rect(canvas, 1, 1, width - 1, height - 1, radius, fill=fill, outline=outline, width=1)
         canvas._command = command
-        font = ("Microsoft YaHei UI", 10, "bold" if bold else "normal")
-        canvas._text_item = canvas.create_text(width / 2, height / 2, text=text, fill=fg, font=font)
+        font = ("Microsoft YaHei UI", font_size, "bold" if bold else "normal")
+        if icon_name:
+            icon = self.icons.get(icon_name, icon_size, fg)
+            canvas._icon_image = icon
+            if text:
+                canvas.create_image(width / 2 - 8, height / 2, image=icon)
+                canvas._text_item = canvas.create_text(width / 2 + 10, height / 2, text=text, fill=fg, font=font)
+            else:
+                canvas._text_item = canvas.create_image(width / 2, height / 2, image=icon)
+        elif dot_color:
+            canvas.create_oval(12, height / 2 - 4, 20, height / 2 + 4, fill=dot_color, outline=dot_color)
+            canvas._text_item = canvas.create_text(width / 2 + 5, height / 2, text=text, fill=fg, font=font)
+        else:
+            canvas._text_item = canvas.create_text(width / 2, height / 2, text=text, fill=fg, font=font)
         canvas.bind("<Button-1>", lambda _event: command())
         return canvas
+
+    def _ide_button(self, parent, ide, selected):
+        width, height = 30, 30
+        canvas = self.tk.Canvas(parent, width=width, height=height, bg=parent.cget("bg"), highlightthickness=0, cursor="hand2")
+        badge = self.icons.ide_badge(ide["key"], ide.get("path"), selected=selected, size=30)
+        canvas._ide_badge = badge
+        canvas.create_image(15, 15, image=badge)
+        canvas.bind("<Button-1>", lambda _event, key=ide["key"]: self.select_ide(key))
+        return canvas
+
+    def _draw_group_header(self, canvas, width, fill, outline, fg, name, count, icon, collapsed=False):
+        canvas.delete("all")
+        icon_image = self.icons.get(icon, 12, fg)
+        chevron_image = self.icons.get("chevron_down" if collapsed else "chevron_up", 12, "#526078")
+        canvas._header_images = (icon_image, chevron_image)
+        canvas.create_image(9, 11, image=icon_image)
+        canvas.create_text(21, 11, text=f"{name}  {count}", fill=fg, anchor="w", font=("Microsoft YaHei UI", 8, "bold"))
+        canvas.create_image(width - 10, 11, image=chevron_image)
+
+    def _draw_task_card(self, canvas, width, task, type_labels, latest_running=False):
+        canvas.delete("all")
+        height = int(canvas.cget("height"))
+        base_height = self._task_base_height(task)
+        if _task_group_name(task) == "待派发":
+            card_outline = "#9b7be3"
+        elif latest_running:
+            card_outline = "#35b86b"
+        else:
+            card_outline = "#e1e6ed"
+        self._draw_round_rect(canvas, 1, 1, width - 1, height - 1, 12, fill="#ffffff", outline=card_outline, tags="card-hit")
+        body = _clean_task_text(task.get("text") or task.get("title")) or "无内容"
+        canvas.create_text(12, 9, text=body, fill="#20293a", anchor="nw", width=max(130, width - 52), font=("Microsoft YaHei UI", 9), tags="card-hit")
+
+        metadata_y = base_height - 16
+        version = str(task.get("version") or "").strip()
+        version_text = f"v{version}" if version and not version.lower().startswith("v") else (version or "v--")
+        self._draw_round_rect(canvas, 12, metadata_y - 9, 76, metadata_y + 9, 6, fill="#f3f5f8", outline="#e3e7ed", tags="card-hit")
+        canvas.create_text(44, metadata_y, text=version_text[:12], fill="#657084", font=("Microsoft YaHei UI", 8), tags="card-hit")
+        subtitle = f"{task['target_ide']}  ·  {task['status']}"
+        progress = max(0, min(100, task.get("progress") or 0))
+        if task["status"] == "执行中" and progress:
+            subtitle += f"  ·  {progress}%"
+        canvas.create_text(84, metadata_y, text=subtitle, fill="#657084", anchor="w", font=("Microsoft YaHei UI", 8), tags="card-hit")
+
+        actions = (("复制", "copy", 14), ("派发", "dispatch", 36))
+        action_images = []
+        for action, icon_name, center_y in actions:
+            tag = f"{action}-{task.get('task_id')}"
+            action_image = self.icons.get(icon_name, 12, "#526078")
+            action_images.append(action_image)
+            canvas.create_image(width - 16, center_y, image=action_image, tags=tag)
+            callback = (lambda _event, item=task: (self.copy_task(item), "break")[-1]) if action == "复制" else (lambda _event, item=task: (self.execute_task_action("dispatch", item), "break")[-1])
+            canvas.tag_bind(tag, "<Button-1>", callback)
+        images = [*action_images]
+        if self.expanded_task_id == task.get("task_id"):
+            canvas.create_line(10, base_height, width - 10, base_height, fill="#edf0f4")
+            for index, (action, label) in enumerate(self._expanded_actions(task)):
+                row, column = divmod(index, 4)
+                x1 = 10 + column * 78
+                y1 = base_height + 6 + row * 27
+                x2, y2 = x1 + 70, y1 + 21
+                tag = f"expanded-{action}-{task.get('task_id')}"
+                self._draw_round_rect(canvas, x1, y1, x2, y2, 7, fill="#ffffff", outline="#dbe2ea", tags=tag)
+                canvas.create_text((x1 + x2) / 2, (y1 + y2) / 2, text=label, fill="#526078", font=("Microsoft YaHei UI", 7), tags=tag)
+                if action == "view":
+                    callback = lambda _event, item=task: (self.view_task(item), "break")[-1]
+                elif action == "smart_prompt":
+                    callback = lambda _event, item=task: (self.compose_task_smart_prompt(item), "break")[-1]
+                else:
+                    callback = lambda _event, value=action, item=task: (self.execute_task_action(value, item), "break")[-1]
+                canvas.tag_bind(tag, "<Button-1>", callback)
+        canvas._task_images = tuple(images)
+        canvas.tag_bind("card-hit", "<Button-1>", lambda _event, item=task: self.toggle_task_more(item.get("task_id")))
+
+    @staticmethod
+    def _task_base_height(task):
+        body = _clean_task_text(task.get("text") or task.get("title")) or ""
+        lines = 0
+        for paragraph in body.splitlines() or [""]:
+            lines += max(1, (len(paragraph) + 20) // 21)
+        return max(68, 37 + lines * 16)
+
+    def _task_card_height(self, task):
+        height = self._task_base_height(task)
+        if self.expanded_task_id == task.get("task_id"):
+            actions = self._expanded_actions(task)
+            height += 8 + ((len(actions) + 3) // 4) * 27
+        return height
+
+    @staticmethod
+    def _expanded_actions(_task):
+        return (
+            ("edit", "编辑"),
+            ("smart_prompt", "智能提示词"),
+            ("complete", "已完成"),
+            ("delete", "删除"),
+        )
+
+    def _render_task_tab(self, tasks, summary_styles):
+        tk = self.tk
+        type_labels = {
+            "android": ("Android", "#effaf3", "#24864b", "smartphone"),
+            "web": ("Web", "#eff6ff", "#0867f2", "globe"),
+            "general": ("通用", "#f4f1ff", "#7657d9", "bot"),
+        }
+        groups = (
+            ("待派发", [task for task in tasks if _task_group_name(task) == "待派发"]),
+            ("进行中", [task for task in tasks if _task_group_name(task) == "进行中"]),
+            ("待测试", [task for task in tasks if _task_group_name(task) == "待测试"]),
+            ("已完成", [task for task in tasks if _task_group_name(task) == "已完成"]),
+        )
+        running_tasks = next(items for name, items in groups if name == "进行中")
+        latest_running_id = _latest_task_id(running_tasks)
+        for group_name, group_tasks in groups:
+            if not group_tasks:
+                continue
+            collapsed = group_name in self.collapsed_groups
+            group_bg, group_fg, group_border = summary_styles[group_name]
+            icon = {"待派发": "alert", "待测试": "clock", "进行中": "loader", "已完成": "copy"}[group_name]
+            header_count = (
+                int(self.current_model.get("summary", {}).get("已完成") or len(group_tasks))
+                if group_name == "已完成"
+                else len(group_tasks)
+            )
+            header = tk.Canvas(self.task_frame, height=22, bg="#ffffff", highlightthickness=0)
+            header.pack(fill="x", pady=(0, 2))
+            header.bind("<Configure>", lambda event, canvas=header, bg=group_bg, border=group_border, fg=group_fg, name=group_name, count=header_count, symbol=icon, is_collapsed=collapsed: self._draw_group_header(canvas, event.width, bg, border, fg, name, count, symbol, is_collapsed))
+            header.bind("<Button-1>", lambda _event, name=group_name: self.toggle_group(name))
+            if collapsed:
+                continue
+            visible_group_tasks = (
+                group_tasks[:self.completed_display_limit]
+                if group_name == "已完成"
+                else group_tasks
+            )
+            for task in visible_group_tasks:
+                task_card = tk.Canvas(self.task_frame, height=self._task_card_height(task), bg="#ffffff", highlightthickness=0, cursor="hand2")
+                task_card.pack(fill="x", pady=(0, 4))
+                is_latest_running = (
+                    group_name == "进行中"
+                    and task.get("task_id") == latest_running_id
+                )
+                task_card.bind(
+                    "<Configure>",
+                    lambda event, canvas=task_card, item=task, labels=type_labels, highlighted=is_latest_running:
+                        self._draw_task_card(canvas, event.width, item, labels, highlighted),
+                )
+            if group_name == "已完成" and len(group_tasks) > len(visible_group_tasks):
+                remaining = len(group_tasks) - len(visible_group_tasks)
+                more = tk.Label(
+                    self.task_frame,
+                    text=f"显示更多（还有 {remaining} 条）",
+                    bg="#ffffff",
+                    fg="#0867f2",
+                    font=("Microsoft YaHei UI", 8),
+                    cursor="hand2",
+                    pady=4,
+                )
+                more.pack(fill="x", pady=(0, 4))
+                more.bind("<Button-1>", lambda _event: self.show_more_completed())
+
+    def _render_notes_tab(self, notes):
+        if not notes:
+            self.tk.Label(self.task_frame, text="暂无随记", bg="#ffffff", fg="#8a94a6", anchor="w").pack(fill="x", padx=4, pady=10)
+            return
+        for note in notes:
+            row = self.tk.Frame(self.task_frame, bg="#ffffff", highlightbackground="#e1e6ed", highlightthickness=1)
+            row.pack(fill="x", pady=(0, 5), ipady=6)
+            text = note["title"] if len(note["title"]) <= 34 else note["title"][:33] + "…"
+            self.tk.Label(row, text=text, bg="#ffffff", fg="#263246", anchor="w", font=("Microsoft YaHei UI", 9)).pack(side="left", fill="x", expand=True, padx=10)
+            button = self._icon_button(row, "copy", lambda item=note: self.copy_task(item), size=14)
+            button.config(padx=4, pady=3)
+            button.pack(side="right", padx=4)
+
+    def _render_tools_tab(self):
+        tools = (
+            ("快捷回复", "more", self.show_quick_reply_menu),
+            ("智能提示", "bot", self.compose_smart_prompt),
+            ("保存随记", "list", self.save_inspiration),
+            ("设置", "settings", self.open_settings),
+        )
+        for label, icon, command in tools:
+            button = self._rounded_button(
+                self.task_frame, label, command,
+                width=88, height=34, fill="#ffffff", outline="#dbe2ea",
+                fg="#3f4d63", font_size=8, icon_name=icon, icon_size=14, radius=10,
+            )
+            button.pack(side="left", padx=(0, 5), pady=3)
 
     def _clear_rows(self, frame):
         for child in frame.winfo_children():
@@ -407,14 +742,42 @@ class FloatingWindowApp:
             model.get("selected_target_key"),
         )
         self.root.title(model["title"])
-        compact_height = max(520, min(650, 360 + len(model["tasks"][:5]) * 62))
-        self.root.geometry(f"660x{compact_height}")
+        visible_tasks = [task for task in model["tasks"] if task.get("content_kind") != "inspiration"]
+        note_count = sum(1 for task in model["tasks"] if task.get("content_kind") == "inspiration")
+        if self.active_tab == "tasks":
+            grouped = (
+                ("待派发", [task for task in visible_tasks if _task_group_name(task) == "待派发"]),
+                ("进行中", [task for task in visible_tasks if _task_group_name(task) == "进行中"]),
+                ("待测试", [task for task in visible_tasks if _task_group_name(task) == "待测试"]),
+                ("已完成", [task for task in visible_tasks if _task_group_name(task) == "已完成"]),
+            )
+            group_count = sum(bool(items) for _name, items in grouped)
+            expanded_tasks = []
+            has_more_completed = False
+            for name, items in grouped:
+                if name in self.collapsed_groups:
+                    continue
+                if name == "已完成":
+                    expanded_tasks.extend(items[:self.completed_display_limit])
+                    has_more_completed = len(items) > self.completed_display_limit
+                else:
+                    expanded_tasks.extend(items)
+            content_height = (
+                sum(self._task_card_height(task) + 4 for task in expanded_tasks)
+                + group_count * 24
+                + (24 if has_more_completed else 0)
+            )
+        elif self.active_tab == "notes":
+            content_height = note_count * 42
+        else:
+            content_height = 42
+        compact_height = max(self.min_window_height, min(self.max_window_height, 260 + content_height))
+        self.root.geometry(f"{self.window_width}x{compact_height}")
+        self.root.after_idle(lambda height=compact_height: self._ensure_window_visible(height))
         self.title_label.config(text=model["project_name"])
-        self.capability_label.config(text="  ".join(filter(None, (
-            "🤖" if "android" in model["capabilities"] else "",
-            "🌐" if "web" in model["capabilities"] else "",
-        ))) or "◌")
-        self.status_label.config(text="", fg="#3a4150")
+        self._render_capability_icons(model["capabilities"])
+        self._render_codex_quota(model.get("codex_quota") or {})
+        self._set_status("")
 
         self._clear_rows(self.ide_frame)
         running = [ide for ide in model["ides"] if ide["running"]]
@@ -422,117 +785,248 @@ class FloatingWindowApp:
         if running:
             for ide in running:
                 selected = ide["key"] == self.selected_ide_key
-                dot = "#13b96d" if not ide["busy"] else "#f5a900"
-                button = self._rounded_button(
-                    self.ide_frame,
-                    f"●   {ide['name']}",
-                    lambda key=ide["key"]: self.select_ide(key),
-                    width=125,
-                    height=42,
-                    fill="#f7fbff" if selected else "#ffffff",
-                    outline="#0867f2" if selected else "#dbe2ea",
-                    fg="#0867f2" if selected else dot,
-                    bold=selected,
-                )
-                button.pack(side="left", padx=(0, 14))
+                button = self._ide_button(self.ide_frame, ide, selected)
+                button.pack(side="left", padx=(0, 5))
         else:
-            tk.Label(self.ide_frame, text="暂无运行中的 IDE", bg="#ffffff", fg="#777f8f", anchor="w").pack(side="left", fill="x", expand=True, pady=10)
+            tk.Label(self.ide_frame, text="暂无运行中的 IDE", bg="#ffffff", fg="#777f8f", anchor="w").pack(side="left", fill="x", expand=True, pady=7)
         if stopped:
             self._rounded_button(
-                self.ide_frame, "＋ 启动 IDE", lambda: self.show_launch_menu(stopped),
-                width=78, height=42, fill="#ffffff", outline="#ffffff", fg="#0867f2",
+                self.ide_frame, "", lambda: self.show_launch_menu(stopped),
+                width=28, height=28, fill="#ffffff", outline="#ffffff", fg="#0867f2",
+                icon_name="plus", icon_size=14,
             ).pack(side="right")
 
         self._clear_rows(self.summary_frame)
         summary_styles = {
-            "待处理": ("#fff6f6", "#ef3f45", "#f6c9cc"),
+            "待派发": ("#f7f2ff", "#7657d9", "#d9cbf7"),
             "待测试": ("#fff9ef", "#f08a00", "#f5d8ae"),
             "进行中": ("#f3f8ff", "#0867f2", "#c9dcfb"),
+            "已完成": ("#f1faf4", "#24864b", "#c5e8d0"),
         }
-        for key, value in model["summary"].items():
-            bg, fg, border = summary_styles[key]
-            icon = {"待处理": "ⓘ", "待测试": "◷", "进行中": "⟳"}[key]
-            self._rounded_button(
-                self.summary_frame, f"{icon}  {key}   {value}", lambda: None,
-                width=170, height=44, fill=bg, outline=border, fg=fg,
-            ).pack(side="left", padx=(0, 8))
-
+        for key, button in self.tab_buttons.items():
+            active = key == self.active_tab
+            button.config(
+                fg="#0867f2" if active else "#657084",
+                bg="#ffffff",
+                font=("Microsoft YaHei UI", 8, "bold" if active else "normal"),
+            )
+            self.tab_lines[key].config(bg="#0867f2" if active else "#dbe2ea")
         self._clear_rows(self.task_frame)
-        if model["tasks"]:
-            list_card = tk.Canvas(self.task_frame, bg="#f8fafc", highlightthickness=0)
-            list_card.pack(fill="both", expand=True)
-            tasks = model["tasks"][:5]
-            row_height = 62
-            total_height = max(64, row_height * len(tasks) + 4)
-            list_card.config(scrollregion=(0, 0, 600, total_height))
-            list_card.bind("<MouseWheel>", lambda event: list_card.yview_scroll(int(-event.delta / 120), "units"))
-            self._draw_round_rect(list_card, 1, 1, 600, total_height - 1, 16, fill="#ffffff", outline="#dbe2ea")
-            type_labels = {
-                "android": ("Android", "#effaf3", "#24864b"),
-                "web": ("Web", "#eff6ff", "#0867f2"),
-                "general": ("通用", "#f4f1ff", "#7657d9"),
-            }
-            for index, task in enumerate(tasks):
-                y = 2 + index * row_height
-                if index:
-                    list_card.create_line(1, y, 600, y, fill="#edf0f4")
-                status_color = {"待测试": "#f08a00", "执行中": "#0867f2", "待修复": "#ef3f45", "超时": "#ef3f45"}.get(task["status"], "#ef3f45")
-                list_card.create_oval(12, y + 14, 22, y + 24, fill=status_color, outline=status_color)
-                title = task["title"] if len(task["title"]) <= 24 else task["title"][:23] + "…"
-                list_card.create_text(32, y + 19, text=title, fill="#20293a", anchor="w", font=("Microsoft YaHei UI", 9, "bold"))
-
-                type_name, type_bg, type_fg = type_labels.get(task["surface"], type_labels["general"])
-                self._draw_round_rect(list_card, 32, y + 35, 78, y + 55, 7, fill=type_bg, outline=type_bg)
-                list_card.create_text(55, y + 45, text=type_name, fill=type_fg, font=("Microsoft YaHei UI", 8))
-                subtitle = f"{task['target_ide']}  ·  {task['status']}"
-                progress = max(0, min(100, task.get("progress") or 0))
-                if task["status"] == "执行中" and progress:
-                    subtitle += f"  ·  {progress}%"
-                list_card.create_text(86, y + 45, text=subtitle, fill="#657084", anchor="w", font=("Microsoft YaHei UI", 8))
-
-                actions = (("复制", 430, 474), ("查看", 480, 524), ("···", 530, 578))
-                for action, x1, x2 in actions:
-                    tag = f"{action}-{index}"
-                    self._draw_round_rect(list_card, x1, y + 14, x2, y + 45, 8, fill="#ffffff", outline="#dbe2ea", tags=tag)
-                    list_card.create_text((x1 + x2) / 2, y + 30, text=action, fill="#283246", font=("Microsoft YaHei UI", 8), tags=tag)
-                    if action == "复制":
-                        callback = lambda _event, item=task: self.copy_task(item)
-                    elif action == "查看":
-                        callback = lambda _event, item=task: self.view_task(item)
-                    else:
-                        callback = lambda event, item=task: self.show_task_menu(event, item)
-                    list_card.tag_bind(tag, "<Button-1>", callback)
+        notes = [task for task in model["tasks"] if task.get("content_kind") == "inspiration"]
+        tasks = [task for task in model["tasks"] if task.get("content_kind") != "inspiration"]
+        if self.active_tab == "notes":
+            self._render_notes_tab(notes)
+        elif self.active_tab == "tools":
+            self._render_tools_tab()
+        elif tasks:
+            self._render_task_tab(tasks, summary_styles)
         else:
-            tk.Label(self.task_frame, text="当前没有待处理任务", bg="#f8fafc", fg="#777f8f", anchor="w").pack(fill="x", pady=10)
+            tk.Label(self.task_frame, text="当前没有任务", bg="#ffffff", fg="#777f8f", anchor="w").pack(fill="x", pady=10)
 
         selected_ide = next((ide for ide in model["ides"] if ide["key"] == self.selected_ide_key), None)
         if selected_ide:
-            self.send_btn.itemconfigure(self.send_btn._text_item, text=f"✈  发送到 {selected_ide['name']}", fill="#ffffff")
-            self.send_btn.itemconfigure(self.send_btn._shape_item, fill="#0867f2", outline="#0867f2")
-            self.send_btn.bind("<Button-1>", lambda _event: self._send_input())
+            self.send_btn.itemconfigure(self.send_btn._text_item, image=self.icons.get("send", 20, "#0867f2"))
+            self.send_btn.tag_bind("send-action", "<Button-1>", lambda _event: self._send_input())
         else:
-            self.send_btn.itemconfigure(self.send_btn._text_item, text="暂无可用 IDE", fill="#657084")
-            self.send_btn.itemconfigure(self.send_btn._shape_item, fill="#e5e9ef", outline="#d5dbe4")
-            self.send_btn.unbind("<Button-1>")
+            self.send_btn.itemconfigure(self.send_btn._text_item, image=self.icons.get("send", 19, "#8a94a6"))
+            self.send_btn.tag_unbind("send-action", "<Button-1>")
+
+    def _render_capability_icons(self, capabilities):
+        self._clear_rows(self.capability_frame)
+        specs = (
+            ("android", "smartphone", "#35a853"),
+            ("web", "globe", "#0867f2"),
+            ("windows", "windows", "#0867f2"),
+        )
+        rendered = False
+        for capability, icon_name, color in specs:
+            if capability not in capabilities:
+                continue
+            self.tk.Label(
+                self.capability_frame,
+                image=self.icons.get(icon_name, 17, color),
+                bg="#ffffff",
+                padx=2,
+            ).pack(side="left")
+            rendered = True
+        if not rendered:
+            self.tk.Label(
+                self.capability_frame,
+                image=self.icons.get("bot", 17, "#657084"),
+                bg="#ffffff",
+                padx=2,
+            ).pack(side="left")
+
+    def _render_codex_quota(self, quota):
+        self.quota_canvas.delete("all")
+        remaining = quota.get("remaining_percent")
+        if not quota.get("available") or not isinstance(remaining, (int, float)):
+            self.quota_canvas.create_rectangle(0, 2, 74, 6, fill="#e5e9ef", outline="")
+            self.quota_label.config(text="--%", fg="#8a94a6")
+            return
+        remaining = max(0, min(100, round(remaining)))
+        self.quota_canvas.create_rectangle(0, 2, 74, 6, fill="#e5e9ef", outline="")
+        self.quota_canvas.create_rectangle(
+            0, 2, round(74 * remaining / 100), 6, fill="#2fb66d", outline=""
+        )
+        self.quota_label.config(text=f"{remaining}%", fg="#239957")
 
     def select_ide(self, key):
+        should_send = bool(self._input_text())
         self.selected_ide_key = key
         self._render(self.current_model)
+        if should_send:
+            self._send_input()
+
+    def select_tab(self, tab):
+        if tab not in {"tasks", "notes", "tools"}:
+            return
+        self.active_tab = tab
+        self._render(self.current_model)
+
+    def toggle_task_more(self, task_id):
+        self.expanded_task_id = None if self.expanded_task_id == task_id else task_id
+        self._render(self.current_model)
+
+    def toggle_group(self, group_name):
+        if group_name in self.collapsed_groups:
+            self.collapsed_groups.remove(group_name)
+        else:
+            self.collapsed_groups.add(group_name)
+        self._render(self.current_model)
+
+    def show_more_completed(self):
+        self.completed_display_limit += 5
+        self._render(self.current_model)
+
+    def toggle_input_expanded(self):
+        self._set_input_expanded(not self.input_expanded)
+        self.input_box.focus_set()
+
+    def _set_input_expanded(self, expanded):
+        self.input_expanded = bool(expanded)
+        target_height = 120 if self.input_expanded else 58
+        self.input_shell.config(height=target_height)
+
+    def _auto_expand_input(self, _event=None):
+        self.input_expand_after_id = None
+        if self.input_expanded:
+            return
+        try:
+            display_lines = self.input_box.count("1.0", "end-1c", "displaylines")
+            line_count = int(display_lines[0]) + 1 if display_lines else 1
+        except (self.tk.TclError, TypeError, ValueError):
+            line_count = self.input_box.get("1.0", "end-1c").count("\n") + 1
+        if line_count >= 2:
+            self._set_input_expanded(True)
+
+    def _schedule_auto_expand(self, _event=None):
+        self._schedule_input_draft_save()
+        if self.input_expanded:
+            return
+        if self.input_expand_after_id is not None:
+            self.root.after_cancel(self.input_expand_after_id)
+        self.input_expand_after_id = self.root.after(120, self._auto_expand_input)
+
+    def _handle_input_return(self, event):
+        if event.state & 0x0004:
+            return self._insert_input_newline()
+        if self.active_tab == "notes":
+            self.save_inspiration()
+            return "break"
+        if self.active_tab == "tasks":
+            self.create_task()
+            return "break"
+        return None
+
+    def _handle_input_ctrl_return(self, _event):
+        if self.active_tab not in {"tasks", "notes"}:
+            return None
+        return self._insert_input_newline()
+
+    def _handle_input_undo(self, _event):
+        try:
+            self.input_box.edit_undo()
+        except self.tk.TclError:
+            pass
+        self.root.after_idle(self._schedule_auto_expand)
+        return "break"
+
+    def _on_task_scroll(self, event):
+        x, y = self.root.winfo_pointerxy()
+        left, top = self.task_canvas.winfo_rootx(), self.task_canvas.winfo_rooty()
+        if not (
+            left <= x < left + self.task_canvas.winfo_width()
+            and top <= y < top + self.task_canvas.winfo_height()
+        ):
+            return None
+        units = -1 if event.delta > 0 else 1
+        self.task_canvas.yview_scroll(units * 3, "units")
+        return "break"
+
+    def _insert_input_newline(self):
+        self.input_box.insert("insert", "\n")
+        self.root.after_idle(self._auto_expand_input)
+        return "break"
 
     def _input_text(self):
         value = self.input_box.get("1.0", "end-1c").strip()
-        return "" if value == "输入要发送的内容，修改要求或想法…" else value
+        return "" if value == "随心输入…" else value
 
     def _set_input_text(self, value):
+        try:
+            self.input_box.edit_separator()
+        except self.tk.TclError:
+            pass
         self.input_box.delete("1.0", "end")
         self.input_box.insert("1.0", value)
+        try:
+            self.input_box.edit_separator()
+        except self.tk.TclError:
+            pass
+        if not value:
+            self._set_input_expanded(False)
+        else:
+            self.root.after_idle(self._auto_expand_input)
         self.input_box.config(fg="#172033")
         self._update_counter()
+        self._schedule_input_draft_save()
 
     def _set_status(self, message, color="#657084", clear_after=0):
+        self.status_detail = ""
+        self.status_label.unbind("<Button-1>")
+        self.status_label.config(cursor="")
         self.status_label.config(text=message, fg=color)
+        if message:
+            if not self.status_label.winfo_manager():
+                self.status_label.pack(fill="x", pady=(4, 0))
+        else:
+            self.status_label.pack_forget()
         if clear_after:
-            self.root.after(clear_after, lambda: self.status_label.config(text=""))
+            self.root.after(clear_after, lambda: self._set_status(""))
+
+    def _copy_status_detail(self, _event=None):
+        if not self.status_detail:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.status_detail)
+        self.root.update_idletasks()
+        self.status_label.config(text="连接详情已复制，服务恢复后会自动刷新", fg="#657084")
+
+    def _post_ui(self, callback):
+        self.ui_callbacks.put(callback)
+
+    def _drain_ui_callbacks(self):
+        while True:
+            try:
+                callback = self.ui_callbacks.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                callback()
+            except self.tk.TclError:
+                return
+        self.root.after(25, self._drain_ui_callbacks)
 
     def _run_api(self, path, method="GET", payload=None, on_success=None, busy_text="处理中…"):
         self._set_status(busy_text)
@@ -542,7 +1036,7 @@ class FloatingWindowApp:
                 result = api_request(path, method=method, payload=payload)
             except Exception as exc:
                 message = str(exc)
-                self.root.after(0, lambda value=message: self._set_status(f"操作失败：{value}", "#b42318"))
+                self._post_ui(lambda value=message: self._set_status(f"操作失败：{value}", "#b42318"))
                 return
 
             def finish():
@@ -555,7 +1049,7 @@ class FloatingWindowApp:
                 else:
                     self._set_status(result.get("message") or "操作成功", "#239957", 1800)
 
-            self.root.after(0, finish)
+            self._post_ui(finish)
 
         threading.Thread(target=worker, daemon=True, name="AideLinkFloatingWindowApi").start()
 
@@ -581,13 +1075,79 @@ class FloatingWindowApp:
             busy_text=f"正在发送到 {self.selected_ide_key}…",
         )
 
+    def show_composer_menu(self):
+        self.show_quick_reply_menu()
+
     def show_quick_reply_menu(self):
-        # Match the App defaults; selecting one only fills the shared input.
-        replies = ("继续", "安装到手机", "升级版本号并提交git")
         menu = self.tk.Menu(self.root, tearoff=False)
-        for reply in replies:
+        for reply in self._load_quick_replies():
             menu.add_command(label=reply, command=lambda value=reply: self._set_input_text(value))
+        if menu.index("end") is not None:
+            menu.add_separator()
+        menu.add_command(label="管理快捷回复…", command=self.manage_quick_replies)
         menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+
+    @staticmethod
+    def _load_quick_replies():
+        try:
+            values = json.loads(QUICK_REPLIES_FILE.read_text(encoding="utf-8"))
+            replies = [str(value).strip() for value in values if str(value).strip()]
+            return replies
+        except (OSError, TypeError, ValueError):
+            return list(DEFAULT_QUICK_REPLIES)
+
+    @staticmethod
+    def _save_quick_replies(replies):
+        QUICK_REPLIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        QUICK_REPLIES_FILE.write_text(
+            json.dumps(list(replies), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def manage_quick_replies(self):
+        dialog = self.tk.Toplevel(self.root)
+        dialog.title("管理快捷回复")
+        dialog.geometry("330x300")
+        dialog.resizable(False, False)
+        dialog.attributes("-topmost", True)
+
+        entry_row = self.tk.Frame(dialog, bg="#ffffff")
+        entry_row.pack(fill="x", padx=12, pady=(12, 8))
+        entry = self.tk.Entry(entry_row, relief="solid", bd=1, font=("Microsoft YaHei UI", 9))
+        entry.pack(side="left", fill="x", expand=True, ipady=5)
+        listbox = self.tk.Listbox(dialog, relief="solid", bd=1, font=("Microsoft YaHei UI", 9), activestyle="none")
+        listbox.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        def reload_list():
+            listbox.delete(0, "end")
+            for reply in self._load_quick_replies():
+                listbox.insert("end", reply)
+
+        def add_reply():
+            value = entry.get().strip()
+            replies = self._load_quick_replies()
+            if value and value not in replies:
+                replies.append(value)
+                self._save_quick_replies(replies)
+                entry.delete(0, "end")
+                reload_list()
+
+        def remove_reply():
+            selection = listbox.curselection()
+            if not selection:
+                return
+            replies = self._load_quick_replies()
+            index = selection[0]
+            if index < len(replies):
+                replies.pop(index)
+                self._save_quick_replies(replies)
+                reload_list()
+
+        self.tk.Button(entry_row, text="添加", command=add_reply, relief="flat", bg="#0867f2", fg="#ffffff", padx=10, pady=4).pack(side="left", padx=(8, 0))
+        self.tk.Button(dialog, text="删除选中", command=remove_reply, relief="flat", bg="#fff3f3", fg="#d92d36", padx=10, pady=4).pack(anchor="e", padx=12, pady=(0, 10))
+        entry.bind("<Return>", lambda _event: (add_reply(), "break")[-1])
+        reload_list()
+        entry.focus_set()
 
     def compose_smart_prompt(self):
         text = self._input_text()
@@ -632,18 +1192,73 @@ class FloatingWindowApp:
             busy_text="正在生成智能提示词…",
         )
 
+    def compose_task_smart_prompt(self, task):
+        self._set_input_text(task.get("text") or task.get("title") or "")
+        self.input_box.focus_set()
+        self.compose_smart_prompt()
+
     def create_task(self):
         text = self._input_text()
         if not text:
             self._set_status("请先输入任务内容", "#b42318", 1800)
             return
+        if getattr(self, "editing_task_id", None):
+            task_id = self.editing_task_id
+
+            def edited(_result):
+                draft = self.input_draft_before_task_edit
+                self.editing_task_id = None
+                self.input_draft_before_task_edit = ""
+                self._set_input_text(draft)
+                self._set_status("任务已更新", "#239957", 1800)
+                self.refresh()
+
+            self._run_api(
+                "/api/tasks/edit",
+                method="POST",
+                payload={"task_id": task_id, "message": text},
+                on_success=edited,
+                busy_text="正在保存任务…",
+            )
+            return
         payload = {
             "text": text,
-            "target_ide": self.selected_ide_key or "auto",
+            "target_ide": "auto",
             "auto_dispatch": False,
         }
 
-        def created(_result):
+        def created(result):
+            task_id = result.get("task_id") or ""
+            optimistic_task = {
+                "title": text[:60] or "无标题任务",
+                "text": text,
+                "task_id": task_id,
+                "status": "待派发",
+                "target_ide": "未分配",
+                "surface": _task_surface(
+                    {"title": text, "text": text},
+                    self.current_model.get("capabilities") or ["general"],
+                ),
+                "progress": 0,
+                "allowed_actions": ["view", "edit", "delete"],
+                "feedbacks": [],
+                "summary": "",
+                "error": "",
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "content_kind": "task",
+            }
+            if self.current_model:
+                optimistic_model = {
+                    **self.current_model,
+                    "tasks": [
+                        optimistic_task,
+                        *[
+                            task for task in self.current_model.get("tasks", [])
+                            if not task_id or task.get("task_id") != task_id
+                        ],
+                    ],
+                }
+                self._render(optimistic_model)
             self._set_input_text("")
             self._set_status("任务已创建", "#239957", 1800)
             self.refresh()
@@ -659,6 +1274,7 @@ class FloatingWindowApp:
         def saved(_result):
             self._set_input_text("")
             self._set_status("随记已保存", "#239957", 1800)
+            self.refresh()
 
         self._run_api("/api/tasks/inspiration", method="POST", payload={"text": text}, on_success=saved, busy_text="正在保存随记…")
 
@@ -722,23 +1338,11 @@ class FloatingWindowApp:
             self._set_status("任务缺少 ID", "#b42318")
             return
         if action == "edit":
-            from tkinter import simpledialog
-
-            updated = simpledialog.askstring(
-                "编辑任务",
-                "修改任务内容：",
-                initialvalue=task.get("text") or task.get("title") or "",
-                parent=self.root,
-            )
-            if not updated:
-                return
-            self._run_api(
-                "/api/tasks/edit",
-                method="POST",
-                payload={"task_id": task_id, "message": updated},
-                on_success=lambda _result: (self._set_status("任务已更新", "#239957", 1800), self.refresh()),
-                busy_text="正在保存任务…",
-            )
+            self.input_draft_before_task_edit = self._input_text()
+            self.editing_task_id = task_id
+            self._set_input_text(task.get("text") or task.get("title") or "")
+            self.input_box.focus_set()
+            self._set_status("正在编辑任务，按 Enter 保存", "#0867f2")
             return
         if action in {"feedback", "feedback_note"}:
             from tkinter import simpledialog
@@ -774,6 +1378,7 @@ class FloatingWindowApp:
             return
 
         route_map = {
+            "complete": ("/api/tasks/complete", "POST", {"task_id": task_id, "manual": True}),
             "confirm_done": (f"/api/tasks/{quote(task_id)}/confirm", "POST", {}),
             "retry": (f"/api/tasks/{quote(task_id)}/retry", "POST", {}),
             "mark_failed": (f"/api/tasks/{quote(task_id)}/fail", "POST", {"error": "用户从浮窗标记失败"}),
@@ -810,7 +1415,10 @@ class FloatingWindowApp:
         )
 
     def _open_project_picker(self, event):
-        if not self.drag_moved:
+        if self.drag_moved:
+            self._apply_monitor_layout()
+            self._save_window_position()
+        else:
             self.load_project_menu()
 
     def load_project_menu(self):
@@ -843,22 +1451,29 @@ class FloatingWindowApp:
         )
 
     def _render_error(self, message):
+        self.connection_failed = True
+        # Force a full redraw after reconnection even when the server data is
+        # identical to the last successful response.
+        self.last_render_signature = None
         self.root.title(WINDOW_TITLE_FALLBACK)
         self.title_label.config(text=WINDOW_TITLE_FALLBACK)
-        self.status_label.config(text=message, fg="#b42318")
+        self._render_codex_quota({})
+        self._set_status("AideLink 服务正在启动或重启，正在重新连接…（点击复制详情）", "#657084")
+        self.status_detail = message
+        self.status_label.config(cursor="hand2")
+        self.status_label.bind("<Button-1>", self._copy_status_detail)
         self._clear_rows(self.ide_frame)
         self._clear_rows(self.task_frame)
-        self.tk.Label(self.ide_frame, text="暂无可用 IDE", bg="#ffffff", fg="#777f8f", anchor="w").pack(fill="x", pady=8)
-        self.tk.Label(self.task_frame, text="当前没有待处理任务", bg="#f8fafc", fg="#777f8f", anchor="w").pack(fill="x", pady=8)
+        self.tk.Label(self.ide_frame, text="等待服务连接", bg="#ffffff", fg="#8a94a6", anchor="w").pack(fill="x", pady=8)
+        self.tk.Label(self.task_frame, text="连接恢复后将自动显示任务", bg="#ffffff", fg="#8a94a6", anchor="w").pack(fill="x", pady=8)
 
     def _clear_input_hint(self, _event):
-        if self.input_box.get("1.0", "end-1c") == "输入要发送的内容，修改要求或想法…":
+        if self.input_box.get("1.0", "end-1c") == "随心输入…":
             self.input_box.delete("1.0", "end")
             self.input_box.config(fg="#172033")
 
     def _update_counter(self, _event=None):
-        length = len(self.input_box.get("1.0", "end-1c"))
-        self.counter_label.config(text=f"{length}/2000   ↗")
+        return None
 
     def refresh_once(self):
         try:
@@ -868,9 +1483,32 @@ class FloatingWindowApp:
             return RefreshResult(False, build_home_model({}), f"AideLink 服务连接失败：{exc}")
 
     def refresh(self):
-        result = self.refresh_once()
+        if self.refresh_in_progress:
+            return
+        self.refresh_in_progress = True
+
+        def worker():
+            result = self.refresh_once()
+
+            def apply_result():
+                self.refresh_in_progress = False
+                self._apply_refresh_result(result)
+
+            self._post_ui(apply_result)
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="AideLinkFloatingWindowRefresh",
+        ).start()
+
+    def _apply_refresh_result(self, result):
         if result.ok:
-            self._render(result.model)
+            signature = json.dumps(result.model, ensure_ascii=False, sort_keys=True, default=str)
+            if self.connection_failed or signature != self.last_render_signature:
+                self.connection_failed = False
+                self.last_render_signature = signature
+                self._render(result.model)
         else:
             self._render_error(result.error or "AideLink 服务连接失败")
 
@@ -891,12 +1529,154 @@ class FloatingWindowApp:
         y = event.y_root - self.drag_start[1]
         self.root.geometry(f"+{x}+{y}")
 
+    def _finish_drag(self, _event=None):
+        if self.drag_moved:
+            self._apply_monitor_layout()
+            self._save_window_position()
+
+    @staticmethod
+    def _virtual_screen_bounds(root):
+        if os.name == "nt":
+            user32 = ctypes.windll.user32
+            return (
+                user32.GetSystemMetrics(76),
+                user32.GetSystemMetrics(77),
+                user32.GetSystemMetrics(78),
+                user32.GetSystemMetrics(79),
+            )
+        return (0, 0, root.winfo_screenwidth(), root.winfo_screenheight())
+
+    def _initial_window_position(self, window_height):
+        left, top, screen_width, screen_height = self._virtual_screen_bounds(self.root)
+        default_x = left + screen_width - self.window_width - 6
+        default_y = top + 24
+        try:
+            state = json.loads(WINDOW_STATE_FILE.read_text(encoding="utf-8"))
+            x, y = int(state["x"]), int(state["y"])
+        except (OSError, KeyError, TypeError, ValueError):
+            x, y = default_x, default_y
+        monitor = self._monitor_work_area_at(x + self.window_width // 2, y + 20)
+        self._set_monitor_profile(monitor)
+        monitor_left, monitor_top, monitor_width, monitor_height = monitor
+        max_x = monitor_left + max(0, monitor_width - self.window_width)
+        max_y = monitor_top + max(0, monitor_height - min(window_height, monitor_height))
+        return max(monitor_left, min(x, max_x)), max(monitor_top, min(y, max_y))
+
+    def _monitor_work_area_at(self, x, y):
+        if os.name != "nt":
+            return (0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        point = wintypes.POINT(int(x), int(y))
+        monitor = ctypes.windll.user32.MonitorFromPoint(point, 2)
+        info = MonitorInfo()
+        info.cbSize = ctypes.sizeof(info)
+        if monitor and ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            rect = info.rcWork
+            return (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+        return self._virtual_screen_bounds(self.root)
+
+    def _set_monitor_profile(self, monitor):
+        _left, _top, width, height = monitor
+        if width >= 2400 or height >= 1350:
+            self.window_width = 480
+            self.min_window_height = 760
+            self.max_window_height = min(1040, max(760, height - 40))
+        elif width >= 1800 and height >= 1000:
+            self.window_width = 440
+            self.min_window_height = 680
+            self.max_window_height = min(900, max(680, height - 40))
+        else:
+            self.window_width = WINDOW_WIDTH
+            self.min_window_height = 500
+            self.max_window_height = min(720, max(500, height - 32))
+
+    def _apply_monitor_layout(self):
+        monitor = self._monitor_work_area_at(
+            self.root.winfo_x() + self.root.winfo_width() // 2,
+            self.root.winfo_y() + 20,
+        )
+        previous = (self.window_width, self.min_window_height, self.max_window_height)
+        self._set_monitor_profile(monitor)
+        changed = previous != (self.window_width, self.min_window_height, self.max_window_height)
+        self.root.minsize(min(350, self.window_width), self.min_window_height)
+        if changed and self.current_model:
+            self._render(self.current_model)
+        else:
+            self._ensure_window_visible(self.root.winfo_height())
+        return changed
+
+    def _save_window_position(self):
+        self._update_window_state(
+            x=self.root.winfo_x(),
+            y=self.root.winfo_y(),
+        )
+
+    @staticmethod
+    def _read_window_state():
+        try:
+            state = json.loads(WINDOW_STATE_FILE.read_text(encoding="utf-8"))
+            return state if isinstance(state, dict) else {}
+        except Exception:
+            return {}
+
+    @classmethod
+    def _update_window_state(cls, **fields):
+        try:
+            state = cls._read_window_state()
+            state.update(fields)
+            WINDOW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temporary = WINDOW_STATE_FILE.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(temporary, WINDOW_STATE_FILE)
+        except Exception:
+            pass
+
+    def _schedule_input_draft_save(self):
+        if self.input_draft_after_id is not None:
+            self.root.after_cancel(self.input_draft_after_id)
+        self.input_draft_after_id = self.root.after(150, self._save_input_draft)
+
+    def _save_input_draft(self):
+        self.input_draft_after_id = None
+        if not hasattr(self, "input_box"):
+            return
+        self._update_window_state(input_draft=self._input_text())
+
+    def _restore_input_draft(self):
+        draft = str(self._read_window_state().get("input_draft") or "")
+        if draft:
+            self._set_input_text(draft)
+            self.input_box.mark_set("insert", "end-1c")
+
+    def _ensure_window_visible(self, window_height):
+        left, top, screen_width, screen_height = self._monitor_work_area_at(
+            self.root.winfo_x() + self.root.winfo_width() // 2,
+            self.root.winfo_y() + 20,
+        )
+        x = max(left, min(self.root.winfo_x(), left + max(0, screen_width - self.window_width)))
+        y = max(top, min(self.root.winfo_y(), top + max(0, screen_height - window_height)))
+        if (x, y) != (self.root.winfo_x(), self.root.winfo_y()):
+            self.root.geometry(f"+{x}+{y}")
+
     def toggle_topmost(self):
         self.is_topmost = not self.is_topmost
         self.root.attributes("-topmost", self.is_topmost)
-        self.top_btn.config(text="置顶" if self.is_topmost else "普通")
+        self.top_btn.config(image=self.icons.get("pin", 18, "#0867f2" if self.is_topmost else "#657084"))
 
     def close(self):
+        self._save_input_draft()
+        self._save_window_position()
         self.root.destroy()
 
     def activate(self):
@@ -931,10 +1711,10 @@ class FloatingWindowApp:
                         data = conn.recv(32)
                         command = data.strip()
                         if command == b"close":
-                            self.root.after(0, self.close)
+                            self._post_ui(self.close)
                             return
                         if command == b"activate":
-                            self.root.after(0, self.activate)
+                            self._post_ui(self.activate)
             except OSError:
                 return
             finally:

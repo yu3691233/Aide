@@ -43,6 +43,19 @@ class ProjectCapabilitiesTests(unittest.TestCase):
         self.assertEqual(["web", "android"], result["capabilities"])
         self.assertEqual("android", result["preferred_surface"])
 
+    def test_aidelink_style_project_detects_flask_web_and_windows_float(self):
+        server = self.root / "server"
+        server.mkdir()
+        (server / "templates").mkdir()
+        (server / "static").mkdir()
+        (server / "floating_window_app.py").write_text("", encoding="utf-8")
+        with patch("project_capabilities.inspect_android_project", return_value={"is_android": True}):
+            result = inspect_project_capabilities(str(self.root))
+
+        self.assertEqual(["web", "android", "windows"], result["capabilities"])
+        self.assertTrue(result["web"]["is_web"])
+        self.assertTrue(result["windows"]["is_windows"])
+
 
 if __name__ == "__main__":
     unittest.main()

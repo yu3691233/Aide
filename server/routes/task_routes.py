@@ -39,6 +39,8 @@ def _task_type_for_list(task):
     if explicit_type:
         return explicit_type
     metadata = task.get("metadata") or {}
+    if metadata.get("content_kind") == "inspiration":
+        return "inspiration"
     metadata_type = (metadata.get("task_type") or "").strip().lower()
     if metadata_type:
         return metadata_type

@@ -60,7 +60,7 @@ def api_prompt_compose():
         return call_model(
             model_key,
             messages,
-            max_tokens=1800,
+            max_tokens=800,
             temperature=0.1,
             timeout=45,
             response_format={"type": "json_object"},

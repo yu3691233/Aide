@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from flask import Blueprint, request, jsonify, send_from_directory
+from flask import Blueprint, request, jsonify, send_file, send_from_directory
 from paths import BRIDGE_DIR as BASE_DIR
 from config import (
     load_settings as _load_settings,
@@ -116,6 +116,18 @@ def get_active_models():
 # Desktop IDEs
 # ============================================================
 
+def _with_executable_icon_urls(ides):
+    base = request.host_url.rstrip("/")
+    return [
+        {
+            **ide,
+            "icon_url": f"{base}/api/desktop-ides/{ide.get('key', '')}/icon"
+            if ide.get("path") and ide.get("key") else "",
+        }
+        for ide in ides
+    ]
+
+
 @config_bp.route('/api/desktop-ides', methods=['GET'])
 def get_desktop_ides():
     import ide_scanner
@@ -129,7 +141,7 @@ def get_desktop_ides():
     scanned_cache_exists = os.path.exists(str(ide_scanner.SCANNED_IDES_FILE))
     if not has_desktop_ide and not scanned_cache_exists:
         ides = ide_scanner.scan_installed_ides()
-    return jsonify({"ides": enrich_ides(ides)})
+    return jsonify({"ides": _with_executable_icon_urls(enrich_ides(ides))})
 
 @config_bp.route('/api/scan-ides', methods=['POST'])
 def scan_ides():
@@ -139,9 +151,21 @@ def scan_ides():
     return jsonify({
         "success": True,
         "message": f"扫描完成，发现 {len(ides)} 个 IDE",
-        "ides": enrich_ides(ides),
+        "ides": _with_executable_icon_urls(enrich_ides(ides)),
         "count": len(ides),
     })
+
+
+@config_bp.route('/api/desktop-ides/<key>/icon', methods=['GET'])
+def get_desktop_ide_icon(key):
+    import ide_scanner
+    from ide_icon_cache import cached_ide_icon
+
+    ide = next((item for item in ide_scanner.get_all_ides() if item.get("key") == key), None)
+    icon_path = cached_ide_icon(ide.get("path")) if ide else None
+    if not icon_path:
+        return "", 404
+    return send_file(icon_path, mimetype="image/png", max_age=86400)
 
 @config_bp.route('/api/manual-ides', methods=['GET'])
 def get_manual_ides():

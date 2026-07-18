@@ -83,17 +83,17 @@ def build_fallback(component, user_text, task_type, difficulty):
                 "3. 期望结果是什么。确认前不要新增、删除或修改组件行为。"
             ),
         }
-    constraint = ""
-    if task_type == "test_plan":
-        constraint = "\n本任务只进行检查、验证和方案整理，不修改代码、配置或项目文件。"
     title_text = user_text.rstrip("。！？!? ") or "需要处理"
     title = f"{component['name']}：{title_text}"[:40]
+    constraint_text = (
+        "只检查并反馈结果，不修改代码、配置或项目文件。"
+        if task_type == "test_plan"
+        else "保留现有相关行为，不改无关内容。"
+    )
     prompt = (
-        f"【任务类型】{type_label}\n"
-        f"【界面定位】{context}\n"
-        f"【用户描述】{user_text or '请根据界面定位确认用户想处理的内容。'}\n\n"
-        "请先确认目标组件和现象，再进行必要处理；保留现有相关功能，不修改无关内容。"
-        f"{constraint}"
+        f"目标：{user_text or '确认并处理用户反馈'}\n"
+        f"定位：{context}\n"
+        f"边界：{constraint_text}"
     )
     return {
         "title": title,
@@ -149,9 +149,13 @@ def _ai_messages(component, user_text, task_type, difficulty, image_data_url=Non
         "initial_difficulty": difficulty,
     }
     system = (
-        "你是简洁的开发任务提示词助手。用户已经定位了界面组件，你不需要猜代码文件。"
+        "你是低上下文、低额度消耗的开发任务提示词助手。提示词的作用是让开发IDE准确理解目标和边界，"
+        "不是教开发IDE如何写代码。用户已经定位了界面组件，你不需要猜代码文件。"
         "根据组件上下文和短描述生成最多3个可能意图，候选之间是具体理解差异，不要强行对应不同任务类型。"
         "若提供截图，请结合截图识别用户所指的页面、组件类型、可见文字和位置，不要猜源码文件。"
+        "每个prompt尽量控制在300个汉字以内，只保留：明确目标、已知定位、必须保留的边界、可验证结果。"
+        "禁止输出实现教程、逐步操作、技术方案、示例代码、通用开发规范或背景铺陈；"
+        "禁止让IDE先扫描整个项目、到处查找或自行猜测需求。已知文件或组件就直接写明，不知道则不要编造。"
         "截图和标注只能证明用户关注的位置，不能证明用户想如何修改。禁止仅凭截图臆造新增、删除、恢复、"
         "改样式或改交互等需求。若user_text包含【用户未描述具体需求】，只描述识别到的页面、组件和可见状态，"
         "prompt必须明确写出意图尚未确认，并列出需要用户确认的问题，不得给出具体修改指令。"
@@ -203,7 +207,7 @@ def compose_prompt(data, model_caller=None, image_data_url=None):
                     if not isinstance(item, dict):
                         continue
                     title = _clean(item.get("title"), 50)
-                    prompt = str(item.get("prompt") or "").strip()[:4000]
+                    prompt = str(item.get("prompt") or "").strip()[:900]
                     if title and prompt:
                         parsed_candidates.append({
                             "title": title,

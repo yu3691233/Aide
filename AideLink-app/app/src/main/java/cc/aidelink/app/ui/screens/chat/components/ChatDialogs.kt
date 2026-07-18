@@ -1,8 +1,10 @@
 package cc.aidelink.app.ui.screens.chat.components
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
@@ -20,6 +22,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import cc.aidelink.app.data.api.BridgeApi
 import cc.aidelink.app.domain.model.bridge.DesktopIde
 import cc.aidelink.app.ui.screens.chat.AideLinkChatViewModel
@@ -165,7 +168,26 @@ fun IdeControlDialog(
                     else -> {
                         ElevatedCard(Modifier.fillMaxWidth()) {
                             Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                                TargetIcon(currentTarget, size = 28.dp)
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .border(
+                                            2.dp,
+                                            if (isRunning) Color(0xFF35B86B) else MaterialTheme.colorScheme.outlineVariant,
+                                            CircleShape,
+                                        ),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    if (selectedIde.icon_url.isNotBlank()) {
+                                        AsyncImage(
+                                            model = selectedIde.icon_url,
+                                            contentDescription = selectedIde.name,
+                                            modifier = Modifier.size(24.dp),
+                                        )
+                                    } else {
+                                        TargetIcon(currentTarget, size = 24.dp)
+                                    }
+                                }
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(selectedIde.name.ifBlank { selectedIde.key }, fontWeight = FontWeight.SemiBold)
