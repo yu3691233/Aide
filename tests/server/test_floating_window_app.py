@@ -235,6 +235,10 @@ class FloatingWindowAppModelTests(unittest.TestCase):
             "status": "待测试",
             "test_result": "passed",
         }))
+        self.assertEqual("dispatched", fwa._task_test_result({
+            "status": "待测试",
+            "test_result": "dispatched",
+        }))
         self.assertEqual("failed", fwa._task_test_result({
             "status": "pending_test",
             "test_result": "failed",

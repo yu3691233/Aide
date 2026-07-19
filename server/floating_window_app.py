@@ -118,7 +118,7 @@ def _task_test_result(task):
     if status not in {"待测试", "超时"}:
         return ""
     result = str(task.get("test_result") or "").strip().lower()
-    return result if result in {"passed", "failed"} else ""
+    return result if result in {"dispatched", "passed", "failed"} else ""
 
 
 def _latest_task_id(tasks):
@@ -594,7 +594,7 @@ class FloatingWindowApp:
         test_result = _task_test_result(task)
         if _task_group_name(task) == "待派发":
             card_outline = "#9b7be3"
-        elif _task_group_name(task) == "待测试" and test_result == "passed":
+        elif _task_group_name(task) == "待测试" and test_result in {"dispatched", "passed"}:
             card_outline = "#2e9d55"
         elif _task_group_name(task) == "待测试" and test_result == "failed":
             card_outline = "#d83b3b"
@@ -615,6 +615,7 @@ class FloatingWindowApp:
         canvas.create_text(44, metadata_y, text=version_text[:12], fill="#657084", font=("Microsoft YaHei UI", 8), tags="card-hit")
         display_status = (
             "测试通过" if test_result == "passed"
+            else "测试已派发" if test_result == "dispatched"
             else "测试未通过" if test_result == "failed"
             else task["status"]
         )
@@ -626,14 +627,28 @@ class FloatingWindowApp:
 
         dispatch_action = "dispatch_test" if _task_group_name(task) == "待测试" else "dispatch"
         dispatch_label = "派发测试" if dispatch_action == "dispatch_test" else "派发"
-        actions = (("复制", "copy", 14), (dispatch_label, dispatch_action, 36))
+        actions = (
+            (("复制", "copy", 14), ("已完成", "confirm_done", 36), (dispatch_label, dispatch_action, 58))
+            if _task_group_name(task) == "待测试"
+            else (("复制", "copy", 14), (dispatch_label, dispatch_action, 36))
+        )
         action_images = []
         for action, action_name, center_y in actions:
             tag = f"{action}-{task.get('task_id')}"
-            icon_name = "copy" if action_name == "copy" else "dispatch"
-            action_image = self.icons.get(icon_name, 12, "#526078")
-            action_images.append(action_image)
-            canvas.create_image(width - 16, center_y, image=action_image, tags=tag)
+            if action_name == "confirm_done":
+                self._draw_round_rect(
+                    canvas, width - 43, center_y - 9, width - 5, center_y + 9, 6,
+                    fill="#effaf3", outline="#8fd3a8", tags=tag,
+                )
+                canvas.create_text(
+                    width - 24, center_y, text="完成", fill="#24864b",
+                    font=("Microsoft YaHei UI", 7, "bold"), tags=tag,
+                )
+            else:
+                icon_name = "copy" if action_name == "copy" else "dispatch"
+                action_image = self.icons.get(icon_name, 12, "#526078")
+                action_images.append(action_image)
+                canvas.create_image(width - 16, center_y, image=action_image, tags=tag)
             callback = (
                 (lambda _event, item=task: (self.copy_task(item), "break")[-1])
                 if action_name == "copy"
@@ -689,7 +704,7 @@ class FloatingWindowApp:
             actions.append(("pending_test", "待测试"))
         if _task_group_name(task) == "待测试":
             test_result = _task_test_result(task)
-            if test_result == "passed":
+            if test_result in {"dispatched", "passed"}:
                 actions.append(("confirm_done", "确认完成"))
             else:
                 if test_result == "failed":

@@ -181,10 +181,7 @@ def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callba
         f"2. 运行相关测试验证功能\n"
         f"3. 如发现问题，记录具体位置和现象\n"
         f"4. **不要修改任何代码**，只做验证\n\n"
-        f"测试完成后，在聊天中报告测试结果，并必须向以下地址 POST JSON：\n"
-        f"{callback_url}\n"
-        f'{{"test_task_id":"{test_task_id}","result":"passed 或 failed",'
-        f'"summary":"测试结论","evidence":"测试命令、日志或问题位置"}}'
+        f"测试完成后，直接在聊天中报告测试结果。"
     )
 
     parent_full_task = runtime.get_task(task_id) or {}
@@ -247,6 +244,15 @@ def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callba
                 "success": False,
                 "message": f"测试任务派发失败: {inject_detail}",
             }, 500
+
+    dispatched_metadata = dict(parent_metadata)
+    dispatched_metadata.update({
+        "test_result": "dispatched",
+        "test_ide": test_ide,
+        "test_task_id": test_task_id,
+        "tested_at": now,
+    })
+    runtime.update_task(task_id, metadata=dispatched_metadata, updated_at=now)
 
     return {
         "success": True,

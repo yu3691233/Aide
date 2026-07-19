@@ -79,7 +79,7 @@ internal fun taskStatusMatchesTab(status: String, tab: Int, taskType: String? = 
 
 internal fun taskTestVisualResult(status: String, testResult: String?): String? {
     if (!status.equals("pending_test", ignoreCase = true)) return null
-    return testResult?.lowercase()?.takeIf { it == "passed" || it == "failed" }
+    return testResult?.lowercase()?.takeIf { it in setOf("dispatched", "passed", "failed") }
 }
 
 internal fun filterTasksForIde(
@@ -547,7 +547,7 @@ fun TaskCard(
 
     val testResult = taskTestVisualResult(task.status, task.test_result)
     val statusColor = when {
-        task.status.equals("pending_test", ignoreCase = true) && testResult == "passed" -> Color(0xFF2E7D32)
+        task.status.equals("pending_test", ignoreCase = true) && testResult in setOf("dispatched", "passed") -> Color(0xFF2E7D32)
         task.status.equals("pending_test", ignoreCase = true) && testResult == "failed" -> Color(0xFFD32F2F)
         else -> when (task.status.lowercase()) {
             "done" -> Color(0xFF4CAF50)
@@ -565,6 +565,7 @@ fun TaskCard(
 
     val statusText = when {
         task.status.equals("pending_test", ignoreCase = true) && testResult == "passed" -> "测试通过"
+        task.status.equals("pending_test", ignoreCase = true) && testResult == "dispatched" -> "测试已派发"
         task.status.equals("pending_test", ignoreCase = true) && testResult == "failed" -> "测试未通过"
         else -> when (task.status.lowercase()) {
             "done" -> "已完成"
@@ -595,7 +596,7 @@ fun TaskCard(
     val selectedBgColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.14f)
 
     val cardBorder = when {
-        task.status.equals("pending_test", ignoreCase = true) && testResult in setOf("passed", "failed") ->
+        task.status.equals("pending_test", ignoreCase = true) && testResult in setOf("dispatched", "passed", "failed") ->
             BorderStroke(width = 2.dp, color = statusColor)
         isSelected -> BorderStroke(
             width = 1.dp,
@@ -750,6 +751,25 @@ fun TaskCard(
                     maxLines = if (expanded) Int.MAX_VALUE else 6,
                     overflow = TextOverflow.Ellipsis
                 )
+
+                if (!batchMode && task.status.equals("pending_test", ignoreCase = true)) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = { onConfirm(task.task_id) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        modifier = Modifier.height(30.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.CheckCircle,
+                            contentDescription = "已完成",
+                            modifier = Modifier.size(14.dp),
+                            tint = Color.White
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("已完成", fontSize = 11.sp, color = Color.White)
+                    }
+                }
 
                 if (expanded) {
                     if (!task.test_summary.isNullOrBlank()) {

@@ -81,6 +81,7 @@ class OfflineTaskFallbackTest {
     @Test
     fun pendingTestVisualResultDistinguishesPassedFailedAndUntested() {
         assertEquals("passed", taskTestVisualResult("pending_test", "passed"))
+        assertEquals("dispatched", taskTestVisualResult("pending_test", "dispatched"))
         assertEquals("failed", taskTestVisualResult("pending_test", "failed"))
         assertEquals(null, taskTestVisualResult("pending_test", null))
         assertEquals(null, taskTestVisualResult("running", "failed"))

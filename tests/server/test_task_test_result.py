@@ -136,7 +136,11 @@ class TaskTestResultTests(unittest.TestCase):
         self.assertIn("### 原始需求\n\n修复测试任务抬头", injected["message"])
         self.assertNotIn("**原始任务**", injected["message"])
         self.assertNotIn("**修改 IDE**", injected["message"])
+        self.assertNotIn("POST JSON", injected["message"])
+        self.assertNotIn("/api/tasks/test-result", injected["message"])
         self.assertTrue(injected["task_id"].startswith("test-task-parent-"))
+        self.assertEqual("dispatched", runtime.tasks["task-parent"]["metadata"]["test_result"])
+        self.assertEqual("trae", runtime.tasks["task-parent"]["metadata"]["test_ide"])
         self.assertEqual(
             "pending_test",
             runtime.tasks["task-parent"]["status"],
