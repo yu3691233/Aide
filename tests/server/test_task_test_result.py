@@ -133,6 +133,9 @@ class TaskTestResultTests(unittest.TestCase):
         self.assertEqual("trae", injected["target"])
         self.assertIn("请验证以上任务是否已正确完成", injected["message"])
         self.assertIn("不要修改代码，也不要提交任何变更", injected["message"])
+        self.assertIn("### 原始需求\n\n修复测试任务抬头", injected["message"])
+        self.assertNotIn("**原始任务**", injected["message"])
+        self.assertNotIn("**修改 IDE**", injected["message"])
         self.assertTrue(injected["task_id"].startswith("test-task-parent-"))
         self.assertEqual(
             "pending_test",

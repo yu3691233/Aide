@@ -169,15 +169,12 @@ def api_tasks_test_result():
 def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callback_url):
     orig_message = orig_task.get("message", "")
     orig_title = orig_task.get("title", task_id)
-    orig_ide = orig_task.get("target_ide", "")
     now = datetime.now().isoformat()
     test_task_id = f"test-{task_id}-{int(time.time())}"
     test_message = (
         f"## 测试任务（请勿修改代码）\n\n"
         f"请验证以上任务是否已正确完成。仅检查代码、运行测试并报告结果；"
         f"不要修改代码，也不要提交任何变更。\n\n"
-        f"**原始任务**: {orig_title}\n"
-        f"**修改 IDE**: {orig_ide}\n\n"
         f"### 原始需求\n\n{orig_message}\n\n"
         f"### 测试要求\n\n"
         f"1. 请检查上述修改是否正确实现\n"
