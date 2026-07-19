@@ -132,7 +132,10 @@ class TaskCreateDispatchFallbackTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("app", self.runtime.tasks[0]["source"])
 
-    def test_non_dispatch_create_stays_unassigned_for_pending_list(self):
+    def test_non_dispatch_create_assigns_to_specified_ide(self):
+        # 浮窗/App 在选中具体 IDE 时创建任务（auto_dispatch=False），应当分配到
+        # 该 IDE（queued 状态），而不是标记为未分配。只有 target_ide=="auto"
+        # 或缺省时才标记为未分配（draft 状态）。
         with patch("shared_runtime.runtime", self.runtime):
             response = self.client.post(
                 "/api/tasks/create",
@@ -145,8 +148,25 @@ class TaskCreateDispatchFallbackTests(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         task = self.runtime.tasks[0]
-        self.assertIsNone(task["target_ide"])
+        self.assertEqual("codex", task["target_ide"])
         self.assertEqual("codex", task["metadata"]["preferred_target_ide"])
+
+    def test_non_dispatch_create_with_auto_target_stays_unassigned(self):
+        # target_ide=="auto" 时标记为未分配（draft），适用于没有开启 IDE 或
+        # 离线回退场景。
+        with patch("shared_runtime.runtime", self.runtime):
+            response = self.client.post(
+                "/api/tasks/create",
+                json={
+                    "text": "no ide selected",
+                    "target_ide": "auto",
+                    "auto_dispatch": False,
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        task = self.runtime.tasks[0]
+        self.assertIsNone(task["target_ide"])
 
 
 if __name__ == "__main__":

@@ -191,6 +191,18 @@ def inject_text_to_desktop(ide, message, task_id="", restore_image=None):
             f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n"
         )
         log_file.flush()
+
+        # 锁屏时 SetForegroundWindow 会失败（GetForegroundWindow 返回 hwnd=0），
+        # 远程通过 frp 派发任务时尤其常见。先唤醒屏幕再做后续窗口操作。
+        try:
+            from screen_control import ensure_screen_unlocked
+            if ensure_screen_unlocked():
+                log_file.write("[INFO] Screen was locked; woke it up before injection.\n")
+                log_file.flush()
+        except Exception as exc:
+            log_file.write(f"[WARN] ensure_screen_unlocked failed: {exc}\n")
+            log_file.flush()
+
         from windows_privilege import ide_window_requires_elevation, run_elevated
 
         if ide_window_requires_elevation(ide):

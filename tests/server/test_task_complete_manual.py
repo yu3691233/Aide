@@ -28,6 +28,13 @@ class ManualTaskCompleteTests(unittest.TestCase):
         self.assertEqual("[派发任务]", _dispatch_prefix([windows, web]))
         self.assertEqual("[派发任务]", _dispatch_prefix([windows, unspecified]))
 
+    def test_dispatch_prefix_identifies_redispatched_test_task(self):
+        test_windows = {"metadata": {"surface": "windows", "is_test": True}}
+        test_unspecified = {"metadata": {"is_test": True}}
+
+        self.assertEqual("[测试任务-Windows]", _dispatch_prefix([test_windows]))
+        self.assertEqual("[测试任务]", _dispatch_prefix([test_unspecified]))
+
     def test_dispatch_surface_overrides_task_metadata_before_injection(self):
         app = Flask(__name__)
         runtime = Mock()

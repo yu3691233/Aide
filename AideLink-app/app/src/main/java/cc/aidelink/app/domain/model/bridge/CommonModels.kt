@@ -65,3 +65,21 @@ data class ActiveModel(
     val key: String = "",
     val description: String = "",
 )
+
+@Serializable
+data class CodexQuota(
+    val available: Boolean = false,
+    val remaining_percent: Int? = null,
+    val period: String? = null,
+    val plan_type: String? = null,
+    val reset_at: String? = null,
+    val window_seconds: Long? = null,
+    val updated_at: Long? = null,
+    val error: String? = null,
+)
+
+@Serializable
+data class CodexQuotaResponse(
+    val ok: Boolean = false,
+    val quota: CodexQuota = CodexQuota(),
+)

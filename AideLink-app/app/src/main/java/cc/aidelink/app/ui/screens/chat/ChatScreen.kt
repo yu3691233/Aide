@@ -95,6 +95,69 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.platform.LocalFocusManager
+import cc.aidelink.app.domain.model.bridge.CodexQuota
+
+/**
+ * Codex 周额度迷你徽章：迷你进度条 + 百分比文本，与桌面浮窗保持一致。
+ * unavailable 时显示 "--%"。点击触发强制刷新。
+ */
+@Composable
+private fun CodexQuotaChip(
+    quota: CodexQuota?,
+    loading: Boolean,
+    onClick: () -> Unit,
+) {
+    val available = quota?.available == true
+    val remaining = quota?.remaining_percent
+    val barWidth = 36.dp
+    val barHeight = 5.dp
+    val progressColor = when {
+        !available || remaining == null -> Color(0xFFB0B7C3)
+        remaining >= 30 -> Color(0xFF2FB66D)
+        remaining >= 10 -> Color(0xFFFFA726)
+        else -> Color(0xFFEF5350)
+    }
+    val textColor = if (available && remaining != null) progressColor else Color(0xFF8A94A6)
+    val text = if (available && remaining != null) "${remaining}%" else "--%"
+
+    Box(
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(width = barWidth, height = barHeight)
+                    .clip(CircleShape)
+                    .background(Color(0xFFE5E9EF)),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                val pct = if (available && remaining != null) {
+                    (remaining.coerceIn(0, 100) / 100f)
+                } else 0f
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(fraction = if (pct > 0f) pct else 0f)
+                        .clip(CircleShape)
+                        .background(progressColor),
+                )
+            }
+            Text(
+                text = if (loading) "···" else text,
+                style = MaterialTheme.typography.labelSmall,
+                color = textColor,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
+    }
+}
 
 internal fun targetColor(target: String?): Color {
     if (target == null) return Color(0xFF90A4AE)
@@ -398,6 +461,13 @@ fun AideLinkChatScreen(
         viewModel.loadTasks()
         viewModel.loadSelectedIdeList()
         viewModel.loadDesktopIdes()
+        viewModel.startCodexQuotaPolling()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopCodexQuotaPolling()
+        }
     }
 
     Scaffold(
@@ -470,6 +540,16 @@ fun AideLinkChatScreen(
                     }
 
                     Spacer(modifier = Modifier.weight(1f))
+
+                    // Codex 周额度：与桌面浮窗保持一致的视觉（迷你进度条 + 百分比）。
+                    // 点击强制刷新一次（绕过服务端缓存）。
+                    CodexQuotaChip(
+                        quota = state.codexQuota,
+                        loading = state.codexQuotaLoading,
+                        onClick = { viewModel.loadCodexQuota(force = true) },
+                    )
+
+                    Spacer(modifier = Modifier.width(4.dp))
 
                     // 悬浮窗按钮（toggle）
                     val isLocatorRunning = remember { mutableStateOf(false) }
@@ -552,6 +632,7 @@ fun AideLinkChatScreen(
                         showClipboardSheet = true
                     },
                     onWakeScreen = viewModel::wakeScreen,
+                    onTurnOffMonitor = viewModel::turnOffMonitor,
                     onRefreshIdeStatus = { viewModel.loadIdeRunningStatus(); viewModel.loadOcWebStatus() },
                     onStartIde = viewModel::startIde,
                     onStopIde = viewModel::stopIde,

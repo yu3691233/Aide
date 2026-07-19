@@ -79,17 +79,22 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // 锁屏上显示 + 点亮屏幕（Android 10+ 原生 API）
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                    android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
-                    android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-            )
+        // 仅在从 fullScreenIntent（任务完成/失败通知）拉起时启用，避免无条件设置
+        // 干扰 MIUI 方向锁定磁贴状态（setShowWhenLocked 会触发系统重置方向）。
+        val fromNotification = intent?.getBooleanExtra("from_notification", false) == true
+        if (fromNotification) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+            } else {
+                @Suppress("DEPRECATION")
+                window.addFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                        android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                        android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                )
+            }
         }
 
         // 传统方式：状态栏白色，导航栏正常显示

@@ -18,8 +18,8 @@ android {
         applicationId = "cc.aidelink.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 74
-        versionName = "1.0.3"
+        versionCode = 75
+        versionName = "1.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -1460,9 +1460,12 @@ class FloatingWindowApp:
                 busy_text="正在保存任务…",
             )
             return
+        # 浮窗创建任务时分配到当前选中的 IDE；只有没选中运行中的 IDE 时
+        # 才回退到 "auto"（服务端会标记为未分配 draft）。
+        selected_ide_key = getattr(self, "selected_ide_key", None)
         payload = {
             "text": text,
-            "target_ide": "auto",
+            "target_ide": selected_ide_key or "auto",
             "auto_dispatch": False,
             "source": "floating_window",
         }
@@ -1477,8 +1480,8 @@ class FloatingWindowApp:
                 "title": text[:60] or "无标题任务",
                 "text": text,
                 "task_id": task_id,
-                "status": "待派发",
-                "target_ide": "未分配",
+                "status": "排队中" if selected_ide_key else "待派发",
+                "target_ide": selected_ide_key or "未分配",
                 "surface": _task_surface(
                     {"title": text, "text": text, "metadata": {"surface": selected_surface}},
                     current_model.get("capabilities") or ["general"],

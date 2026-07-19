@@ -450,6 +450,13 @@ def api_wake_screen():
         "locked_after": is_screen_locked() if ok else None
     })
 
+@service_bp.route('/screen/off', methods=['POST'])
+def api_screen_off():
+    """关闭显示器电源。用于测试 wake_screen 在派发入口能否自动唤醒。"""
+    from screen_control import turn_off_monitor
+    result = turn_off_monitor()
+    return jsonify(result)
+
 @service_bp.route('/screen/ensure-unlocked', methods=['POST'])
 def api_ensure_unlocked():
     result = ensure_screen_unlocked()

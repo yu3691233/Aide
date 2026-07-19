@@ -547,18 +547,34 @@ class BridgeApi(
         ""
     }
 
-    // ─── 获取可用模型列表 ─────────────────────────────────────
-
-    suspend fun fetchActiveModels(): List<ActiveModel> {
-        return try {
-            val resp = client.get("$baseUrl/api/active-models")
-            if (!resp.status.isSuccess()) return emptyList()
-            runCatching {
-                json.decodeFromString(ActiveModelsResponse.serializer(), resp.bodyAsText()).models
-            }.getOrDefault(emptyList())
-        } catch (e: Exception) {
-            emptyList()
-        }
+    // ─── 获取可用模型列表 ─────────────────────────────────────
+
+    suspend fun fetchActiveModels(): List<ActiveModel> {
+        return try {
+            val resp = client.get("$baseUrl/api/active-models")
+            if (!resp.status.isSuccess()) return emptyList()
+            runCatching {
+                json.decodeFromString(ActiveModelsResponse.serializer(), resp.bodyAsText()).models
+            }.getOrDefault(emptyList())
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // ─── Codex 额度 ────────────────────────────────────────────
+
+    suspend fun fetchCodexQuota(force: Boolean = false): CodexQuotaResponse {
+        return try {
+            val resp = client.get("$baseUrl/api/codex/quota") {
+                if (force) parameter("force", "1")
+            }
+            if (!resp.status.isSuccess()) return CodexQuotaResponse()
+            runCatching {
+                json.decodeFromString(CodexQuotaResponse.serializer(), resp.bodyAsText())
+            }.getOrDefault(CodexQuotaResponse())
+        } catch (e: Exception) {
+            CodexQuotaResponse()
+        }
     }
 
     // ─── 桌面 IDE 管理 ─────────────────────────────────────
@@ -878,17 +894,30 @@ class BridgeApi(
         WakeResult(ok = false, reason = e.message)
     }
 
-    suspend fun ensureScreenUnlocked(): WakeResult = try {
-        val resp = client.post("$baseUrl/screen/ensure-unlocked")
-        if (!resp.status.isSuccess()) {
-            WakeResult(ok = false, reason = "HTTP ${resp.status.value}")
-        } else {
-            runCatching {
-                Json.decodeFromString<WakeResult>(resp.bodyAsText())
-            }.getOrDefault(WakeResult(ok = true))
-        }
-    } catch (e: Exception) {
-        WakeResult(ok = false, reason = e.message)
+    suspend fun ensureScreenUnlocked(): WakeResult = try {
+        val resp = client.post("$baseUrl/screen/ensure-unlocked")
+        if (!resp.status.isSuccess()) {
+            WakeResult(ok = false, reason = "HTTP ${resp.status.value}")
+        } else {
+            runCatching {
+                Json.decodeFromString<WakeResult>(resp.bodyAsText())
+            }.getOrDefault(WakeResult(ok = true))
+        }
+    } catch (e: Exception) {
+        WakeResult(ok = false, reason = e.message)
+    }
+
+    suspend fun turnOffMonitor(): WakeResult = try {
+        val resp = client.post("$baseUrl/screen/off")
+        if (!resp.status.isSuccess()) {
+            WakeResult(ok = false, reason = "HTTP ${resp.status.value}")
+        } else {
+            runCatching {
+                Json.decodeFromString<WakeResult>(resp.bodyAsText())
+            }.getOrDefault(WakeResult(ok = true))
+        }
+    } catch (e: Exception) {
+        WakeResult(ok = false, reason = e.message)
     }
 
     // ─── IDE 远程启动/停止 ─────────────────────────────────────

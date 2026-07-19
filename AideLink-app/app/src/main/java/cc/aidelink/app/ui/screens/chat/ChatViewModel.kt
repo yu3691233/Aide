@@ -382,6 +382,12 @@ class AideLinkChatViewModel @Inject constructor(
 
         val ocWebSessionTitle: String? = null,
 
+        // ─── Codex 额度 ───
+
+        val codexQuota: cc.aidelink.app.domain.model.bridge.CodexQuota? = null,
+
+        val codexQuotaLoading: Boolean = false,
+
     )
 
 
@@ -977,6 +983,72 @@ class AideLinkChatViewModel @Inject constructor(
                 }
 
         }
+
+    }
+
+
+
+    // ─── Codex 额度 ────────────────────────────────────────────
+
+    private var _codexQuotaPollingJob: kotlinx.coroutines.Job? = null
+
+    /** 拉取一次 Codex 额度。force=true 时绕过服务端缓存。 */
+    fun loadCodexQuota(force: Boolean = false) {
+
+        viewModelScope.launch(Dispatchers.IO) {
+
+            _state.value = _state.value.copy(codexQuotaLoading = true)
+
+            runCatching { bridgeApi.fetchCodexQuota(force) }
+
+                .onSuccess { resp ->
+
+                    _state.value = _state.value.copy(
+
+                        codexQuota = resp.quota,
+
+                        codexQuotaLoading = false,
+
+                    )
+
+                }
+
+                .onFailure {
+
+                    _state.value = _state.value.copy(codexQuotaLoading = false)
+
+                }
+
+        }
+
+    }
+
+    /** 在 ChatScreen 期间按 5 分钟轮询 Codex 额度，与浮窗一致。 */
+    fun startCodexQuotaPolling() {
+
+        _codexQuotaPollingJob?.cancel()
+
+        _codexQuotaPollingJob = viewModelScope.launch(Dispatchers.IO) {
+
+            loadCodexQuota(force = false)
+
+            while (true) {
+
+                kotlinx.coroutines.delay(5 * 60 * 1000L)
+
+                loadCodexQuota(force = false)
+
+            }
+
+        }
+
+    }
+
+    fun stopCodexQuotaPolling() {
+
+        _codexQuotaPollingJob?.cancel()
+
+        _codexQuotaPollingJob = null
 
     }
 
@@ -2540,6 +2612,36 @@ class AideLinkChatViewModel @Inject constructor(
                 }
 
                 _state.value = _state.value.copy(toastMessage = msg)
+
+            }
+
+        }
+
+    }
+
+
+
+    fun turnOffMonitor() {
+
+        viewModelScope.launch(Dispatchers.IO) {
+
+            val result = bridgeApi.turnOffMonitor()
+
+            if (!result.ok) {
+
+                _state.value = _state.value.copy(
+
+                    errorMessage = "关闭显示器失败: ${result.reason ?: "未知错误"}"
+
+                )
+
+                delay(3000)
+
+                _state.value = _state.value.copy(errorMessage = null)
+
+            } else {
+
+                _state.value = _state.value.copy(toastMessage = "已关闭电脑显示器，派发任务时会自动唤醒")
 
             }
 

@@ -59,6 +59,20 @@ def api_connected_devices():
     return jsonify(active)
 
 
+@misc_bp.route("/api/codex/quota")
+def api_codex_quota():
+    """返回 Codex 登账号的当前周额度。
+
+    供手机 App 在顶栏展示。模块内部维护 5 分钟缓存，并在新完成任务≥3 个时
+    提前刷新；本端点直接转发缓存结果，不阻塞请求。force=1 时强制刷新。
+    """
+    from codex_quota import get_current_codex_quota
+    force = request.args.get("force", "0").strip() in {"1", "true", "yes"}
+    # App 端没有任务执行基线概念，传空集合即可：缓存逻辑会按时间或 force 决定刷新。
+    quota = get_current_codex_quota(force=force, executed_task_ids=None)
+    return jsonify({"ok": True, "quota": quota})
+
+
 @misc_bp.route('/events/stream')
 def events_stream():
     bus = _get_event_bus()

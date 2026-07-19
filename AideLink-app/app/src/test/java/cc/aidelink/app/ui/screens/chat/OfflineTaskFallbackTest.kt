@@ -56,10 +56,18 @@ class OfflineTaskFallbackTest {
             AideTask(task_id = "agy", text = "a", target_ide = "antigravity_ide", status = "queued"),
             AideTask(task_id = "trae", text = "b", target_ide = "trae", status = "queued"),
             AideTask(task_id = "idea", text = "c", target_ide = null, status = "draft", task_type = "inspiration"),
+            // 未分配的待派发任务（非灵感），应当在任何 IDE 视图下都显示
+            AideTask(task_id = "unassigned", text = "d", target_ide = null, status = "draft"),
         )
 
-        assertEquals(listOf("agy", "idea"), filterTasksForIde(tasks, "antigravity_ide", true).map { it.task_id })
-        assertEquals(listOf("agy", "trae", "idea"), filterTasksForIde(tasks, "antigravity_ide", false).map { it.task_id })
+        assertEquals(
+            listOf("agy", "idea", "unassigned"),
+            filterTasksForIde(tasks, "antigravity_ide", true).map { it.task_id }
+        )
+        assertEquals(
+            listOf("agy", "trae", "idea", "unassigned"),
+            filterTasksForIde(tasks, "antigravity_ide", false).map { it.task_id }
+        )
     }
 
     @Test

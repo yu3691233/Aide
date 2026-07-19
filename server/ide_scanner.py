@@ -183,10 +183,31 @@ def _probe_codex_desktop_exe():
                 return exe
     except Exception:
         pass
+    # MSIX 安装的 Codex：C:\Program Files\WindowsApps 需要管理员权限，
+    # glob.glob 会静默返回空。改用 PowerShell Get-AppxPackage 查询
+    # InstallLocation（无需管理员权限），再拼接 app\ChatGPT.exe。
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-AppxPackage -Name 'OpenAI.Codex' | Select-Object -First 1).InstallLocation"],
+            capture_output=True, text=True, timeout=5,
+        )
+        install_loc = (result.stdout or "").strip()
+        if install_loc and os.path.isdir(install_loc):
+            candidate = os.path.join(install_loc, "app", "ChatGPT.exe")
+            if os.path.isfile(candidate):
+                return candidate
+            # 某些版本可执行文件直接在 InstallLocation 根目录
+            candidate = os.path.join(install_loc, "ChatGPT.exe")
+            if os.path.isfile(candidate):
+                return candidate
+    except Exception:
+        pass
+    # Fallback：保留旧的 glob 探测（管理员权限下生效），以及独立安装路径。
     roots = {
         os.environ.get("ProgramFiles", r"C:\Program Files"),
         os.environ.get("ProgramW6432", r"C:\Program Files"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Packages"),
     }
     patterns = [
         os.path.join(root, "WindowsApps", "OpenAI.Codex_*", "app", "ChatGPT.exe")

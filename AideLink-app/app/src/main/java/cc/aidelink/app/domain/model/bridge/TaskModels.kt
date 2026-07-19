@@ -28,6 +28,15 @@ data class AideTask(
     val device_label: String? = null,
     val feedbacks: List<TaskFeedback>? = null,
     val image: String? = null,
+    val parsed_fields: ParsedTaskFields? = null,
+)
+
+@Serializable
+data class ParsedTaskFields(
+    val contact_phone: String = "",
+    val detailed_address: String = "",
+    val customer_name: String = "",
+    val fault_type: String = "",
 )
 
 @Serializable

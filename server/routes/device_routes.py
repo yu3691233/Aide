@@ -894,12 +894,26 @@ def api_adb_project_install():
         apk_info = next((item for item in metadata["apks"] if project_path_key(item["path"]) == project_path_key(apk_path)), {})
         application_id = apk_info.get("application_id", "")
         if application_id:
-            subprocess.run(
-                [ADB_PATH, "-s", device_id, "shell", "monkey", "-p", application_id, "-c", "android.intent.category.LAUNCHER", "1"],
-                capture_output=True,
-                timeout=10,
-                creationflags=_flags,
+            # 不能用 monkey 启动：monkey 在 MIUI 上会注入系统事件，导致方向锁定被关闭。
+            # 改用 cmd package resolve-activity 解析 launcher activity，再用 am start 启动。
+            resolve_result = subprocess.run(
+                [ADB_PATH, "-s", device_id, "shell", "cmd", "package", "resolve-activity", "--brief", application_id],
+                capture_output=True, text=True, encoding='utf-8', errors='replace',
+                timeout=10, creationflags=_flags,
             )
+            component = next((line.strip() for line in (resolve_result.stdout or "").splitlines()
+                              if line.strip() and "/" in line), "")
+            if component:
+                subprocess.run(
+                    [ADB_PATH, "-s", device_id, "shell", "am", "start", "-n", component],
+                    capture_output=True, timeout=10, creationflags=_flags,
+                )
+            else:
+                # 极端情况下回退到 am start 直接传包名（Android 12+ 支持）
+                subprocess.run(
+                    [ADB_PATH, "-s", device_id, "shell", "am", "start", application_id],
+                    capture_output=True, timeout=10, creationflags=_flags,
+                )
         return jsonify({
             "ok": True,
             "message": "目标项目 APK 安装完成",

@@ -45,6 +45,7 @@ fun ChatInputBar(
     onMonitorToggle: (AideLinkChatViewModel.Target) -> Unit,
     onClipboard: () -> Unit,
     onWakeScreen: () -> Unit,
+    onTurnOffMonitor: () -> Unit = {},
     onRefreshIdeStatus: () -> Unit = {},
     onStartIde: (String) -> Unit = {},
     onStopIde: (String) -> Unit = {},
@@ -262,6 +263,11 @@ fun ChatInputBar(
                             text = { Text("唤醒电脑屏幕") },
                             leadingIcon = { Icon(Icons.Default.Lightbulb, contentDescription = null, tint = Color(0xFFFFC107)) },
                             onClick = { onWakeScreen(); menuExpanded = false }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("关闭显示器") },
+                            leadingIcon = { Icon(Icons.Default.Monitor, contentDescription = null, tint = Color(0xFF607D8B)) },
+                            onClick = { onTurnOffMonitor(); menuExpanded = false }
                         )
                         HorizontalDivider()
                         DropdownMenuItem(

@@ -70,6 +70,7 @@ from routes.task_routes_scanner import (
 
 from routes.task_routes_prompt import build_prompt_candidates, read_prompt_history
 from task_contracts import task_allowed_actions
+from task_text_parser import parse_task_text
 
 
 
@@ -114,6 +115,7 @@ def map_task_for_client(t):
     delegated = t.get("source") == "primary_ide" or metadata.get("delegated_by") == "primary_ide"
     t["task_origin"] = "agent" if delegated else "user"
     t["task_origin_label"] = "Agent任务" if delegated else "用户任务"
+    t["parsed_fields"] = parse_task_text(t["text"])
     t["allowed_actions"] = task_allowed_actions(t)
     return t
 
@@ -352,6 +354,12 @@ def api_tasks_create():
 
     from shared_runtime import runtime
 
+    # 保留有效 IDE 分配，无论是否立即派发。auto_dispatch 只控制是否调用
+    # dispatch_task；target_ide=="auto" 或缺省时才标记为未分配（draft）。
+    # 这样浮窗/App 在选中具体 IDE 时创建的任务会落入 queued（已分配待派发），
+    # 只有未选中 IDE（auto）或离线回退时才为未分配。
+    assigned_target_ide = target_ide if target_ide != "auto" else None
+
     task = runtime.create_task(
 
         text=text,
@@ -360,11 +368,7 @@ def api_tasks_create():
 
         source=source,
 
-        target_ide=(
-            target_ide
-            if auto_dispatch and target_ide != "auto"
-            else None
-        ),
+        target_ide=assigned_target_ide,
 
         metadata={
             "created_from": source,

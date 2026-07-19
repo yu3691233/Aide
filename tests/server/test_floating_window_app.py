@@ -339,8 +339,15 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app.create_task()
         self.assertEqual("/api/tasks/create", app._run_api.call_args.args[0])
         self.assertFalse(app._run_api.call_args.kwargs["payload"]["auto_dispatch"])
-        self.assertEqual("auto", app._run_api.call_args.kwargs["payload"]["target_ide"])
+        # 浮窗创建任务时应当分配到当前选中的 IDE，而不是 "auto"
+        self.assertEqual("codex", app._run_api.call_args.kwargs["payload"]["target_ide"])
         self.assertEqual("floating_window", app._run_api.call_args.kwargs["payload"]["source"])
+
+        # 没有选中运行中的 IDE 时回退到 "auto"（未分配）
+        app.selected_ide_key = None
+        app._run_api.reset_mock()
+        app.create_task()
+        self.assertEqual("auto", app._run_api.call_args.kwargs["payload"]["target_ide"])
 
         app.save_inspiration()
         self.assertEqual("/api/tasks/inspiration", app._run_api.call_args.args[0])

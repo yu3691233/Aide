@@ -24,6 +24,14 @@ _SURFACE_LABELS = {
 
 
 def _dispatch_prefix(dispatch_items):
+    prefix = (
+        "测试任务"
+        if dispatch_items and all(
+            bool((item.get("metadata") or {}).get("is_test"))
+            for item in dispatch_items
+        )
+        else "派发任务"
+    )
     surfaces = {
         str((item.get("metadata") or {}).get("surface") or "").strip().lower()
         for item in dispatch_items
@@ -36,8 +44,8 @@ def _dispatch_prefix(dispatch_items):
         surface = next(iter(surfaces))
         label = _SURFACE_LABELS.get(surface)
         if label:
-            return f"[派发任务-{label}]"
-    return "[派发任务]"
+            return f"[{prefix}-{label}]"
+    return f"[{prefix}]"
 
 
 def _publish_task_feedback(task_id, target_ide, title, feedback, message, fb_count):
@@ -517,6 +525,8 @@ def api_tasks_test():
 
     test_message = (
         f"## 测试任务（请勿修改代码）\n\n"
+        f"请验证以上任务是否已正确完成。仅检查代码、运行测试并报告结果；"
+        f"不要修改代码，也不要提交任何变更。\n\n"
         f"**原始任务**: {orig_title}\n"
         f"**修改 IDE**: {orig_ide}\n\n"
         f"### 原始需求\n\n{orig_message}\n\n"
