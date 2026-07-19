@@ -624,14 +624,24 @@ class FloatingWindowApp:
             subtitle += f"  ·  {progress}%"
         canvas.create_text(84, metadata_y, text=subtitle, fill="#657084", anchor="w", font=("Microsoft YaHei UI", 8), tags="card-hit")
 
-        actions = (("复制", "copy", 14), ("派发", "dispatch", 36))
+        dispatch_action = "dispatch_test" if _task_group_name(task) == "待测试" else "dispatch"
+        dispatch_label = "派发测试" if dispatch_action == "dispatch_test" else "派发"
+        actions = (("复制", "copy", 14), (dispatch_label, dispatch_action, 36))
         action_images = []
-        for action, icon_name, center_y in actions:
+        for action, action_name, center_y in actions:
             tag = f"{action}-{task.get('task_id')}"
+            icon_name = "copy" if action_name == "copy" else "dispatch"
             action_image = self.icons.get(icon_name, 12, "#526078")
             action_images.append(action_image)
             canvas.create_image(width - 16, center_y, image=action_image, tags=tag)
-            callback = (lambda _event, item=task: (self.copy_task(item), "break")[-1]) if action == "复制" else (lambda _event, item=task: (self.execute_task_action("dispatch", item), "break")[-1])
+            callback = (
+                (lambda _event, item=task: (self.copy_task(item), "break")[-1])
+                if action_name == "copy"
+                else (
+                    lambda _event, value=action_name, item=task:
+                    (self.execute_task_action(value, item), "break")[-1]
+                )
+            )
             canvas.tag_bind(tag, "<Button-1>", callback)
         images = [*action_images]
         if self.expanded_task_id == task.get("task_id"):
@@ -683,8 +693,10 @@ class FloatingWindowApp:
                 actions.append(("confirm_done", "确认完成"))
             elif test_result == "failed":
                 actions.append(("send_test_feedback", "反馈开发 IDE"))
-            else:
-                actions.append(("test_feedback", "测试反馈"))
+            actions.append((
+                "dispatch_test",
+                "重新测试" if test_result else "派发测试",
+            ))
         else:
             actions.append(("complete", "已完成"))
         actions.append(("delete", "删除"))
@@ -1648,6 +1660,24 @@ class FloatingWindowApp:
                     self.refresh(),
                 ),
                 busy_text="正在反馈给开发 IDE…",
+            )
+            return
+        if action == "dispatch_test":
+            if not self.selected_ide_key:
+                self._set_status("请先选择用于测试的运行中 IDE", "#b42318")
+                return
+            self._run_api(
+                "/api/tasks/test",
+                method="POST",
+                payload={
+                    "task_id": task_id,
+                    "test_ide": self.selected_ide_key,
+                },
+                on_success=lambda _result: (
+                    self._set_status("测试任务已派发", "#239957", 1800),
+                    self.refresh(),
+                ),
+                busy_text="正在派发测试任务…",
             )
             return
         if action in {"feedback", "feedback_note"}:

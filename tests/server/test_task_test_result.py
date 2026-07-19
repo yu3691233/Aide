@@ -1,13 +1,14 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
 from routes.task_routes import map_task_for_client
-from routes.task_routes_flow import _record_test_result
+from routes.task_routes_flow import _create_and_dispatch_test_task, _record_test_result
 
 
 class FakeRuntime:
@@ -35,6 +36,18 @@ class FakeRuntime:
     def update_task(self, task_id, **fields):
         self.tasks[task_id].update(fields)
         return dict(self.tasks[task_id])
+
+    def read_tasks(self):
+        return list(self.tasks.values())
+
+    def write_tasks(self, tasks):
+        self.tasks = {task["task_id"]: dict(task) for task in tasks}
+
+    def mark_task_running(self, task_id, ide):
+        return self.update_task(task_id, status="running", target_ide=ide)
+
+    def set_ide_status(self, *_args, **_kwargs):
+        return None
 
 
 class TaskTestResultTests(unittest.TestCase):
@@ -81,6 +94,50 @@ class TaskTestResultTests(unittest.TestCase):
         runtime.tasks["test-task-parent-1"]["metadata"]["is_test"] = True
         with self.assertRaisesRegex(ValueError, "passed 或 failed"):
             _record_test_result(runtime, "test-task-parent-1", "unknown", "ok")
+
+    def test_dedicated_test_dispatch_contains_read_only_instruction(self):
+        runtime = FakeRuntime()
+        original = {
+            "task_id": "task-parent",
+            "title": "修复任务",
+            "message": "修复测试任务抬头",
+            "status": "pending_test",
+            "target_ide": "codex",
+            "metadata": {},
+        }
+        injected = {}
+
+        def capture_injection(target, message, task_id):
+            injected.update(target=target, message=message, task_id=task_id)
+            return True, "ok"
+
+        with patch(
+            "routes.task_routes_flow._load_queue",
+            return_value=[],
+        ), patch(
+            "routes.task_routes_flow._save_queue",
+        ), patch(
+            "routes.task_routes_flow._inject_to_ide",
+            side_effect=capture_injection,
+        ):
+            result, status_code = _create_and_dispatch_test_task(
+                runtime,
+                "task-parent",
+                "trae",
+                original,
+                "http://127.0.0.1:5000/api/tasks/test-result",
+            )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(result["success"])
+        self.assertEqual("trae", injected["target"])
+        self.assertIn("请验证以上任务是否已正确完成", injected["message"])
+        self.assertIn("不要修改代码，也不要提交任何变更", injected["message"])
+        self.assertTrue(injected["task_id"].startswith("test-task-parent-"))
+        self.assertEqual(
+            "pending_test",
+            runtime.tasks["task-parent"]["status"],
+        )
 
 
 if __name__ == "__main__":

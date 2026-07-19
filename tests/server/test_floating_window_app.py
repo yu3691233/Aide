@@ -187,7 +187,7 @@ class FloatingWindowAppModelTests(unittest.TestCase):
             fwa.FloatingWindowApp._expanded_actions({"status": "执行中"}),
         )
         self.assertIn(
-            ("test_feedback", "测试反馈"),
+            ("dispatch_test", "派发测试"),
             fwa.FloatingWindowApp._expanded_actions({"status": "待测试"}),
         )
         self.assertIn(
@@ -206,6 +206,13 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         )
         self.assertIn(
             ("send_test_feedback", "反馈开发 IDE"),
+            fwa.FloatingWindowApp._expanded_actions({
+                "status": "待测试",
+                "test_result": "failed",
+            }),
+        )
+        self.assertIn(
+            ("dispatch_test", "重新测试"),
             fwa.FloatingWindowApp._expanded_actions({
                 "status": "待测试",
                 "test_result": "failed",
@@ -580,6 +587,19 @@ class FloatingWindowAppModelTests(unittest.TestCase):
                 "manual": False,
                 "summary": "等待测试",
             },
+            app._run_api.call_args.kwargs["payload"],
+        )
+
+    def test_dispatch_test_action_uses_dedicated_test_route(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.selected_ide_key = "trae"
+        app._run_api = Mock()
+
+        app.execute_task_action("dispatch_test", {"task_id": "task-1"})
+
+        self.assertEqual("/api/tasks/test", app._run_api.call_args.args[0])
+        self.assertEqual(
+            {"task_id": "task-1", "test_ide": "trae"},
             app._run_api.call_args.kwargs["payload"],
         )
 

@@ -166,6 +166,99 @@ def api_tasks_test_result():
     })
 
 
+def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callback_url):
+    orig_message = orig_task.get("message", "")
+    orig_title = orig_task.get("title", task_id)
+    orig_ide = orig_task.get("target_ide", "")
+    now = datetime.now().isoformat()
+    test_task_id = f"test-{task_id}-{int(time.time())}"
+    test_message = (
+        f"## 测试任务（请勿修改代码）\n\n"
+        f"请验证以上任务是否已正确完成。仅检查代码、运行测试并报告结果；"
+        f"不要修改代码，也不要提交任何变更。\n\n"
+        f"**原始任务**: {orig_title}\n"
+        f"**修改 IDE**: {orig_ide}\n\n"
+        f"### 原始需求\n\n{orig_message}\n\n"
+        f"### 测试要求\n\n"
+        f"1. 请检查上述修改是否正确实现\n"
+        f"2. 运行相关测试验证功能\n"
+        f"3. 如发现问题，记录具体位置和现象\n"
+        f"4. **不要修改任何代码**，只做验证\n\n"
+        f"测试完成后，在聊天中报告测试结果，并必须向以下地址 POST JSON：\n"
+        f"{callback_url}\n"
+        f'{{"test_task_id":"{test_task_id}","result":"passed 或 failed",'
+        f'"summary":"测试结论","evidence":"测试命令、日志或问题位置"}}'
+    )
+
+    parent_full_task = runtime.get_task(task_id) or {}
+    parent_metadata = dict(parent_full_task.get("metadata") or {})
+    for field in (
+        "test_result", "test_summary", "test_evidence",
+        "test_ide", "test_task_id", "tested_at",
+    ):
+        parent_metadata.pop(field, None)
+    runtime.update_task(task_id, metadata=parent_metadata, updated_at=now)
+
+    tasks = runtime.read_tasks()
+    tasks.append({
+        "task_id": test_task_id,
+        "parent_task_id": task_id,
+        "title": f"[测试] {orig_title}",
+        "text": test_message,
+        "source": "manager-test",
+        "target_ide": test_ide,
+        "status": "queued",
+        "priority": "medium",
+        "image": None,
+        "owned_paths": [],
+        "worktree_path": None,
+        "result_ref": None,
+        "summary": None,
+        "error": None,
+        "metadata": {"source_task_id": task_id, "is_test": True},
+        "created_at": now,
+        "updated_at": now,
+        "queued_at": now,
+        "started_at": None,
+        "completed_at": None,
+    })
+    runtime.write_tasks(tasks)
+
+    queue_file = BASE_DIR / "state" / f"task_queue_{test_ide}.json"
+    queue = _load_queue(queue_file)
+    queue.append({
+        "task_id": test_task_id,
+        "title": f"[测试] {orig_title}",
+        "message": test_message,
+        "queued_at": now,
+    })
+    _save_queue(queue_file, queue)
+
+    if len(queue) == 1:
+        inject_ok, inject_detail = _inject_to_ide(test_ide, test_message, test_task_id)
+        if inject_ok:
+            runtime.mark_task_running(test_task_id, test_ide)
+            runtime.set_ide_status(test_ide, "busy", current_task_id=test_task_id)
+        else:
+            runtime.update_task(
+                test_task_id,
+                status="failed",
+                error=inject_detail,
+                updated_at=now,
+            )
+            return {
+                "success": False,
+                "message": f"测试任务派发失败: {inject_detail}",
+            }, 500
+
+    return {
+        "success": True,
+        "test_task_id": test_task_id,
+        "parent_task_id": task_id,
+        "message": f"测试任务 {test_task_id} 已派发到 {test_ide.upper()}",
+    }, 200
+
+
 @task_bp.route("/api/tasks/dispatch", methods=["POST"])
 def api_tasks_dispatch():
     """将选定任务合并成一条提示词派发到指定 IDE，不创建新任务。"""
@@ -625,85 +718,15 @@ def api_tasks_test():
     if not orig_task:
         return jsonify({"success": False, "message": f"任务 {task_id} 不存在"})
 
-    orig_message = orig_task.get("message", "")
-    orig_title = orig_task.get("title", task_id)
-    orig_ide = orig_task.get("target_ide", "")
-    callback_url = request.host_url.rstrip("/") + "/api/tasks/test-result"
-
-    test_message = (
-        f"## 测试任务（请勿修改代码）\n\n"
-        f"请验证以上任务是否已正确完成。仅检查代码、运行测试并报告结果；"
-        f"不要修改代码，也不要提交任何变更。\n\n"
-        f"**原始任务**: {orig_title}\n"
-        f"**修改 IDE**: {orig_ide}\n\n"
-        f"### 原始需求\n\n{orig_message}\n\n"
-        f"### 测试要求\n\n"
-        f"1. 请检查上述修改是否正确实现\n"
-        f"2. 运行相关测试验证功能\n"
-        f"3. 如发现问题，记录具体位置和现象\n"
-        f"4. **不要修改任何代码**，只做验证\n\n"
-        f"测试完成后，在聊天中报告测试结果，并必须向以下地址 POST JSON：\n"
-        f"{callback_url}\n"
-        f'{{"test_task_id":"TEST_TASK_ID","result":"passed 或 failed",'
-        f'"summary":"测试结论","evidence":"测试命令、日志或问题位置"}}'
-    )
-
-    now = datetime.now().isoformat()
-    test_task_id = f"test-{task_id}-{int(time.time())}"
-    test_message = test_message.replace("TEST_TASK_ID", test_task_id)
-
-    parent_full_task = runtime.get_task(task_id) or {}
-    parent_metadata = dict(parent_full_task.get("metadata") or {})
-    for field in (
-        "test_result", "test_summary", "test_evidence",
-        "test_ide", "test_task_id", "tested_at",
-    ):
-        parent_metadata.pop(field, None)
-    runtime.update_task(task_id, metadata=parent_metadata, updated_at=now)
-
     try:
-        tasks = runtime.read_tasks()
-        tasks.append({
-            "task_id": test_task_id,
-            "parent_task_id": task_id,
-            "title": f"[测试] {orig_title}",
-            "text": test_message,
-            "source": "manager-test",
-            "target_ide": test_ide,
-            "status": "queued",
-            "priority": "medium",
-            "image": None,
-            "owned_paths": [],
-            "worktree_path": None,
-            "result_ref": None,
-            "summary": None,
-            "error": None,
-            "metadata": {"source_task_id": task_id, "is_test": True},
-            "created_at": now,
-            "updated_at": now,
-            "queued_at": now,
-            "started_at": None,
-            "completed_at": None,
-        })
-        runtime.write_tasks(tasks)
+        result, status_code = _create_and_dispatch_test_task(
+            runtime,
+            task_id,
+            test_ide,
+            orig_task,
+            request.host_url.rstrip("/") + "/api/tasks/test-result",
+        )
     except Exception as e:
         logger.error(f"Failed to register test task: {e}")
-
-    queue_file = BASE_DIR / "state" / f"task_queue_{test_ide}.json"
-    queue = _load_queue(queue_file)
-    queue.append({"task_id": test_task_id, "title": f"[测试] {orig_title}", "message": test_message, "queued_at": now})
-    _save_queue(queue_file, queue)
-
-    if len(queue) == 1:
-        inject_ok, inject_detail = _inject_to_ide(test_ide, test_message, test_task_id)
-        if inject_ok:
-            runtime.mark_task_running(test_task_id, test_ide)
-            runtime.set_ide_status(test_ide, "busy", current_task_id=test_task_id)
-        else:
-            runtime.update_task(test_task_id, status="failed", error=inject_detail, updated_at=now)
-            return jsonify({"success": False, "message": f"测试任务派发失败: {inject_detail}"})
-
-    return jsonify({
-        "success": True,
-        "message": f"测试任务 {test_task_id} 已派发到 {test_ide.upper()}"
-    })
+        return jsonify({"success": False, "message": f"测试任务派发失败: {e}"}), 500
+    return jsonify(result), status_code

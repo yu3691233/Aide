@@ -920,9 +920,14 @@ fun TaskCard(
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                             modifier = Modifier.height(30.dp)
                         ) {
-                            Icon(Icons.Default.Send, contentDescription = "派发", modifier = Modifier.size(14.dp))
+                            val dispatchLabel = if (task.status.lowercase() == "pending_test") {
+                                if (testResult == null) "派发测试" else "重新测试"
+                            } else {
+                                "派发"
+                            }
+                            Icon(Icons.Default.Send, contentDescription = dispatchLabel, modifier = Modifier.size(14.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("派发", fontSize = 11.sp, color = Color.White)
+                            Text(dispatchLabel, fontSize = 11.sp, color = Color.White)
                         }
                         if (task.status.lowercase() != "done") {
                             if (task.status.lowercase() == "pending_test") {
