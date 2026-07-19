@@ -728,34 +728,6 @@ fun TaskCard(
                 )
 
                 if (expanded) {
-                    task.parsed_fields?.let { fields ->
-                        val parsedRows = listOf(
-                            "联系电话" to fields.contact_phone,
-                            "详细地址" to fields.detailed_address,
-                            "客户姓名" to fields.customer_name,
-                            "故障类型" to fields.fault_type,
-                        ).filter { it.second.isNotBlank() }
-                        if (parsedRows.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "识别结果",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            parsedRows.forEach { (label, value) ->
-                                Spacer(modifier = Modifier.height(3.dp))
-                                Text(
-                                    text = "$label：$value",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-
                     if (!task.summary.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))

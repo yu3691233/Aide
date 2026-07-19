@@ -70,7 +70,6 @@ from routes.task_routes_scanner import (
 
 from routes.task_routes_prompt import build_prompt_candidates, read_prompt_history
 from task_contracts import task_allowed_actions
-from task_text_parser import parse_task_text
 
 
 
@@ -115,7 +114,6 @@ def map_task_for_client(t):
     delegated = t.get("source") == "primary_ide" or metadata.get("delegated_by") == "primary_ide"
     t["task_origin"] = "agent" if delegated else "user"
     t["task_origin_label"] = "Agent任务" if delegated else "用户任务"
-    t["parsed_fields"] = parse_task_text(t["text"])
     t["allowed_actions"] = task_allowed_actions(t)
     return t
 
