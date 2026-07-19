@@ -942,14 +942,28 @@ fun TaskCard(
                                         Spacer(Modifier.width(4.dp))
                                         Text("确认完成", fontSize = 11.sp, color = Color.White)
                                     }
-                                } else if (testResult == "failed") {
+                                } else {
+                                    if (testResult == "failed") {
+                                        Button(
+                                            onClick = { onTestFeedback(task.task_id) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(30.dp)
+                                        ) {
+                                            Text("反馈开发 IDE", fontSize = 11.sp, color = Color.White)
+                                        }
+                                    }
                                     Button(
-                                        onClick = { onTestFeedback(task.task_id) },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+                                        onClick = { onConfirm(task.task_id) },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (testResult == "failed") Color(0xFF607D8B) else Color(0xFFFFA000)
+                                        ),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                                         modifier = Modifier.height(30.dp)
                                     ) {
-                                        Text("反馈开发 IDE", fontSize = 11.sp, color = Color.White)
+                                        Icon(Icons.Default.CheckCircle, contentDescription = "已完成", modifier = Modifier.size(14.dp), tint = Color.White)
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("已完成", fontSize = 11.sp, color = Color.White)
                                     }
                                 }
                             } else {

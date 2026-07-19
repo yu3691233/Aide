@@ -191,6 +191,10 @@ class FloatingWindowAppModelTests(unittest.TestCase):
             fwa.FloatingWindowApp._expanded_actions({"status": "待测试"}),
         )
         self.assertIn(
+            ("confirm_done", "已完成"),
+            fwa.FloatingWindowApp._expanded_actions({"status": "待测试"}),
+        )
+        self.assertIn(
             ("confirm_done", "确认完成"),
             fwa.FloatingWindowApp._expanded_actions({
                 "status": "待测试",
@@ -206,6 +210,13 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         )
         self.assertIn(
             ("send_test_feedback", "反馈开发 IDE"),
+            fwa.FloatingWindowApp._expanded_actions({
+                "status": "待测试",
+                "test_result": "failed",
+            }),
+        )
+        self.assertIn(
+            ("confirm_done", "已完成"),
             fwa.FloatingWindowApp._expanded_actions({
                 "status": "待测试",
                 "test_result": "failed",

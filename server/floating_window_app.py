@@ -691,8 +691,10 @@ class FloatingWindowApp:
             test_result = _task_test_result(task)
             if test_result == "passed":
                 actions.append(("confirm_done", "确认完成"))
-            elif test_result == "failed":
-                actions.append(("send_test_feedback", "反馈开发 IDE"))
+            else:
+                if test_result == "failed":
+                    actions.append(("send_test_feedback", "反馈开发 IDE"))
+                actions.append(("confirm_done", "已完成"))
             actions.append((
                 "dispatch_test",
                 "重新测试" if test_result else "派发测试",
