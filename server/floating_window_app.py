@@ -1319,8 +1319,8 @@ class FloatingWindowApp:
 
         threading.Thread(target=worker, daemon=True, name="AideLinkFloatingWindowApi").start()
 
-    def _send_input(self):
-        text = self._input_text()
+    def _send_text(self, text, clear_input=False):
+        """直接发送文本到选中的 IDE"""
         if not text:
             self._set_status("请输入要发送的内容", "#b42318", 1800)
             return
@@ -1329,7 +1329,8 @@ class FloatingWindowApp:
             return
 
         def sent(result):
-            self._set_input_text("")
+            if clear_input:
+                self._set_input_text("")
             self._set_status(result.get("raw") or "已发送", "#239957", 2200)
             self.refresh()
 
@@ -1341,13 +1342,17 @@ class FloatingWindowApp:
             busy_text=f"正在发送到 {self.selected_ide_key}…",
         )
 
+    def _send_input(self):
+        text = self._input_text()
+        self._send_text(text, clear_input=True)
+
     def show_composer_menu(self):
         self.show_quick_reply_menu()
 
     def show_quick_reply_menu(self):
         menu = self.tk.Menu(self.root, tearoff=False)
         for reply in self._load_quick_replies():
-            menu.add_command(label=reply, command=lambda value=reply: self._set_input_text(value))
+            menu.add_command(label=reply, command=lambda value=reply: self._send_text(value))
         if menu.index("end") is not None:
             menu.add_separator()
         menu.add_command(label="管理快捷回复…", command=self.manage_quick_replies)

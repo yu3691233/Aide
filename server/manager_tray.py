@@ -214,6 +214,21 @@ def toggle_floating_window():
         logger.exception("切换桌面浮窗失败")
 
 
+def restart_floating_window():
+    """Restart the floating window: close the old process, wait for it to exit, then start fresh."""
+    try:
+        from floating_window_app import close_floating_window, open_floating_window
+        close_floating_window()
+        # Wait for the old process to fully release the signal port (max ~3s)
+        for _ in range(30):
+            if not close_floating_window(timeout=0.1):
+                break
+            time.sleep(0.1)
+        open_floating_window()
+    except Exception:
+        logger.exception("重启桌面浮窗失败")
+
+
 def _get_target_projects():
     """Read the same target-project list shown by the Web manager."""
     try:
@@ -670,6 +685,7 @@ def build_tray_menu():
         MenuItem(f"AideLink  ·  {status_text}", None, enabled=False),
         Menu.SEPARATOR,
         MenuItem("关闭 / 开启浮窗", lambda _icon, _item: toggle_floating_window(), default=True),
+        MenuItem("重启浮窗", lambda _icon, _item: restart_floating_window()),
         MenuItem("打开管理面板", lambda: show_main_window()),
         MenuItem("开机启动 AideLink", _tray_toggle_auto_start, checked=_is_auto_start_enabled),
         Menu.SEPARATOR,
