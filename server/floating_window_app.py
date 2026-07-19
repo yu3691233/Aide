@@ -113,6 +113,14 @@ def _task_group_name(task):
     return "待派发"
 
 
+def _task_test_result(task):
+    status = _status_label(task.get("status") or "")
+    if status not in {"待测试", "超时"}:
+        return ""
+    result = str(task.get("test_result") or "").strip().lower()
+    return result if result in {"passed", "failed"} else ""
+
+
 def _latest_task_id(tasks):
     if not tasks:
         return None
@@ -583,8 +591,15 @@ class FloatingWindowApp:
         canvas.delete("all")
         height = int(canvas.cget("height"))
         base_height = self._task_base_height(task)
+        test_result = _task_test_result(task)
         if _task_group_name(task) == "待派发":
             card_outline = "#9b7be3"
+        elif _task_group_name(task) == "待测试" and test_result == "passed":
+            card_outline = "#2e9d55"
+        elif _task_group_name(task) == "待测试" and test_result == "failed":
+            card_outline = "#d83b3b"
+        elif _task_group_name(task) == "待测试":
+            card_outline = "#f08a00"
         elif latest_running:
             card_outline = "#35b86b"
         else:
@@ -598,7 +613,12 @@ class FloatingWindowApp:
         version_text = f"v{version}" if version and not version.lower().startswith("v") else (version or "v--")
         self._draw_round_rect(canvas, 12, metadata_y - 9, 76, metadata_y + 9, 6, fill="#f3f5f8", outline="#e3e7ed", tags="card-hit")
         canvas.create_text(44, metadata_y, text=version_text[:12], fill="#657084", font=("Microsoft YaHei UI", 8), tags="card-hit")
-        subtitle = f"{task['target_ide']}  ·  {task['status']}"
+        display_status = (
+            "测试通过" if test_result == "passed"
+            else "测试未通过" if test_result == "failed"
+            else task["status"]
+        )
+        subtitle = f"{task['target_ide']}  ·  {display_status}"
         progress = max(0, min(100, task.get("progress") or 0))
         if task["status"] == "执行中" and progress:
             subtitle += f"  ·  {progress}%"
@@ -658,11 +678,16 @@ class FloatingWindowApp:
         if _task_group_name(task) == "进行中":
             actions.append(("pending_test", "待测试"))
         if _task_group_name(task) == "待测试":
-            actions.append(("test_feedback", "测试反馈"))
-        actions.extend((
-            ("complete", "已完成"),
-            ("delete", "删除"),
-        ))
+            test_result = _task_test_result(task)
+            if test_result == "passed":
+                actions.append(("confirm_done", "确认完成"))
+            elif test_result == "failed":
+                actions.append(("send_test_feedback", "反馈开发 IDE"))
+            else:
+                actions.append(("test_feedback", "测试反馈"))
+        else:
+            actions.append(("complete", "已完成"))
+        actions.append(("delete", "删除"))
         return tuple(actions)
 
     def _render_task_tab(self, tasks, summary_styles):
@@ -1605,6 +1630,25 @@ class FloatingWindowApp:
             self.input_box.focus_set()
             self.input_box.mark_set("insert", "end-1c")
             self._set_status("补充测试结果后按 Enter 提交", "#0867f2")
+            return
+        if action == "send_test_feedback":
+            summary = str(task.get("test_summary") or "").strip()
+            evidence = str(task.get("test_evidence") or "").strip()
+            feedback = "测试未通过"
+            if summary:
+                feedback += f"：{summary}"
+            if evidence:
+                feedback += f"\n验证证据：{evidence}"
+            self._run_api(
+                "/api/tasks/feedback",
+                method="POST",
+                payload={"task_id": task_id, "feedback": feedback},
+                on_success=lambda _result: (
+                    self._set_status("测试结果已反馈给开发 IDE", "#239957", 1800),
+                    self.refresh(),
+                ),
+                busy_text="正在反馈给开发 IDE…",
+            )
             return
         if action in {"feedback", "feedback_note"}:
             from tkinter import simpledialog

@@ -60,6 +60,112 @@ def _publish_task_feedback(task_id, target_ide, title, feedback, message, fb_cou
     })
 
 
+def _record_test_result(runtime, test_task_id, outcome, summary, evidence=""):
+    test_task = runtime.get_task(test_task_id)
+    if not test_task:
+        raise ValueError(f"测试任务 {test_task_id} 不存在")
+    metadata = dict(test_task.get("metadata") or {})
+    if not metadata.get("is_test"):
+        raise ValueError(f"任务 {test_task_id} 不是测试任务")
+    parent_task_id = test_task.get("parent_task_id") or metadata.get("source_task_id")
+    parent_task = runtime.get_task(parent_task_id) if parent_task_id else None
+    if not parent_task:
+        raise ValueError("找不到测试任务对应的原任务")
+
+    normalized_outcome = str(outcome or "").strip().lower()
+    if normalized_outcome not in {"passed", "failed"}:
+        raise ValueError("result 必须是 passed 或 failed")
+    clean_summary = str(summary or "").strip()
+    if not clean_summary:
+        raise ValueError("summary 不能为空")
+
+    now = datetime.now().isoformat()
+    parent_metadata = dict(parent_task.get("metadata") or {})
+    report = {
+        "result": normalized_outcome,
+        "summary": clean_summary,
+        "evidence": str(evidence or "").strip(),
+        "test_ide": test_task.get("target_ide") or "",
+        "test_task_id": test_task_id,
+        "tested_at": now,
+    }
+    reports = list(parent_metadata.get("test_reports") or [])
+    reports.append(report)
+    parent_metadata.update({
+        "test_result": normalized_outcome,
+        "test_summary": clean_summary,
+        "test_evidence": report["evidence"],
+        "test_ide": report["test_ide"],
+        "test_task_id": test_task_id,
+        "tested_at": now,
+        "test_reports": reports[-20:],
+    })
+    runtime.update_task(
+        parent_task_id,
+        metadata=parent_metadata,
+        updated_at=now,
+    )
+    runtime.update_task(
+        test_task_id,
+        summary=clean_summary,
+        result_ref=report["evidence"] or f"inline:{clean_summary}",
+        updated_at=now,
+    )
+    return parent_task_id, report
+
+
+@task_bp.route("/api/tasks/test-result", methods=["POST"])
+def api_tasks_test_result():
+    """测试 IDE 回传验证结果，并写回原待测试任务。"""
+    data = request.get_json(force=True)
+    test_task_id = str(data.get("test_task_id") or "").strip()
+    if not test_task_id:
+        return jsonify({"success": False, "message": "缺少 test_task_id"}), 400
+
+    from task_runtime import TaskRuntime
+
+    runtime = TaskRuntime(BASE_DIR)
+    try:
+        parent_task_id, report = _record_test_result(
+            runtime,
+            test_task_id,
+            data.get("result"),
+            data.get("summary"),
+            data.get("evidence"),
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    test_task = runtime.get_task(test_task_id) or {}
+    test_ide = test_task.get("target_ide") or ""
+    try:
+        if test_task.get("status") in {"running", "dispatched"}:
+            runtime.mark_task_done(
+                test_task_id,
+                summary=report["summary"],
+                result_ref=report["evidence"] or f"inline:{report['summary']}",
+            )
+        if (runtime.get_task(test_task_id) or {}).get("status") == "pending_test":
+            runtime.confirm_task_done(test_task_id, is_manual=True)
+        if test_ide:
+            queue_file = BASE_DIR / "state" / f"task_queue_{test_ide}.json"
+            queue = [
+                item for item in _load_queue(queue_file)
+                if item.get("task_id") != test_task_id
+            ]
+            _save_queue(queue_file, queue)
+            runtime.set_ide_status(test_ide, "idle", current_task_id=None)
+    except Exception as exc:
+        logger.warning("Test result recorded but child cleanup failed: %s", exc)
+
+    return jsonify({
+        "success": True,
+        "parent_task_id": parent_task_id,
+        "test_result": report["result"],
+        "message": "测试结果已写回原任务",
+    })
+
+
 @task_bp.route("/api/tasks/dispatch", methods=["POST"])
 def api_tasks_dispatch():
     """将选定任务合并成一条提示词派发到指定 IDE，不创建新任务。"""
@@ -522,6 +628,7 @@ def api_tasks_test():
     orig_message = orig_task.get("message", "")
     orig_title = orig_task.get("title", task_id)
     orig_ide = orig_task.get("target_ide", "")
+    callback_url = request.host_url.rstrip("/") + "/api/tasks/test-result"
 
     test_message = (
         f"## 测试任务（请勿修改代码）\n\n"
@@ -535,11 +642,24 @@ def api_tasks_test():
         f"2. 运行相关测试验证功能\n"
         f"3. 如发现问题，记录具体位置和现象\n"
         f"4. **不要修改任何代码**，只做验证\n\n"
-        f"测试完成后，在聊天中报告测试结果。"
+        f"测试完成后，在聊天中报告测试结果，并必须向以下地址 POST JSON：\n"
+        f"{callback_url}\n"
+        f'{{"test_task_id":"TEST_TASK_ID","result":"passed 或 failed",'
+        f'"summary":"测试结论","evidence":"测试命令、日志或问题位置"}}'
     )
 
     now = datetime.now().isoformat()
     test_task_id = f"test-{task_id}-{int(time.time())}"
+    test_message = test_message.replace("TEST_TASK_ID", test_task_id)
+
+    parent_full_task = runtime.get_task(task_id) or {}
+    parent_metadata = dict(parent_full_task.get("metadata") or {})
+    for field in (
+        "test_result", "test_summary", "test_evidence",
+        "test_ide", "test_task_id", "tested_at",
+    ):
+        parent_metadata.pop(field, None)
+    runtime.update_task(task_id, metadata=parent_metadata, updated_at=now)
 
     try:
         tasks = runtime.read_tasks()

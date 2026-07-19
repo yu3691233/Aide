@@ -3523,6 +3523,40 @@ class AideLinkChatViewModel @Inject constructor(
 
     }
 
+    fun feedbackTestResult(taskId: String) {
+
+        viewModelScope.launch(Dispatchers.IO) {
+
+            val task = _state.value.tasks.firstOrNull { it.task_id == taskId }
+
+            val summary = task?.test_summary?.trim().orEmpty()
+
+            val evidence = task?.test_evidence?.trim().orEmpty()
+
+            val feedback = buildString {
+
+                append("测试未通过")
+
+                if (summary.isNotBlank()) append("：").append(summary)
+
+                if (evidence.isNotBlank()) append("\n验证证据：").append(evidence)
+
+            }
+
+            val ok = bridgeApi.sendTaskFeedback(taskId, feedback)
+
+            _state.value = _state.value.copy(
+
+                toastMessage = if (ok) "测试结果已反馈给开发 IDE" else "反馈开发 IDE 失败",
+
+            )
+
+            if (ok) loadTasks()
+
+        }
+
+    }
+
 
 
     fun failTask(taskId: String, error: String = "手动标记失败") {

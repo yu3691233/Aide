@@ -934,6 +934,7 @@ fun AideLinkChatScreen(
                         onOpenTask = { taskId -> viewModel.openTaskThread(taskId) },
                         onEditTask = { taskId -> viewModel.startTaskEdit(taskId) },
                         onConfirm = viewModel::confirmTask,
+                        onTestFeedback = viewModel::feedbackTestResult,
                         onPromptBuilder = viewModel::showTaskPromptBuilder,
                         selectedTab = selectedTaskTab,
                         onSelectedTabChange = { selectedTaskTab = it },

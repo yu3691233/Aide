@@ -114,6 +114,9 @@ def map_task_for_client(t):
     delegated = t.get("source") == "primary_ide" or metadata.get("delegated_by") == "primary_ide"
     t["task_origin"] = "agent" if delegated else "user"
     t["task_origin_label"] = "Agent任务" if delegated else "用户任务"
+    for field in ("test_result", "test_summary", "test_evidence", "test_ide", "tested_at"):
+        if field not in t and field in metadata:
+            t[field] = metadata[field]
     t["allowed_actions"] = task_allowed_actions(t)
     return t
 

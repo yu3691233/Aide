@@ -28,6 +28,11 @@ data class AideTask(
     val device_label: String? = null,
     val feedbacks: List<TaskFeedback>? = null,
     val image: String? = null,
+    val test_result: String? = null,
+    val test_summary: String? = null,
+    val test_evidence: String? = null,
+    val test_ide: String? = null,
+    val tested_at: String? = null,
 )
 
 @Serializable

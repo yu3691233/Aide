@@ -3,6 +3,7 @@ package cc.aidelink.app.ui.screens.chat
 import cc.aidelink.app.ui.screens.chat.components.taskStatusMatchesTab
 import cc.aidelink.app.ui.screens.chat.components.filterTasksForIde
 import cc.aidelink.app.ui.screens.chat.components.projectNameFromPath
+import cc.aidelink.app.ui.screens.chat.components.taskTestVisualResult
 import cc.aidelink.app.domain.model.bridge.AideTask
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -75,5 +76,13 @@ class OfflineTaskFallbackTest {
         assertEquals("aide", projectNameFromPath("F:\\aide"))
         assertEquals("demo", projectNameFromPath("/workspace/demo/"))
         assertEquals("", projectNameFromPath(null))
+    }
+
+    @Test
+    fun pendingTestVisualResultDistinguishesPassedFailedAndUntested() {
+        assertEquals("passed", taskTestVisualResult("pending_test", "passed"))
+        assertEquals("failed", taskTestVisualResult("pending_test", "failed"))
+        assertEquals(null, taskTestVisualResult("pending_test", null))
+        assertEquals(null, taskTestVisualResult("running", "failed"))
     }
 }

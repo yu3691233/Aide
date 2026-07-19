@@ -77,6 +77,11 @@ internal fun taskStatusMatchesTab(status: String, tab: Int, taskType: String? = 
     }
 }
 
+internal fun taskTestVisualResult(status: String, testResult: String?): String? {
+    if (!status.equals("pending_test", ignoreCase = true)) return null
+    return testResult?.lowercase()?.takeIf { it == "passed" || it == "failed" }
+}
+
 internal fun filterTasksForIde(
     tasks: List<AideTask>,
     currentTarget: String,
@@ -115,6 +120,7 @@ fun TaskListPanel(
     onOpenTask: (String) -> Unit,
     onEditTask: (String) -> Unit,
     onConfirm: (String) -> Unit = {},
+    onTestFeedback: (String) -> Unit = {},
     onPromptBuilder: (String) -> Unit = {},
     selectedTab: Int = 0,
     onSelectedTabChange: (Int) -> Unit = {},
@@ -367,6 +373,7 @@ fun TaskListPanel(
                         onLongPress = onLongPress,
                         onToggleSelect = onToggleSelect,
                         onConfirm = onConfirm,
+                        onTestFeedback = onTestFeedback,
                         onPromptBuilder = onPromptBuilder,
                         bridgeUrl = bridgeUrl,
                     )
@@ -392,6 +399,7 @@ fun SwipeableTaskCard(
     onLongPress: (String) -> Unit,
     onToggleSelect: (String) -> Unit,
     onConfirm: (String) -> Unit = {},
+    onTestFeedback: (String) -> Unit = {},
     onPromptBuilder: (String) -> Unit = {},
     bridgeUrl: String = "",
 ) {
@@ -509,6 +517,7 @@ fun SwipeableTaskCard(
                 onSyncOfflineTask = onSyncOfflineTask,
                 onOpenTask = onOpenTask,
                 onConfirm = onConfirm,
+                onTestFeedback = onTestFeedback,
                 onPromptBuilder = onPromptBuilder,
                 bridgeUrl = bridgeUrl,
             )
@@ -530,35 +539,45 @@ fun TaskCard(
     onSyncOfflineTask: (String) -> Unit = {},
     onOpenTask: (String) -> Unit = {},
     onConfirm: (String) -> Unit = {},
+    onTestFeedback: (String) -> Unit = {},
     onPromptBuilder: (String) -> Unit = {},
     bridgeUrl: String = "",
 ) {
     var expanded by remember { mutableStateOf(false) }
 
-    val statusColor = when (task.status.lowercase()) {
-        "done" -> Color(0xFF4CAF50)
-        "failed" -> Color(0xFFF44336)
-        "running", "dispatched" -> Color(0xFF2196F3)
-        "pending_test" -> Color(0xFFFFA000)
-        "queued" -> Color(0xFF9C27B0)
-        "draft", "pending" -> Color(0xFF9E9E9E)
-        "pending_dispatch" -> Color(0xFF9C27B0)
-        "pending_upload" -> Color(0xFFFB8C00)
-        "offline" -> Color(0xFF757575)
-        else -> Color(0xFF2196F3)
+    val testResult = taskTestVisualResult(task.status, task.test_result)
+    val statusColor = when {
+        task.status.equals("pending_test", ignoreCase = true) && testResult == "passed" -> Color(0xFF2E7D32)
+        task.status.equals("pending_test", ignoreCase = true) && testResult == "failed" -> Color(0xFFD32F2F)
+        else -> when (task.status.lowercase()) {
+            "done" -> Color(0xFF4CAF50)
+            "failed" -> Color(0xFFF44336)
+            "running", "dispatched" -> Color(0xFF2196F3)
+            "pending_test" -> Color(0xFFFFA000)
+            "queued" -> Color(0xFF9C27B0)
+            "draft", "pending" -> Color(0xFF9E9E9E)
+            "pending_dispatch" -> Color(0xFF9C27B0)
+            "pending_upload" -> Color(0xFFFB8C00)
+            "offline" -> Color(0xFF757575)
+            else -> Color(0xFF2196F3)
+        }
     }
 
-    val statusText = when (task.status.lowercase()) {
-        "done" -> "已完成"
-        "failed" -> "失败"
-        "running", "dispatched" -> "运行中"
-        "pending_test" -> "待测试"
-        "queued" -> "排队中"
-        "draft" -> "待派发"
-        "pending_dispatch" -> "待派发"
-        "pending_upload" -> "待同步"
-        "offline" -> "离线"
-        else -> task.status
+    val statusText = when {
+        task.status.equals("pending_test", ignoreCase = true) && testResult == "passed" -> "测试通过"
+        task.status.equals("pending_test", ignoreCase = true) && testResult == "failed" -> "测试未通过"
+        else -> when (task.status.lowercase()) {
+            "done" -> "已完成"
+            "failed" -> "失败"
+            "running", "dispatched" -> "运行中"
+            "pending_test" -> "待测试"
+            "queued" -> "排队中"
+            "draft" -> "待派发"
+            "pending_dispatch" -> "待派发"
+            "pending_upload" -> "待同步"
+            "offline" -> "离线"
+            else -> task.status
+        }
     }
 
     val sourceLabel = when (task.source?.lowercase()) {
@@ -575,10 +594,15 @@ fun TaskCard(
     val cardBgColor = MaterialTheme.colorScheme.surface
     val selectedBgColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.14f)
 
-    val cardBorder = if (isSelected) BorderStroke(
-        width = 1.dp,
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-    ) else null
+    val cardBorder = when {
+        task.status.equals("pending_test", ignoreCase = true) && testResult in setOf("passed", "failed") ->
+            BorderStroke(width = 2.dp, color = statusColor)
+        isSelected -> BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+        )
+        else -> null
+    }
 
     ElevatedCard(
         modifier = Modifier
@@ -728,6 +752,32 @@ fun TaskCard(
                 )
 
                 if (expanded) {
+                    if (!task.test_summary.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        HorizontalDivider(color = statusColor.copy(alpha = 0.25f))
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "测试结果：${task.test_summary}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = statusColor,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        if (!task.test_ide.isNullOrBlank()) {
+                            Text(
+                                text = "测试 IDE：${task.test_ide.uppercase()}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (!task.test_evidence.isNullOrBlank()) {
+                            Text(
+                                text = "验证证据：${task.test_evidence}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
                     if (!task.summary.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
@@ -876,15 +926,26 @@ fun TaskCard(
                         }
                         if (task.status.lowercase() != "done") {
                             if (task.status.lowercase() == "pending_test") {
-                                Button(
-                                    onClick = { onConfirm(task.task_id) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFC107)),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                    modifier = Modifier.height(30.dp)
-                                ) {
-                                    Icon(Icons.Default.CheckCircle, contentDescription = "确认完成", modifier = Modifier.size(14.dp), tint = Color.Black)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("确认完成", fontSize = 11.sp, color = Color.Black)
+                                if (testResult == "passed") {
+                                    Button(
+                                        onClick = { onConfirm(task.task_id) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(30.dp)
+                                    ) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = "确认完成", modifier = Modifier.size(14.dp), tint = Color.White)
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("确认完成", fontSize = 11.sp, color = Color.White)
+                                    }
+                                } else if (testResult == "failed") {
+                                    Button(
+                                        onClick = { onTestFeedback(task.task_id) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(30.dp)
+                                    ) {
+                                        Text("反馈开发 IDE", fontSize = 11.sp, color = Color.White)
+                                    }
                                 }
                             } else {
                                 Button(

@@ -190,6 +190,41 @@ class FloatingWindowAppModelTests(unittest.TestCase):
             ("test_feedback", "测试反馈"),
             fwa.FloatingWindowApp._expanded_actions({"status": "待测试"}),
         )
+        self.assertIn(
+            ("confirm_done", "确认完成"),
+            fwa.FloatingWindowApp._expanded_actions({
+                "status": "待测试",
+                "test_result": "passed",
+            }),
+        )
+        self.assertNotIn(
+            ("test_feedback", "测试反馈"),
+            fwa.FloatingWindowApp._expanded_actions({
+                "status": "待测试",
+                "test_result": "passed",
+            }),
+        )
+        self.assertIn(
+            ("send_test_feedback", "反馈开发 IDE"),
+            fwa.FloatingWindowApp._expanded_actions({
+                "status": "待测试",
+                "test_result": "failed",
+            }),
+        )
+
+    def test_test_result_visual_state_only_applies_to_pending_test(self):
+        self.assertEqual("passed", fwa._task_test_result({
+            "status": "待测试",
+            "test_result": "passed",
+        }))
+        self.assertEqual("failed", fwa._task_test_result({
+            "status": "pending_test",
+            "test_result": "failed",
+        }))
+        self.assertEqual("", fwa._task_test_result({
+            "status": "执行中",
+            "test_result": "failed",
+        }))
 
     def test_copy_uses_full_body_and_removes_reasoning_fragments(self):
         copied = fwa.task_copy_text({
