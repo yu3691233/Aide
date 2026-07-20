@@ -1171,6 +1171,22 @@ document.addEventListener('DOMContentLoaded', () => {
     overlay.querySelector('#setup-wizard-open').onclick = () => { finish(); document.querySelector('[data-tab="config"]')?.click(); };
   }, 800);
 });
+
+// 浮窗等外部入口通过 URL 参数自动触发对应功能：
+//   ?debug=1         —— 启用 Ctrl+点击 组件定位模式
+//   ?calibrate=<key> —— 启动指定 IDE 的校准流程
+document.addEventListener('DOMContentLoaded', () => {
+  const params = new URLSearchParams(location.search);
+  const calibrateKey = (params.get('calibrate') || '').trim();
+  const debugFlag = (params.get('debug') || '').trim();
+  if (calibrateKey && typeof startCalibration === 'function') {
+    // 等待核心 JS 初始化完成后再触发校准流程
+    setTimeout(() => startCalibration(calibrateKey), 600);
+  }
+  if (debugFlag === '1' && typeof toggleDebugMode === 'function' && typeof debugMode !== 'undefined' && !debugMode) {
+    setTimeout(() => toggleDebugMode(), 600);
+  }
+});
 </script>
 
 </div> <!-- /content-body -->

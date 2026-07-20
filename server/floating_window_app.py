@@ -267,6 +267,60 @@ def api_request(path, method="GET", payload=None, timeout=15):
         return result
 
 
+def http_get_bytes(url, timeout=15):
+    """下载二进制数据（如截图字节）。失败返回 None。"""
+    try:
+        with urlopen(url, timeout=timeout) as response:
+            return response.read()
+    except (HTTPError, URLError, TimeoutError, OSError):
+        return None
+
+
+def http_post_multipart(url, fields=None, files=None, timeout=30):
+    """上传 multipart/form-data（用于 /upload 接口）。
+    fields: dict[str, str]；files: dict[field_name, (filename, bytes, content_type)]。
+    """
+    boundary = "----AideLinkFloatingWindow" + str(int(time.time() * 1000))
+    parts = []
+    for name, value in (fields or {}).items():
+        parts.append(f"--{boundary}\r\n".encode("utf-8"))
+        parts.append(
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8")
+        )
+        parts.append(f"{value}\r\n".encode("utf-8"))
+    for field_name, (filename, data, content_type) in (files or {}).items():
+        parts.append(f"--{boundary}\r\n".encode("utf-8"))
+        parts.append(
+            f'Content-Disposition: form-data; name="{field_name}"; '
+            f'filename="{filename}"\r\n'.encode("utf-8")
+        )
+        parts.append(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
+        parts.append(data)
+        parts.append(b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    request = Request(
+        url,
+        data=b"".join(parts),
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            result = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            result = {"message": raw or str(exc)}
+        result.setdefault("ok", False)
+        result.setdefault("status", exc.code)
+        return result
+    except (URLError, TimeoutError, OSError) as exc:
+        return {"ok": False, "message": str(exc)}
+
+
 class SingleInstance:
     def __init__(self, name=WINDOW_MUTEX_NAME):
         self.name = name
@@ -1062,17 +1116,53 @@ class FloatingWindowApp:
         self._load_android_device(copy_address, "正在读取设备地址…")
 
     def android_screenshot_feedback(self):
-        def captured(result):
-            screen_url = result.get("screen_url") or "/ui-locator/screen.png"
-            webbrowser.open(f"{BRIDGE_URL.rstrip('/')}{screen_url}")
-            self._set_status("手机截图已生成", "#239957", 2200)
+        """复用 app 端的截图反馈流程：截图 → 上传到剪贴板 → 粘贴到 IDE → 发送提示词"""
+        if not self._ensure_ide_for_feedback("android"):
+            return
 
-        self._run_api(
-            "/ui-locator/screenshot",
-            method="POST",
-            payload={},
-            on_success=captured,
-            busy_text="正在截取手机屏幕…",
+        def step_get_device(ctx):
+            result = api_request("/api/devices")
+            device = self._pick_android_device(result)
+            if not device:
+                return False, "没有已登记的 Android 设备"
+            ctx["device_ip"] = device.get("online_ip") or device.get("ip")
+            return True, ""
+
+        def step_capture(ctx):
+            payload = {"ip": ctx["device_ip"]} if ctx.get("device_ip") else {}
+            result = api_request("/ui-locator/screenshot", method="POST", payload=payload)
+            if not result.get("ok"):
+                return False, result.get("error") or "手机截图失败"
+            ctx["screen_url"] = result.get("screen_url") or "/ui-locator/screen.png"
+            return True, ""
+
+        def step_download(ctx):
+            url = f"{BRIDGE_URL.rstrip('/')}{ctx['screen_url']}"
+            data = http_get_bytes(url)
+            if not data:
+                return False, "下载截图失败"
+            ctx["image_bytes"] = data
+            return True, ""
+
+        def step_upload(ctx):
+            filename = f"android_feedback_{int(time.time())}.png"
+            result = http_post_multipart(
+                f"{BRIDGE_URL.rstrip('/')}/upload",
+                fields={"to_clipboard": "true"},
+                files={"file": (filename, ctx["image_bytes"], "image/png")},
+            )
+            if not result.get("ok"):
+                return False, result.get("raw") or "上传截图到剪贴板失败"
+            return True, ""
+
+        self._run_screenshot_feedback_flow(
+            [
+                ("读取设备", step_get_device),
+                ("截取屏幕", step_capture),
+                ("下载截图", step_download),
+                ("上传到剪贴板", step_upload),
+            ],
+            busy_text="正在发送 Android 截图反馈",
         )
 
     def refresh_web_page(self):
@@ -1084,44 +1174,128 @@ class FloatingWindowApp:
         )
 
     def open_web_component_locator(self):
-        webbrowser.open(BRIDGE_URL.rstrip("/") + "/")
-        self._set_status("已打开 Web 组件地图", "#239957", 1800)
+        # 复用 web 端已完善的 Ctrl+点击组件定位模式（debug-mode.js）
+        webbrowser.open(f"{BRIDGE_URL.rstrip('/')}/?debug=1")
+        self._set_status("已打开 Web 组件定位模式", "#239957", 1800)
 
     def windows_screenshot_feedback(self):
-        self._run_api(
-            "/api/trigger-screenshot",
-            method="POST",
-            payload={},
-            on_success=lambda _result: self._set_status(
-                "请框选 Windows 区域，截图将进入剪贴板", "#239957", 2600
-            ),
-            busy_text="正在启动 Windows 截图…",
+        """复用 web 端的 IDE 校准截图：截取 IDE 客户区 → 上传到剪贴板 → 粘贴到 IDE → 发送提示词"""
+        if not self._ensure_ide_for_feedback("windows"):
+            return
+
+        def step_capture(ctx):
+            result = api_request("/api/calibrate", method="POST", payload={"key": ctx["ide"]})
+            if not result.get("success"):
+                return False, result.get("message") or "IDE 窗口截图失败"
+            b64 = result.get("image")
+            if not b64:
+                return False, "IDE 截图为空"
+            try:
+                import base64
+                ctx["image_bytes"] = base64.b64decode(b64)
+            except Exception as exc:
+                return False, f"解码截图失败：{exc}"
+            return True, ""
+
+        def step_upload(ctx):
+            filename = f"windows_feedback_{int(time.time())}.jpg"
+            result = http_post_multipart(
+                f"{BRIDGE_URL.rstrip('/')}/upload",
+                fields={"to_clipboard": "true"},
+                files={"file": (filename, ctx["image_bytes"], "image/jpeg")},
+            )
+            if not result.get("ok"):
+                return False, result.get("raw") or "上传截图到剪贴板失败"
+            return True, ""
+
+        self._run_screenshot_feedback_flow(
+            [
+                ("截取 IDE 窗口", step_capture),
+                ("上传到剪贴板", step_upload),
+            ],
+            busy_text="正在发送 Windows 截图反馈",
         )
 
     def locate_windows_target(self):
+        # 复用 web 端已完善的 IDE 校准流程（最大化 + 截图 + 拖框保存）
         if not self.selected_ide_key:
             self._set_status("请先选择一个 IDE", "#b42318", 1800)
             return
-
-        def located(result):
-            window = result.get("window") or {}
-            detail = (
-                f"{self.selected_ide_key}: "
-                f"{window.get('left', 0)},{window.get('top', 0)} "
-                f"{window.get('width', 0)}x{window.get('height', 0)}"
-            )
-            self.root.clipboard_clear()
-            self.root.clipboard_append(detail)
-            self.root.update_idletasks()
-            self._set_status("窗口位置已复制", "#239957", 1800)
-
-        self._run_api(
-            "/api/ide-screenshot",
-            method="POST",
-            payload={"key": self.selected_ide_key},
-            on_success=located,
-            busy_text="正在定位 Windows 窗口…",
+        webbrowser.open(
+            f"{BRIDGE_URL.rstrip('/')}/?calibrate={quote(self.selected_ide_key)}"
         )
+        self._set_status("已打开 IDE 校准页面", "#239957", 1800)
+
+    def _ensure_ide_for_feedback(self, surface):
+        if not self.selected_ide_key:
+            self._set_status(f"请先选择运行中的 IDE 来接收{surface} 截图反馈", "#b42318", 2200)
+            return False
+        return True
+
+    def _run_screenshot_feedback_flow(self, steps, busy_text="正在发送截图反馈"):
+        """串行执行截图反馈的前置步骤（截图 + 上传到剪贴板），最后统一粘贴到 IDE 并发送提示词。
+        steps: [(step_name, callable(ctx) -> (ok, message)), ...]
+        """
+        self._set_status(busy_text)
+
+        def worker():
+            ctx = {"ide": self.selected_ide_key}
+            for step_name, step in steps:
+                self._post_ui(
+                    lambda desc=step_name, base=busy_text: self._set_status(f"{base}（{desc}）")
+                )
+                try:
+                    ok, message = step(ctx)
+                except Exception as exc:
+                    err = f"{step_name}失败：{exc}"
+                    self._post_ui(lambda msg=err: self._set_status(msg, "#b42318"))
+                    return
+                if not ok:
+                    err = message or f"{step_name}失败"
+                    self._post_ui(lambda msg=err: self._set_status(msg, "#b42318"))
+                    return
+
+            def step_inject(ctx):
+                result = api_request(
+                    "/inject-clipboard", method="POST", payload={"target": ctx["ide"]}
+                )
+                if not result.get("ok"):
+                    return False, result.get("error") or "粘贴到 IDE 失败"
+                return True, ""
+
+            def step_send(ctx):
+                payload = {
+                    "text": "【截图反馈】请查看截图，结合画面分析问题",
+                    "target": ctx["ide"],
+                }
+                result = api_request("/send", method="POST", payload=payload)
+                if not result.get("ok"):
+                    return False, result.get("raw") or "发送提示词失败"
+                return True, ""
+
+            for step_name, step in (("粘贴到 IDE", step_inject), ("发送提示词", step_send)):
+                self._post_ui(
+                    lambda desc=step_name, base=busy_text: self._set_status(f"{base}（{desc}）")
+                )
+                try:
+                    ok, message = step(ctx)
+                except Exception as exc:
+                    err = f"{step_name}失败：{exc}"
+                    self._post_ui(lambda msg=err: self._set_status(msg, "#b42318"))
+                    return
+                if not ok:
+                    err = message or f"{step_name}失败"
+                    self._post_ui(lambda msg=err: self._set_status(msg, "#b42318"))
+                    return
+
+            self._post_ui(lambda: self._set_status("截图反馈已发送到 IDE", "#239957", 2200))
+            self._post_ui(self.refresh)
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="AideLinkFloatingWindowFeedback",
+        ).start()
 
     def _render_codex_quota(self, quota):
         self.quota_canvas.delete("all")
