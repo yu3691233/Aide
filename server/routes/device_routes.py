@@ -244,7 +244,7 @@ def _ensure_adb_device(alias=None, ip=None, port=None, auto_enable=True, timeout
     target_ips = [item["ip"] for item in candidates]
 
     while _time.time() < deadline:
-        _time.sleep(1)
+        _time.sleep(0.3)
         pending = _find_wireless_result(request_id, started_at, target_ips)
         if pending:
             result_ip = pending.get("ip") or target_ip
