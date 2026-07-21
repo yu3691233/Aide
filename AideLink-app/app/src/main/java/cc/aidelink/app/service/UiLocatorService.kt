@@ -40,7 +40,10 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -409,7 +412,7 @@ class UiLocatorService : Service() {
 
         composeView.setContent {
             Box(
-                modifier = Modifier.size(56.dp),
+                modifier = Modifier.size(60.dp),
                 contentAlignment = Alignment.Center
             ) {
                 if (showGlow) {
@@ -448,6 +451,24 @@ class UiLocatorService : Service() {
                         contentDescription = "AideLink",
                         modifier = Modifier.size(48.dp).clip(CircleShape),
                         contentScale = ContentScale.Fit
+                    )
+                }
+                // 顶部平台图标
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .offset(y = (-2).dp)
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF1E88E5))
+                        .border(1.5.dp, Color.White, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhoneAndroid,
+                        contentDescription = "Android",
+                        modifier = Modifier.size(12.dp),
+                        tint = Color.White
                     )
                 }
             }

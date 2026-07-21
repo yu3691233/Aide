@@ -68,7 +68,7 @@ def _paths_overlap(left, right):
 
 
 def _manager_ide_candidates(runtime, main_ide="codex", include_stopped=False, limit=5):
-    """List configured IDEs, preferring an open idle non-primary worker."""
+    """List configured IDEs as equal task targets, preferring open idle instances."""
     import ide_scanner
     from dispatch_utils import get_ide_running_statuses
 
@@ -81,30 +81,26 @@ def _manager_ide_candidates(runtime, main_ide="codex", include_stopped=False, li
             continue
         state = runtime.get_ide_status(key) or {}
         available = runtime.is_ide_available(key)
-        is_manager = bool(item.get("is_primary", False)) or key == main_ide
         candidates.append({
             "key": key,
             "name": item.get("name") or key,
             "running": bool(running.get(key, False)),
             "status": state.get("status") or "idle",
-            "is_primary": bool(item.get("is_primary", False)),
-            "is_manager": is_manager,
             "available": bool(available),
         })
     candidates = [
         item for item in candidates
-        if not item["is_manager"] and (item["running"] or include_stopped)
+        if item["running"] or include_stopped
     ]
     candidates.sort(key=lambda item: (
-        not (item["running"] and item["available"] and not item["is_manager"]),
+        not (item["running"] and item["available"]),
         not item["running"],
         not item["available"],
-        item["is_manager"],
         item["name"].lower(),
     ))
     recommended = next((
         item["key"] for item in candidates
-        if item["running"] and item["available"] and not item["is_manager"]
+        if item["running"] and item["available"]
     ), None)
     return candidates[:max(1, min(int(limit or 5), 20))], recommended
 
@@ -164,9 +160,9 @@ def handle_prepare_delegation(arguments):
         "dispatch_allowed": not blockers,
         "dispatch_blockers": blockers,
         "choices": [
-            {"id": "complete_here", "label": "不派发，由主 Codex 完成"},
-            {"id": "new_codex_session", "label": "创建 Codex 新会话接力", "requires_user_confirmation": True},
-            {"id": "delegate", "label": "选择 IDE 后派发", "requires_user_confirmation": True},
+            {"id": "complete_here", "label": "在当前 IDE 继续完成"},
+            {"id": "new_session", "label": "创建新会话接力", "requires_user_confirmation": True},
+            {"id": "delegate", "label": "选择任意 IDE 派发", "requires_user_confirmation": True},
         ],
     }
     return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]}
@@ -174,17 +170,17 @@ def handle_prepare_delegation(arguments):
 
 def _worker_task_prompt(task_id, text, task_type, main_owned_paths, owned_paths):
     return "\n".join([
-        "[AideLink 员工任务]",
+        "[AideLink 协作任务]",
         f"task_id: {task_id}",
         f"task_type: {task_type}",
         f"目标: {text}",
-        f"主 IDE 占用范围（禁止修改）: {json.dumps(main_owned_paths, ensure_ascii=False)}",
-        f"员工可修改范围: {json.dumps(owned_paths, ensure_ascii=False)}",
+        f"其他任务占用范围（禁止修改）: {json.dumps(main_owned_paths, ensure_ascii=False)}",
+        f"本任务可修改范围: {json.dumps(owned_paths, ensure_ascii=False)}",
         "完成要求: 只处理本任务；运行约定验证；不要自行把任务标记 done。",
         "成功回传: 调用 report_delegated_aidelink_task，提交 summary 和 result_ref。",
         "result_ref 示例: commit:<sha>、file:<path>、test:<command/result>、inline:<evidence>。",
         "失败回传: 调用 fail_delegated_aidelink_task，说明 error 和已有 result_ref。",
-        "主 IDE 将读取回传、独立验证，再调用 verify_delegated_aidelink_task 完成任务。",
+        "发起任务的会话将读取回传、独立验证，再调用 verify_delegated_aidelink_task 完成任务。",
     ])
 
 
@@ -249,8 +245,8 @@ def handle_delegate_task(arguments):
         parent_task_id=arguments.get("parent_task_id"),
         priority=arguments.get("priority", "medium"),
         metadata={
-            "delegated_by": "primary_ide",
-            "worker_role": "employee",
+            "delegated_by": "ide_session",
+            "worker_role": "collaborator",
             "task_type": task_type,
             "main_owned_paths": main_owned_paths,
             # validation 与 _compact_task_package 同源（validation_commands），
@@ -528,6 +524,269 @@ def handle_ask_aide(arguments):
     return {"content": [{"type": "text", "text": f"{aide_text}\n\n---\n{metadata}"}]}
 
 
+def _bridge_get_json(path, timeout=10):
+    """GET helper that returns parsed JSON or raises URLError/ValueError."""
+    bridge_url = os.environ.get("AIDELINK_BRIDGE_URL", "http://127.0.0.1:5000").rstrip("/")
+    req = urllib.request.Request(f"{bridge_url}{path}", method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _bridge_post_json(path, payload, timeout=90):
+    """POST helper that returns parsed JSON. Raises HTTPError/URLError/ValueError."""
+    bridge_url = os.environ.get("AIDELINK_BRIDGE_URL", "http://127.0.0.1:5000").rstrip("/")
+    req = urllib.request.Request(
+        f"{bridge_url}{path}",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def handle_adb_install_project_apk(arguments):
+    """One-click APK install: resolve device → ensure ADB → install APK on target project.
+
+    Requires user_confirmed=true (high-risk write op). All HTTP calls hit the local
+    AideLink bridge which owns enable-wireless push and ADB install workflows.
+
+    Resolution order:
+      1. alias provided & found in /api/devices aliases → use alias's ip/port
+      2. alias missing or not found, but ip provided & active in /api/debug/connected → use ip
+      3. alias missing, ip missing, exactly one active IP → use it automatically
+      4. alias missing, ip missing, multiple active IPs → return list, ask user
+    """
+    if arguments.get("user_confirmed") is not True:
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": "缺少 user_confirmed=true，本工具是高风险写操作，必须用户明确同意后才能执行"}],
+        }
+
+    alias = (arguments.get("alias") or "").strip()
+    explicit_ip = (arguments.get("ip") or "").strip()
+
+    project_path = (arguments.get("project_path") or "").strip()
+    apk_path = (arguments.get("apk_path") or "").strip()
+    try:
+        timeout = int(arguments.get("timeout") or 60)
+    except (TypeError, ValueError):
+        timeout = 60
+    timeout = max(15, min(timeout, 180))
+
+    # 1. Resolve device: try alias first, fallback to /api/debug/connected active IPs.
+    try:
+        devices_payload = _bridge_get_json("/api/devices", timeout=10)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return {"isError": True, "content": [{"type": "text", "text": f"查询设备列表失败 ({exc.code}): {detail}"}]}
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return {"isError": True, "content": [{"type": "text", "text": f"无法连接 AideLink 服务: {exc}"}]}
+
+    aliases = (devices_payload or {}).get("aliases") or {}
+    device_entry = aliases.get(alias) if alias else None
+
+    resolved_alias = None
+    resolved_ip = None
+    resolved_port = None
+
+    if device_entry:
+        resolved_alias = alias
+        resolved_ip = device_entry.get("ip") or explicit_ip
+        resolved_port = device_entry.get("port")
+    else:
+        # fallback：查活跃 IP 列表
+        try:
+            active_payload = _bridge_get_json("/api/debug/connected", timeout=10)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            active_payload = {}
+        # active_payload: {ip: "Ns ago"}，过滤出 120s 内活跃的
+        active_ips = []
+        for ip_key, ago_text in (active_payload or {}).items():
+            try:
+                seconds = float(str(ago_text).split("s")[0])
+            except (ValueError, IndexError):
+                seconds = 999
+            if seconds <= 120:
+                active_ips.append((ip_key, seconds))
+        active_ips.sort(key=lambda x: x[1])  # 最近活跃优先
+
+        if explicit_ip:
+            resolved_ip = explicit_ip
+            for a, info in aliases.items():
+                if info.get("ip") == explicit_ip or explicit_ip in (info.get("ips") or []):
+                    resolved_alias = a
+                    if not resolved_port:
+                        resolved_port = info.get("port")
+                    break
+        elif active_ips:
+            if len(active_ips) == 1:
+                resolved_ip = active_ips[0][0]
+                for a, info in aliases.items():
+                    if info.get("ip") == resolved_ip or resolved_ip in (info.get("ips") or []):
+                        resolved_alias = a
+                        if not resolved_port:
+                            resolved_port = info.get("port")
+                        break
+            else:
+                listing = "\n".join(f"- {ip} (last seen {ago:.0f}s ago)" for ip, ago in active_ips)
+                return {
+                    "isError": True,
+                    "content": [{"type": "text", "text": (
+                        f"检测到 {len(active_ips)} 台活跃设备，请用 ip 参数指定目标设备：\n{listing}\n"
+                        "或者在 web 端 /settings 设备管理里给目标设备设置 alias 后传 alias 参数。"
+                    )}],
+                }
+        else:
+            available = ", ".join(sorted(aliases.keys())) or "(无)"
+            return {
+                "isError": True,
+                "content": [{"type": "text", "text": (
+                    f"alias={alias or '(空)'} 未找到，且 /api/debug/connected 无活跃 IP。"
+                    f"已配置别名: {available}。"
+                    "请确认 App 在前台且已通过 AideLink 服务保持在线（events/stream 心跳）。"
+                )}],
+            }
+
+    if not resolved_ip:
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": "无法解析目标设备 IP：alias 和 ip 均未提供有效值"}],
+        }
+
+    if not resolved_port:
+        try:
+            resolved_port = int(arguments.get("port") or 5555)
+        except (TypeError, ValueError):
+            resolved_port = 5555
+
+    # 2. Fetch settings (used both for default current_project and whitelist check).
+    settings_payload = {}
+    try:
+        settings_payload = _bridge_get_json("/api/settings", timeout=10)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        settings_payload = {}
+    settings_root = (settings_payload or {}).get("settings") or {}
+
+    # 3. Resolve project_path: default to current_project.
+    if not project_path:
+        project_path = (settings_root.get("current_project") or "").strip()
+
+    if not project_path:
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": (
+                "未指定 project_path 且无法从 /api/settings 读取 current_project，请显式传入 project_path"
+            )}],
+        }
+
+    # 4. Verify project_path is in settings.projects whitelist.
+    projects = settings_root.get("projects") or []
+    if not any(str(item.get("path", "")).strip().lower() == project_path.lower() for item in projects):
+        available_paths = ", ".join(str(item.get("path", "")) for item in projects) or "(空)"
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": (
+                f"目标项目 {project_path} 不在 settings.projects 白名单。可用: {available_paths}。"
+                "请在 web 端 /settings 项目管理里添加。"
+            )}],
+        }
+
+    # 4. Ensure ADB device: /api/adb/connect (server publishes enable-wireless + waits App report).
+    # alias 优先传给服务端（让 _ensure_adb_device 走 alias 的 ips 候选）；
+    # 否则用 ip + port 直接走服务端的 _publish_wireless_request 链路。
+    connect_request = {"timeout": timeout}
+    if resolved_alias:
+        connect_request["alias"] = resolved_alias
+    else:
+        connect_request["ip"] = resolved_ip
+        connect_request["port"] = resolved_port
+    try:
+        connect_payload = _bridge_post_json(
+            "/api/adb/connect",
+            connect_request,
+            timeout=timeout + 10,
+        )
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        try:
+            err_msg = json.loads(detail).get("error") or detail
+        except json.JSONDecodeError:
+            err_msg = detail or str(exc)
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": f"[ensure_device] ADB 连接失败: {err_msg}"}],
+        }
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": f"[ensure_device] 无法连接 AideLink 服务: {exc}"}],
+        }
+
+    if not connect_payload.get("ok"):
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": (
+                f"[ensure_device] alias={resolved_alias or '(无)'} ip={resolved_ip} 无法建立 ADB 连接: "
+                f"{connect_payload.get('error', '未知错误')}。"
+                "请确认 App 处于前台、无线调试开关可用，并重试。"
+            )}],
+        }
+
+    device_ip = connect_payload.get("ip") or resolved_ip
+    device_port = int(connect_payload.get("port") or resolved_port)
+
+    # 5. Install APK via /api/adb/project-install.
+    install_payload = {"ip": device_ip, "port": device_port, "project_path": project_path}
+    if apk_path:
+        install_payload["apk_path"] = apk_path
+    try:
+        install_resp = _bridge_post_json(
+            "/api/adb/project-install",
+            install_payload,
+            timeout=timeout + 30,
+        )
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        try:
+            err_msg = json.loads(detail).get("error") or detail
+        except json.JSONDecodeError:
+            err_msg = detail or str(exc)
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": f"[install] 安装失败: {err_msg}"}],
+        }
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": f"[install] 无法连接 AideLink 服务: {exc}"}],
+        }
+
+    if not install_resp.get("ok"):
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": (
+                f"[install] alias={resolved_alias or '(无)'} ip={device_ip} APK 安装失败: "
+                f"{install_resp.get('error', '未知错误')}"
+            )}],
+        }
+
+    success = {
+        "ok": True,
+        "alias": resolved_alias,
+        "ip": device_ip,
+        "port": device_port,
+        "device": connect_payload.get("device") or f"{device_ip}:{device_port}",
+        "project_path": project_path,
+        "apk_path": install_resp.get("apk_path") or apk_path,
+        "application_id": install_resp.get("application_id", ""),
+        "method": connect_payload.get("method", "adb_connect"),
+        "install_output": (install_resp.get("output") or "").strip(),
+        "message": install_resp.get("message") or "APK 安装完成",
+    }
+    return {"content": [{"type": "text", "text": json.dumps(success, ensure_ascii=False, indent=2)}]}
+
+
 def get_tool_definitions():
     return [
         {
@@ -641,6 +900,29 @@ def get_tool_definitions():
                 "task_id": {"type": "string"}, "verification_summary": {"type": "string"}
             }, "required": ["task_id", "verification_summary"]},
         },
+        {
+            "name": "adb_install_project_apk",
+            "description": (
+                "一键安装目标项目 APK：通过 alias 或 ip 识别目标设备，"
+                "自动启用无线调试 + adb connect + 安装 + 启动 launcher。"
+                "必须 user_confirmed=true。设备解析顺序："
+                "1) alias 已配置 → 用 alias；"
+                "2) alias 缺失或未找到 + ip 提供 → 用 ip；"
+                "3) alias/ip 都缺 + 仅一台活跃设备 → 自动选用；"
+                "4) alias/ip 都缺 + 多台活跃设备 → 返回列表让用户指定 ip。"
+            ),
+            "inputSchema": {"type": "object", "properties": {
+                "alias": {"type": "string", "description": "可选；设备别名（用户在 web 端 /settings 设备管理里设置）"},
+                "ip": {"type": "string", "description": "可选；目标设备 IP（与 alias 二选一；alias 未配置时用此字段）"},
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 5555,
+                            "description": "可选；目标设备无线调试端口，默认 5555"},
+                "project_path": {"type": "string", "description": "目标项目路径，默认走 settings.current_project"},
+                "apk_path": {"type": "string", "description": "可选 APK 绝对路径；省略时取 project 下 primary_apk"},
+                "timeout": {"type": "integer", "minimum": 15, "maximum": 180, "default": 60,
+                            "description": "等待 enable-wireless + adb connect + install 的总超时（秒）"},
+                "user_confirmed": {"type": "boolean", "description": "高风险写操作必须 ===true"},
+            }, "required": ["user_confirmed"]},
+        },
     ]
 
 def process_message(line):
@@ -707,6 +989,8 @@ def process_message(line):
             result = handle_fail_delegated_task(arguments)
         elif tool_name == "verify_delegated_aidelink_task":
             result = handle_verify_delegated_task(arguments)
+        elif tool_name == "adb_install_project_apk":
+            result = handle_adb_install_project_apk(arguments)
         else:
             result = {"isError": True, "content": [{"type": "text", "text": f"未知工具: {tool_name}"}]}
             

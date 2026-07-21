@@ -1694,6 +1694,7 @@ async function loadDevices() {
           <div style="display:flex;gap:6px;margin-top:6px;">
             ${online && !d.is_adb_connected ? `<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px;" onclick="enableWirelessAdb('${d.online_ip || d.ip || ''}', '${alias}')">📡 开启调试</button>` : ''}
             ${d.is_adb_connected && d.device_id ? `<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px;" onclick="disconnectAdb('${d.device_id}', '${alias}')">🔌 断开</button>` : ''}
+            ${!d.alias && d.ip ? `<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px;" onclick="setAliasForIp('${d.ip}', ${d.adb_port || 5555})">🏷 设置别名</button>` : ''}
             ${d.alias ? `<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px;color:var(--accent-red);" onclick="deleteDeviceAlias('${d.alias}')">🗑 删除</button>` : ''}
           </div>
         </div>`;
@@ -1734,6 +1735,21 @@ async function loadDevices() {
 
   }
 
+}
+
+async function setAliasForIp(ip, port) {
+  const alias = prompt(`为设备 ${ip} 设置一个别名（例如：手机 / 平板）`);
+  if (!alias) return;
+  try {
+    const res = await apiCall('/api/devices/alias', 'POST', { ip, alias, port });
+    if (!res || !res.ok) {
+      throw new Error(res ? res.error : '网络错误');
+    }
+    showToast(`已设置别名 '${alias}'`, 'success');
+    await loadDevices();
+  } catch (e) {
+    showToast('设置失败: ' + e.message, 'error');
+  }
 }
 
 async function setDeviceAlias() {

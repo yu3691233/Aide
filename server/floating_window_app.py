@@ -18,7 +18,56 @@ from urllib.request import Request, urlopen
 
 from floating_icons import IconFactory
 
+import io
 
+from PIL import Image, ImageDraw, ImageTk, ImageFont
+
+
+def _set_window_rect(hwnd, x, y, w, h):
+    """用 SetWindowPos 把窗口精确摆到虚拟屏坐标（支持负坐标，绕过 Tk geometry 的限制）。"""
+    try:
+        user32 = ctypes.windll.user32
+        SWP_NOACTIVATE = 0x10
+        SWP_SHOWWINDOW = 0x40
+        user32.SetWindowPos(int(hwnd), -1, int(x), int(y), int(w), int(h),
+                            SWP_NOACTIVATE | SWP_SHOWWINDOW)
+    except Exception:
+        pass
+
+
+def _fetch_monitors():
+    """从 AideLink 桥接服务获取显示器列表（复用 /screenshot/monitors）。
+
+    显示器枚举与截图都放在「服务器进程」里完成——服务器进程已正确开启 DPI 感知，
+    多屏截图稳定；本进程保持非 DPI 感知（否则浮窗 UI 会缩小），只负责 UI。
+
+    返回 (monitors, err)：monitors 为
+    [{name, rect:(设备像素 l,t,r,b), primary:bool, scale_factor:float}, ...]，
+    按主屏优先、左边界排序；err 为错误信息字符串（成功时 None）。
+    """
+    try:
+        data = api_request("screenshot/monitors", timeout=5)
+    except Exception as exc:
+        return None, f"无法连接截图服务：{exc}"
+    if not isinstance(data, dict) or not data.get("ok"):
+        err = data.get("error") if isinstance(data, dict) else str(data)
+        return None, f"截图服务返回异常：{err}"
+    raw = data.get("monitors") or []
+    monitors = []
+    for m in raw:
+        left, top, right, bottom = m.get("left"), m.get("top"), m.get("right"), m.get("bottom")
+        if right is None or bottom is None or right <= left or bottom <= top:
+            continue
+        monitors.append({
+            "name": m.get("name") or "primary",
+            "rect": (int(left), int(top), int(right), int(bottom)),
+            "primary": bool(m.get("primary")),
+            "scale_factor": float(m.get("scale_factor") or 1.0),
+        })
+    if not monitors:
+        return None, "未检测到显示器"
+    monitors.sort(key=lambda m: (0 if m["primary"] else 1, m["rect"][0]))
+    return monitors, None
 BRIDGE_URL = os.environ.get("AIDELINK_BRIDGE_URL", "http://127.0.0.1:5000")
 BOOTSTRAP_URL = f"{BRIDGE_URL.rstrip('/')}/api/floating-window/bootstrap"
 WINDOW_MUTEX_NAME = "Local\\AideLinkFloatingWindow"
@@ -758,11 +807,12 @@ class FloatingWindowApp:
             actions.append(("pending_test", "待测试"))
         if _task_group_name(task) == "待测试":
             test_result = _task_test_result(task)
+            actions.append(("test_feedback", "测试反馈"))
+            if test_result == "failed":
+                actions.append(("send_test_feedback", "反馈开发 IDE"))
             if test_result in {"dispatched", "passed"}:
                 actions.append(("confirm_done", "确认完成"))
             else:
-                if test_result == "failed":
-                    actions.append(("send_test_feedback", "反馈开发 IDE"))
                 actions.append(("confirm_done", "已完成"))
             actions.append((
                 "dispatch_test",
@@ -1022,12 +1072,12 @@ class FloatingWindowApp:
     def _render_context_tools(self, capabilities):
         self._clear_rows(self.context_tools_frame)
         surface = self._active_tool_surface(capabilities)
+        if surface == "android":
+            # Android 平台直接渲染设备列表（每台设备自带 [📷][⚡安装] 等入口），
+            # 不再用顶部统一的「连接/复制地址/截图反馈」按钮行。
+            self._render_android_devices()
+            return
         tools = {
-            "android": (
-                ("连接", "wifi", self.connect_android),
-                ("复制地址", "copy", self.copy_android_address),
-                ("截图反馈", "smartphone", self.android_screenshot_feedback),
-            ),
             "web": (
                 ("刷新页面", "loader", self.refresh_web_page),
                 ("组件定位", "globe", self.open_web_component_locator),
@@ -1058,6 +1108,329 @@ class FloatingWindowApp:
                 radius=9,
             )
             button.pack(side="left", padx=(0, 4))
+
+    def _render_android_devices(self):
+        """渲染 Android 设备列表：每台设备一行，含 [📷截图][⚡安装] 入口。
+
+        状态判定（两个数据源都断才算真离线）：
+        - is_aidelink_online = is_online || is_active（120s 内有 SSE 心跳）
+        - is_adb_online = is_adb_connected（adb devices 能看到）
+        - 真离线 = not is_aidelink_online AND not is_adb_online
+
+        点设备名：在线时复制 ip:port，真离线无操作。
+        点状态标签：恢复另一个连接（🟡AideLink在线→恢复ADB；🟡ADB在线→恢复AideLink）。
+
+        [⚡安装]：AideLink 在线走 connect+install；仅 ADB 在线走直接 install；真离线置灰
+        [📷截图]：仅 AideLink 在线时可点（需要 SSE 推送）；仅 ADB 在线时置灰
+        """
+        frame = self.context_tools_frame
+        if not frame.winfo_manager():
+            frame.pack(fill="x", pady=(0, 3), before=frame.master.winfo_children()[2])
+
+        # 占位标签，等异步加载后替换
+        loading = self.tk.Label(frame, text="正在读取设备…", bg="#ffffff", fg="#657084",
+                                font=("Microsoft YaHei", 8))
+        loading.pack(side="left", padx=(2, 0))
+
+        def render(result):
+            for child in frame.winfo_children():
+                child.destroy()
+            devices = result.get("devices") or []
+            if not devices:
+                self.tk.Label(
+                    frame, text="暂无已连接设备，请打开 AideLink App",
+                    bg="#ffffff", fg="#b42318", font=("Microsoft YaHei", 8),
+                ).pack(side="left", padx=(2, 0))
+                return
+
+            for device in devices:
+                row = self.tk.Frame(frame, bg="#ffffff")
+                row.pack(fill="x", pady=(0, 2))
+
+                alias = device.get("alias")
+                ip = device.get("online_ip") or device.get("ip")
+                port = device.get("adb_port") or 5555
+                # 两个独立的在线状态
+                is_aidelink_online = bool(device.get("is_online") or device.get("is_active"))
+                is_adb_online = bool(device.get("is_adb_connected"))
+                is_truly_offline = not is_aidelink_online and not is_adb_online
+
+                # 设备名（在线时点击复制地址，真离线无操作）
+                if alias:
+                    name_text = f"{alias} ({ip})" if ip else alias
+                else:
+                    name_text = ip or "未知设备"
+                name_color = "#239957" if not is_truly_offline else "#b42318"
+                name_label = self.tk.Label(
+                    row, text=f"📱 {name_text}",
+                    bg="#ffffff", fg=name_color,
+                    font=("Microsoft YaHei", 8, "bold"),
+                    cursor="hand2" if not is_truly_offline else "arrow",
+                )
+                name_label.pack(side="left", padx=(2, 6))
+                if not is_truly_offline:
+                    name_label.bind(
+                        "<Button-1>",
+                        lambda _e, d=device: self._copy_device_address(d),
+                    )
+
+                # 状态标签（四态显示 + 点击恢复另一个连接）
+                if is_aidelink_online and is_adb_online:
+                    status_text = "🟢全在线"
+                    status_color = "#239957"
+                    status_cursor = "arrow"
+                elif is_aidelink_online and not is_adb_online:
+                    status_text = "🟡AideLink在线"
+                    status_color = "#b8860b"
+                    status_cursor = "hand2"
+                elif is_adb_online and not is_aidelink_online:
+                    status_text = "🟡ADB在线"
+                    status_color = "#b8860b"
+                    status_cursor = "hand2"
+                else:
+                    status_text = "⚪离线"
+                    status_color = "#657084"
+                    status_cursor = "arrow"
+                status_label = self.tk.Label(
+                    row, text=status_text, bg="#ffffff", fg=status_color,
+                    font=("Microsoft YaHei", 7),
+                    cursor=status_cursor,
+                )
+                status_label.pack(side="left", padx=(0, 6))
+                # 点状态标签：恢复另一个连接
+                if is_aidelink_online and not is_adb_online:
+                    # AideLink 在线但 ADB 不在线 → 恢复 ADB（enable_wireless + adb connect）
+                    status_label.bind(
+                        "<Button-1>",
+                        lambda _e, d=device: self._connect_device(d),
+                    )
+                elif is_adb_online and not is_aidelink_online:
+                    # ADB 在线但 AideLink 不在线 → 恢复 AideLink（start-foreground-service）
+                    status_label.bind(
+                        "<Button-1>",
+                        lambda _e, d=device: self._launch_app_service(d),
+                    )
+
+                # 未配 alias 设备额外显示 [🏷别名] 按钮
+                if not alias and ip:
+                    self._rounded_button(
+                        row, "🏷别名",
+                        lambda d=device: self._set_alias_for_device(d),
+                        width=58, height=22,
+                        fill="#ffffff", outline="#e1e6ed", fg="#526078",
+                        font_size=7, icon_name="tag", icon_size=10, radius=8,
+                    ).pack(side="left", padx=(0, 4))
+
+                # [📷截图] 按钮：仅 AideLink 在线时可点（需要 SSE 推送命令到 App）
+                # 仅 ADB 在线但 AideLink 不在线时置灰——无法推送命令
+                screenshot_enabled = is_aidelink_online
+                screenshot_cmd = (
+                    (lambda d=device: self.android_screenshot_feedback(d))
+                    if screenshot_enabled else
+                    (lambda: self._set_status(
+                        "AideLink 不在线，无法推送截图命令；点状态标签可拉起服务"
+                        if is_adb_online else
+                        "AideLink 不在线，无法推送截图命令；请先在手机上打开 AideLink App",
+                        "#b42318", 2200,
+                    ))
+                )
+                self._rounded_button(
+                    row, "📷",
+                    screenshot_cmd,
+                    width=32, height=22,
+                    fill="#ffffff" if screenshot_enabled else "#f0f3f8",
+                    outline="#e1e6ed" if screenshot_enabled else "#e1e6ed",
+                    fg="#526078" if screenshot_enabled else "#b4c0d0",
+                    font_size=8, radius=8,
+                ).pack(side="left", padx=(0, 4))
+
+                # [⚡安装] 按钮：AideLink 在线走 connect+install；仅 ADB 在线走直接 install；真离线置灰
+                install_enabled = not is_truly_offline
+                install_cmd = (
+                    (lambda d=device: self._install_apk_to_device(d, force_adb_only=is_adb_online and not is_aidelink_online))
+                    if install_enabled else
+                    (lambda: self._set_status("设备完全离线，请先打开手机无线调试或 AideLink App", "#b42318", 2000))
+                )
+                self._rounded_button(
+                    row, "⚡安装",
+                    install_cmd,
+                    width=58, height=22,
+                    fill="#239957" if install_enabled else "#f0f3f8",
+                    outline="#239957" if install_enabled else "#e1e6ed",
+                    fg="#ffffff" if install_enabled else "#b4c0d0",
+                    font_size=7, bold=install_enabled, radius=8,
+                ).pack(side="left", padx=(0, 4))
+
+        self._run_api("/api/devices", on_success=render, busy_text="正在读取设备…")
+
+    def _copy_device_address(self, device):
+        """在线设备点名字 → 复制 ip:port 到剪贴板"""
+        ip = device.get("online_ip") or device.get("ip")
+        if not ip:
+            self._set_status("设备没有可复制的 IP", "#b42318", 1800)
+            return
+        port = device.get("adb_port") or 5555
+        address = f"{ip}:{port}"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(address)
+        self.root.update_idletasks()
+        alias = device.get("alias") or ip
+        self._set_status(f"已复制 {alias} 地址 {address}", "#239957", 1800)
+
+    def _connect_device(self, device):
+        """离线设备点名字 → POST /api/adb/connect 触发 enable_wireless + adb connect"""
+        ip = device.get("online_ip") or device.get("ip")
+        if not ip:
+            self._set_status("设备没有可连接的 IP", "#b42318", 1800)
+            return
+        port = device.get("adb_port") or 5555
+        alias = device.get("alias") or ip
+        payload = {"ip": ip, "port": port, "timeout": 60}
+
+        def on_success(result):
+            method = result.get("method", "adb_connect")
+            device_id = result.get("device") or f"{ip}:{port}"
+            self._set_status(
+                f"✅ 已连接 {alias}（{method}）：{device_id}",
+                "#239957", 2400,
+            )
+            # 连接成功后刷新设备列表（更新 is_adb_connected 状态）
+            self._render(self.current_model)
+
+        self._run_api(
+            "/api/adb/connect", method="POST", payload=payload,
+            on_success=on_success, busy_text=f"正在连接 {alias}…",
+        )
+
+    def _install_apk_to_device(self, device, force_adb_only=False):
+        """[⚡安装] 按钮：串行调 /api/adb/connect + /api/adb/project-install。
+
+        参数 force_adb_only：
+            False（默认，AideLink 在线场景）→ 走完整链路：/api/adb/connect（enable_wireless + adb connect）+ project-install
+            True（仅 ADB 在线、AideLink 不在线场景）→ 跳过 connect，直接 project-install（adb 已连接）
+        """
+        ip = device.get("online_ip") or device.get("ip")
+        if not ip:
+            self._set_status("设备没有 IP，无法安装", "#b42318", 1800)
+            return
+        port = device.get("adb_port") or 5555
+        alias = device.get("alias") or ip
+        project_path = (self.current_model.get("project_path") or "").strip()
+        if not project_path:
+            self._set_status("当前项目未识别，无法安装", "#b42318", 1800)
+            return
+
+        def worker():
+            if force_adb_only:
+                # 仅 ADB 在线：跳过 connect，直接 install（/api/adb/project-install 内部会幂等 adb connect）
+                device_ip = ip
+                device_port = port
+            else:
+                # AideLink 在线：走完整 ensure_device 链路（enable_wireless + adb connect）
+                connect_payload = {"ip": ip, "port": port, "timeout": 60}
+                try:
+                    connect_resp = api_request("/api/adb/connect", method="POST", payload=connect_payload, timeout=75)
+                except Exception as exc:
+                    self._post_ui(lambda msg=f"[ensure_device] {exc}": self._set_status(msg, "#b42318"))
+                    return
+                if not connect_resp.get("ok"):
+                    err = connect_resp.get("error") or "ADB 连接失败"
+                    self._post_ui(lambda msg=f"[ensure_device] {alias} {err}": self._set_status(msg, "#b42318", 3000))
+                    return
+                device_ip = connect_resp.get("ip") or ip
+                device_port = int(connect_resp.get("port") or port)
+
+            # 安装 APK
+            install_payload = {
+                "ip": device_ip, "port": device_port,
+                "project_path": project_path,
+            }
+            try:
+                install_resp = api_request(
+                    "/api/adb/project-install", method="POST",
+                    payload=install_payload, timeout=120,
+                )
+            except Exception as exc:
+                self._post_ui(lambda msg=f"[install] {exc}": self._set_status(msg, "#b42318"))
+                return
+            if not install_resp.get("ok"):
+                err = install_resp.get("error") or "APK 安装失败"
+                self._post_ui(lambda msg=f"[install] {alias} {err}": self._set_status(msg, "#b42318", 3000))
+                return
+
+            application_id = install_resp.get("application_id", "")
+            apk_name = (install_resp.get("apk_path") or "").split("\\")[-1].split("/")[-1]
+            msg = f"✅ 已安装到 {alias}"
+            if application_id:
+                msg += f"：{application_id}"
+            if apk_name:
+                msg += f" ({apk_name})"
+
+            def on_done():
+                self._set_status(msg, "#239957", 3000)
+                # 安装成功后刷新列表（更新 ADB 状态）
+                self._render(self.current_model)
+
+            self._post_ui(on_done)
+
+        self._set_status(f"正在安装到 {alias}…")
+        threading.Thread(target=worker, daemon=True, name="AideLinkApkInstall").start()
+
+    def _launch_app_service(self, device):
+        """[仅 ADB 在线场景] 点设备名 → 调 /api/adb/launch-app 拉起 ConnectionService。
+
+        通过 adb shell am start-foreground-service 启动 ConnectionService，
+        App 不会切到前台，仅通过 Notification 显示运行状态；SSE 心跳自动恢复。
+        """
+        ip = device.get("online_ip") or device.get("ip")
+        if not ip:
+            self._set_status("设备没有 IP，无法拉起服务", "#b42318", 1800)
+            return
+        port = device.get("adb_port") or 5555
+        alias = device.get("alias") or ip
+        payload = {"ip": ip, "port": port, "alias": alias}
+
+        def on_success(result):
+            self._set_status(
+                f"✅ 已拉起 {alias} 的 AideLink 服务，等待 SSE 心跳恢复…",
+                "#239957", 4000,
+            )
+            # SSE 心跳恢复需要 App 进程冷启动 + ConnectionService.onCreate + SSE 建连，
+            # 实测约 5-8 秒。分阶段刷新：5 秒 + 10 秒，确保能抓到状态变化。
+            self.root.after(5000, lambda: self._render(self.current_model))
+            self.root.after(10000, lambda: self._render(self.current_model))
+
+        self._run_api(
+            "/api/adb/launch-app", method="POST", payload=payload,
+            on_success=on_success, busy_text=f"正在拉起 {alias} 的 AideLink 服务…",
+        )
+
+    def _set_alias_for_device(self, device):
+        """[🏷别名] 按钮：弹输入框 → POST /api/devices/alias"""
+        from tkinter import simpledialog
+        ip = device.get("online_ip") or device.get("ip")
+        if not ip:
+            return
+        port = device.get("adb_port") or 5555
+        alias = simpledialog.askstring(
+            "设置设备别名", f"为 {ip} 设置一个别名（例如：手机 / 平板）：",
+            parent=self.root,
+        )
+        if not alias:
+            return
+        alias = alias.strip()
+        if not alias:
+            return
+
+        def on_success(_result):
+            self._set_status(f"已设置别名 '{alias}'", "#239957", 1800)
+            self._render(self.current_model)
+
+        self._run_api(
+            "/api/devices/alias", method="POST",
+            payload={"ip": ip, "alias": alias, "port": port},
+            on_success=on_success, busy_text=f"正在设置别名 '{alias}'…",
+        )
 
     @staticmethod
     def _pick_android_device(result):
@@ -1115,54 +1488,61 @@ class FloatingWindowApp:
 
         self._load_android_device(copy_address, "正在读取设备地址…")
 
-    def android_screenshot_feedback(self):
-        """复用 app 端的截图反馈流程：截图 → 上传到剪贴板 → 粘贴到 IDE → 发送提示词"""
-        if not self._ensure_ide_for_feedback("android"):
+    def android_screenshot_feedback(self, device=None):
+        """通知目标设备弹出 App 端的截图反馈界面。
+
+        通过 POST /api/adb/screenshot-feedback publish 一条 app.command 事件到目标设备，
+        App 收到后启动 UiLocatorService 的截图反馈流程（截图 + 标注 + 上传到 IDE）。
+        电脑端不再拉截图、不再粘贴、不再发提示词——所有操作都在手机上完成。
+
+        参数 device：从浮窗设备列表传入的目标设备；为 None 时回退到自动挑选第一台在线设备。
+        """
+        ip = None
+        alias = None
+        if device:
+            ip = device.get("online_ip") or device.get("ip")
+            alias = device.get("alias")
+
+        if not ip:
+            # 没传 device 或 device 无 IP，回退到自动挑选
+            def pick_and_request():
+                result = api_request("/api/devices")
+                picked = self._pick_android_device(result)
+                if not picked:
+                    self._post_ui(lambda: self._set_status("没有已登记的 Android 设备", "#b42318", 1800))
+                    return
+                ip_val = picked.get("online_ip") or picked.get("ip")
+                if not ip_val:
+                    self._post_ui(lambda: self._set_status("设备没有可用的 IP", "#b42318", 1800))
+                    return
+                self._do_request_screenshot_feedback(ip_val, picked.get("alias"))
+
+            threading.Thread(target=pick_and_request, daemon=True, name="AideLinkPickDevice").start()
             return
 
-        def step_get_device(ctx):
-            result = api_request("/api/devices")
-            device = self._pick_android_device(result)
-            if not device:
-                return False, "没有已登记的 Android 设备"
-            ctx["device_ip"] = device.get("online_ip") or device.get("ip")
-            return True, ""
+        self._do_request_screenshot_feedback(ip, alias)
 
-        def step_capture(ctx):
-            payload = {"ip": ctx["device_ip"]} if ctx.get("device_ip") else {}
-            result = api_request("/ui-locator/screenshot", method="POST", payload=payload)
-            if not result.get("ok"):
-                return False, result.get("error") or "手机截图失败"
-            ctx["screen_url"] = result.get("screen_url") or "/ui-locator/screen.png"
-            return True, ""
+    def _do_request_screenshot_feedback(self, ip, alias=None):
+        """实际调用 /api/adb/screenshot-feedback 端点。"""
+        payload = {"ip": ip}
+        if alias:
+            payload["alias"] = alias
+        if self.selected_ide_key:
+            payload["target_ide"] = self.selected_ide_key
+        label = alias or ip
 
-        def step_download(ctx):
-            url = f"{BRIDGE_URL.rstrip('/')}{ctx['screen_url']}"
-            data = http_get_bytes(url)
-            if not data:
-                return False, "下载截图失败"
-            ctx["image_bytes"] = data
-            return True, ""
-
-        def step_upload(ctx):
-            filename = f"android_feedback_{int(time.time())}.png"
-            result = http_post_multipart(
-                f"{BRIDGE_URL.rstrip('/')}/upload",
-                fields={"to_clipboard": "true"},
-                files={"file": (filename, ctx["image_bytes"], "image/png")},
+        def on_success(result):
+            self._set_status(
+                f"已通知 {label} 弹出截图反馈界面，请在手机上完成标注",
+                "#239957", 3000,
             )
-            if not result.get("ok"):
-                return False, result.get("raw") or "上传截图到剪贴板失败"
-            return True, ""
 
-        self._run_screenshot_feedback_flow(
-            [
-                ("读取设备", step_get_device),
-                ("截取屏幕", step_capture),
-                ("下载截图", step_download),
-                ("上传到剪贴板", step_upload),
-            ],
-            busy_text="正在发送 Android 截图反馈",
+        self._run_api(
+            "/api/adb/screenshot-feedback",
+            method="POST",
+            payload=payload,
+            on_success=on_success,
+            busy_text=f"正在通知 {label} 弹出截图反馈界面…",
         )
 
     def refresh_web_page(self):
@@ -1179,41 +1559,490 @@ class FloatingWindowApp:
         self._set_status("已打开 Web 组件定位模式", "#239957", 1800)
 
     def windows_screenshot_feedback(self):
-        """复用 web 端的 IDE 校准截图：截取 IDE 客户区 → 上传到剪贴板 → 粘贴到 IDE → 发送提示词"""
+        """自由框选屏幕任意区域 → 标注 → 上传到剪贴板 → 粘贴到 IDE → 发送提示词"""
         if not self._ensure_ide_for_feedback("windows"):
             return
+        self._start_region_capture()
 
-        def step_capture(ctx):
-            result = api_request("/api/calibrate", method="POST", payload={"key": ctx["ide"]})
-            if not result.get("success"):
-                return False, result.get("message") or "IDE 窗口截图失败"
-            b64 = result.get("image")
-            if not b64:
-                return False, "IDE 截图为空"
+    def _start_region_capture(self):
+        self._set_status("正在截取屏幕…")
+        # 先隐藏浮窗，避免它自身出现在截图中
+        self.root.withdraw()
+        self.root.update_idletasks()
+        self.root.after(200, self._grab_and_snip)
+
+    def _grab_and_snip(self):
+        """透明框选：直接在真实屏幕上拖拽选区（不预先显示截图），
+        框选落在哪块显示器就截哪块——由服务器按该显示器全屏截图后裁出选区。
+        显示器枚举与截图均走 AideLink 桥接服务的 /screenshot/monitors、/screenshot/full
+        接口（服务器进程已正确处理多显示器 + DPI），本进程只负责 UI。
+        """
+        try:
+            monitors, err = _fetch_monitors()
+            if err:
+                self.root.deiconify()
+                self._set_status(err, "#b42318")
+                return
+            self.root.withdraw()
+            self._open_snip_overlay(monitors)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
             try:
-                import base64
-                ctx["image_bytes"] = base64.b64decode(b64)
-            except Exception as exc:
-                return False, f"解码截图失败：{exc}"
-            return True, ""
+                self.root.deiconify()
+            except Exception:
+                pass
+            self._set_status(f"截图启动失败：{exc}", "#b42318", 5000)
+    def _open_snip_overlay(self, monitors):
+        """半透明蒙层框选：用 -alpha 0.35 的暗色蒙层覆盖整块虚拟屏（所有显示器）。
+
+        关键：不用 -transparentcolor（它会让透明区域点击穿透到下层窗口，整屏透明时
+        点哪里都收不到事件 → 表现为"点击没反应"）。-alpha 只影响渲染、不穿透点击，
+        所以整屏都能拖拽，且蒙层可见，用户能明确感知已进入框选。
+        """
+        user32 = ctypes.windll.user32
+        vx = user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
+        vy = user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
+        vw = max(1, user32.GetSystemMetrics(78))  # SM_CXVIRTUALSCREEN
+        vh = max(1, user32.GetSystemMetrics(79))  # SM_CYVIRTUALSCREEN
+
+        # 各显示器在「虚拟屏逻辑坐标」下的矩形（设备像素 / scale_factor）
+        mon_rects = []  # (name, sf, v_left, v_top, v_w, v_h, rect)
+        for m in monitors:
+            l, t, r, b = m["rect"]
+            sf = m.get("scale_factor") or 1.0
+            if sf <= 0:
+                sf = 1.0
+            vl, vt = l / sf, t / sf
+            vw_m, vh_m = (r - l) / sf, (b - t) / sf
+            mon_rects.append((m["name"], sf, vl, vt, vw_m, vh_m, m["rect"]))
+
+        DIM = "#0a0e14"
+        ov = self.tk.Toplevel(self.root)
+        ov.overrideredirect(True)
+        ov.attributes("-topmost", True)
+        ov.attributes("-alpha", 0.35)  # 半透明蒙层：可见 + 不穿透点击
+        ov.configure(bg=DIM)
+
+        cv = self.tk.Canvas(ov, width=vw, height=vh, bg=DIM,
+                            highlightthickness=0, cursor="cross")
+        cv.pack()
+        ov.update_idletasks()  # 确保 winfo_id() 有效、窗口已 realize
+
+        # 用 SetWindowPos 把浮层精确摆到整块虚拟屏（支持负坐标，绕过 Tk geometry 限制）
+        try:
+            _set_window_rect(ov.winfo_id(), vx, vy, vw, vh)
+        except Exception:
+            ov.geometry(f"{vw}x{vh}+{max(0, vx)}+{max(0, vy)}")
+        ov.lift()
+
+        # 画出各显示器轮廓，提示用户边界
+        for name, sf, vl, vt, vw_m, vh_m, _ in mon_rects:
+            rx, ry = int(vl - vx), int(vt - vy)
+            rw_, rh_ = int(vw_m), int(vh_m)
+            cv.create_rectangle(rx, ry, rx + rw_ - 1, ry + rh_ - 1,
+                                outline="#2da9ff", width=1, dash=(4, 3))
+
+        cv.create_text(12, 12, text="拖拽选择区域 · 松手即截取 · Esc 取消",
+                       fill="#2da9ff", font=("Microsoft YaHei UI", 11), anchor="nw")
+
+        sel = {"x0": None, "y0": None, "x1": None, "y1": None}
+
+        def clamp(v, lo, hi):
+            return max(lo, min(hi, v))
+
+        def draw_selection():
+            cv.delete("sel")
+            if sel["x0"] is None or sel["x1"] is None:
+                return
+            x0 = clamp(min(sel["x0"], sel["x1"]), 0, vw)
+            y0 = clamp(min(sel["y0"], sel["y1"]), 0, vh)
+            x1 = clamp(max(sel["x0"], sel["x1"]), 0, vw)
+            y1 = clamp(max(sel["y0"], sel["y1"]), 0, vh)
+            if x1 - x0 < 2 or y1 - y0 < 2:
+                return
+            cv.create_rectangle(x0, y0, x1, y1, outline="#2da9ff", width=2, tags="sel")
+            label_y = y1 + 16 if y1 + 16 < vh else y0 - 26
+            cv.create_text(x0 + 4, label_y, text=f"{x1 - x0} x {y1 - y0}",
+                           fill="#2da9ff", font=("Microsoft YaHei UI", 10), anchor="nw", tags="sel")
+
+        def on_press(e):
+            sel["x0"] = clamp(e.x, 0, vw)
+            sel["y0"] = clamp(e.y, 0, vh)
+            sel["x1"] = sel["x0"]
+            sel["y1"] = sel["y0"]
+            cv.delete("sel")
+
+        def on_drag(e):
+            sel["x1"] = clamp(e.x, 0, vw)
+            sel["y1"] = clamp(e.y, 0, vh)
+            draw_selection()
+
+        def capture():
+            if sel["x0"] is None or sel["x1"] is None:
+                return
+            x0 = clamp(min(sel["x0"], sel["x1"]), 0, vw)
+            y0 = clamp(min(sel["y0"], sel["y1"]), 0, vh)
+            x1 = clamp(max(sel["x0"], sel["x1"]), 0, vw)
+            y1 = clamp(max(sel["y0"], sel["y1"]), 0, vh)
+            if x1 - x0 < 5 or y1 - y0 < 5:
+                return
+            ov.destroy()
+            # 选区中心落在哪块显示器，就截哪块
+            cx, cy = (x0 + x1) / 2 + vx, (y0 + y1) / 2 + vy
+            target = None
+            for name, sf, vl, vt, vw_m, vh_m, rect in mon_rects:
+                if vl <= cx <= vl + vw_m and vt <= cy <= vt + vh_m:
+                    target = (name, sf, vl, vt, vw_m, vh_m, rect)
+                    break
+            if target is None:
+                best, bd = None, 1e18
+                for name, sf, vl, vt, vw_m, vh_m, rect in mon_rects:
+                    dx = cx - (vl + vw_m / 2)
+                    dy = cy - (vt + vh_m / 2)
+                    d = dx * dx + dy * dy
+                    if d < bd:
+                        bd, best = d, (name, sf, vl, vt, vw_m, vh_m, rect)
+                target = best
+            self._capture_region(target, (x0, y0, x1, y1), (vx, vy))
+
+        def cancel():
+            ov.destroy()
+            self.root.deiconify()
+            self.refresh()
+
+        cv.bind("<ButtonPress-1>", on_press)
+        cv.bind("<B1-Motion>", on_drag)
+        cv.bind("<ButtonRelease-1>", lambda _e: capture())
+        cv.bind("<Escape>", lambda _e: cancel())
+        ov.bind("<Escape>", lambda _e: cancel())
+
+        ov.focus_set()
+    def _capture_region(self, mon, box, vorigin):
+        """确认框选后：调用服务器截取该显示器全屏，按框选的（虚拟屏逻辑）坐标裁出选区，进入标注。
+
+        框选坐标来自覆盖整块虚拟屏的透明浮层（本进程非 DPI 感知，坐标为逻辑像素），
+        用「返回图实际尺寸 / 该显示器逻辑宽高」换算回图像像素，天然兼容 DPI 缩放与
+        服务器端的 _scale_for_phone 下采样。
+        """
+        self._set_status("正在截取所选区域…")
+        name, sf, vl, vt, vw_m, vh_m, rect = mon
+        x0, y0, x1, y1 = box
+        vx, vy = vorigin
+        # 框选相对该显示器逻辑左上角的偏移，并夹紧到显示器范围内
+        rx0 = max(0, min(vw_m, x0 - (vl - vx)))
+        ry0 = max(0, min(vh_m, y0 - (vt - vy)))
+        rx1 = max(0, min(vw_m, x1 - (vl - vx)))
+        ry1 = max(0, min(vh_m, y1 - (vt - vy)))
+        url = f"{BRIDGE_URL.rstrip('/')}/screenshot/full?monitor={quote(name)}"
+        try:
+            raw = http_get_bytes(url, timeout=20)
+        except Exception as exc:
+            self.root.deiconify()
+            self._set_status(f"截图失败：{exc}", "#b42318")
+            return
+        if not raw:
+            self.root.deiconify()
+            self._set_status("截图失败：未获取到屏幕图像", "#b42318")
+            return
+        try:
+            screen = Image.open(io.BytesIO(raw)).convert("RGB")
+        except Exception as exc:
+            self.root.deiconify()
+            self._set_status(f"截图解码失败：{exc}", "#b42318")
+            return
+        iw, ih = screen.size
+        # 逻辑宽高 -> 图像像素 的比例（含 DPI 与 _scale_for_phone 下采样）
+        sx = iw / vw_m if vw_m else 1.0
+        sy = ih / vh_m if vh_m else 1.0
+        bx0 = max(0, min(iw, int(round(rx0 * sx))))
+        by0 = max(0, min(ih, int(round(ry0 * sy))))
+        bx1 = max(0, min(iw, int(round(rx1 * sx))))
+        by1 = max(0, min(ih, int(round(ry1 * sy))))
+        if bx1 - bx0 < 2 or by1 - by0 < 2:
+            self.root.deiconify()
+            self._set_status("选区过小，已取消", "#b42318", 2000)
+            return
+        cropped = screen.crop((bx0, by0, bx1, by1)).convert("RGB")
+        self._open_annotate_editor(cropped, (0, 0, cropped.width, cropped.height))
+    def _open_annotate_editor(self, source_img, bbox):
+        """标注编辑器：在框选区域内绘制矩形/箭头/画笔/文字，完成后烧录并发送。"""
+        cropped = source_img.crop(bbox).convert("RGB")
+        cw, ch = cropped.size
+        max_w, max_h = 1000, 660
+        scale = min(max_w / cw, max_h / ch, 1.0)
+        disp_w, disp_h = max(1, int(cw * scale)), max(1, int(ch * scale))
+
+        editor = self.tk.Toplevel(self.root)
+        editor.title("标注截图反馈")
+        editor.attributes("-topmost", True)
+        editor.resizable(False, False)
+        editor.geometry(f"{disp_w + 28}x{disp_h + 116}")
+
+        state = {"tool": "rect", "color": "#ff3b30"}
+        ops = []
+        temp_op = [None]
+        width_var = self.tk.StringVar(value="4")
+
+        toolbar = self.tk.Frame(editor, bg="#f4f6fa")
+        toolbar.pack(side="top", fill="x", padx=6, pady=6)
+
+        note_var = self.tk.StringVar(value="可选备注，会附在发送内容里")
+        note_entry = self.tk.Entry(
+            toolbar, textvariable=note_var, relief="solid", bd=1,
+            font=("Microsoft YaHei UI", 9), fg="#9aa3b2",
+        )
+        note_entry.pack(side="left", fill="x", expand=True, padx=(0, 6), ipady=3)
+
+        def on_note_focus(_e):
+            if note_var.get() == "可选备注，会附在发送内容里":
+                note_entry.delete(0, "end")
+                note_var.set("")
+                note_entry.config(fg="#1f2430")
+
+        note_entry.bind("<FocusIn>", on_note_focus)
+
+        canvas = self.tk.Canvas(
+            editor, width=disp_w, height=disp_h, bg="#ffffff",
+            highlightthickness=1, highlightbackground="#d7dce5",
+        )
+        canvas.pack(padx=8, pady=(0, 8))
+
+        self._anno_base_img = ImageTk.PhotoImage(cropped.resize((disp_w, disp_h)))
+        canvas.create_image(0, 0, image=self._anno_base_img, anchor="nw", tags="base")
+
+        tool_buttons = {}
+
+        def set_tool(name):
+            state["tool"] = name
+            for n, btn in tool_buttons.items():
+                active = n == name
+                btn.config(
+                    relief="sunken" if active else "flat",
+                    bg="#0867f2" if active else "#ffffff",
+                    fg="#ffffff" if active else "#526078",
+                )
+
+        def cur_width():
+            try:
+                return max(1, int(width_var.get()))
+            except Exception:
+                return 4
+
+        def _draw_op(op):
+            t = op["type"]
+            w = max(1, int(op["width"] * scale))
+            if t == "rect":
+                canvas.create_rectangle(
+                    op["x0"] * scale, op["y0"] * scale, op["x1"] * scale, op["y1"] * scale,
+                    outline=op["color"], width=w, tags="op",
+                )
+            elif t == "arrow":
+                x0, y0, x1, y1 = op["x0"] * scale, op["y0"] * scale, op["x1"] * scale, op["y1"] * scale
+                canvas.create_line(
+                    x0, y0, x1, y1, fill=op["color"], width=w, arrow="last",
+                    arrowshape=(max(8, int(w * 3)), max(8, int(w * 3)), max(4, int(w * 2))),
+                    tags="op",
+                )
+            elif t == "pen":
+                pts = [(px * scale, py * scale) for (px, py) in op["points"]]
+                canvas.create_line(
+                    pts, fill=op["color"], width=w, capstyle="round",
+                    joinstyle="round", smooth=True, tags="op",
+                )
+            elif t == "text":
+                canvas.create_text(
+                    op["x"] * scale, op["y"] * scale, text=op["text"], fill=op["color"],
+                    font=("Microsoft YaHei UI", max(12, int(op["width"] * scale * 3))),
+                    anchor="nw", tags="op",
+                )
+
+        def redraw():
+            canvas.delete("op")
+            for op in ops:
+                _draw_op(op)
+            if temp_op[0] is not None:
+                _draw_op(temp_op[0])
+
+        drawing = {"active": False, "start": None, "pts": []}
+
+        def to_img(x, y):
+            return (x / scale, y / scale)
+
+        def on_press(e):
+            ix, iy = to_img(e.x, e.y)
+            tool = state["tool"]
+            if tool in ("rect", "arrow"):
+                drawing["active"] = True
+                drawing["start"] = (ix, iy)
+                temp_op[0] = {
+                    "type": tool, "x0": ix, "y0": iy, "x1": ix, "y1": iy,
+                    "color": state["color"], "width": cur_width(),
+                }
+            elif tool == "pen":
+                drawing["active"] = True
+                drawing["pts"] = [(ix, iy)]
+                temp_op[0] = {"type": "pen", "points": list(drawing["pts"]),
+                              "color": state["color"], "width": cur_width()}
+            elif tool == "text":
+                from tkinter import simpledialog
+                txt = simpledialog.askstring("文字标注", "输入标注文字：", parent=editor)
+                if txt:
+                    ops.append({"type": "text", "x": ix, "y": iy, "text": txt,
+                                "color": state["color"], "width": cur_width()})
+                    redraw()
+
+        def on_drag(e):
+            if not drawing["active"]:
+                return
+            ix, iy = to_img(e.x, e.y)
+            if state["tool"] in ("rect", "arrow"):
+                s = drawing["start"]
+                temp_op[0] = {"type": state["tool"], "x0": s[0], "y0": s[1], "x1": ix, "y1": iy,
+                              "color": state["color"], "width": cur_width()}
+            elif state["tool"] == "pen":
+                drawing["pts"].append((ix, iy))
+                temp_op[0] = {"type": "pen", "points": list(drawing["pts"]),
+                              "color": state["color"], "width": cur_width()}
+            redraw()
+
+        def on_release(e):
+            if not drawing["active"]:
+                return
+            ix, iy = to_img(e.x, e.y)
+            tool = state["tool"]
+            if tool in ("rect", "arrow"):
+                s = drawing["start"]
+                ops.append({"type": tool, "x0": s[0], "y0": s[1], "x1": ix, "y1": iy,
+                            "color": state["color"], "width": cur_width()})
+            elif tool == "pen":
+                ops.append({"type": "pen", "points": list(drawing["pts"]),
+                            "color": state["color"], "width": cur_width()})
+            drawing["active"] = False
+            temp_op[0] = None
+            redraw()
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+
+        for name, label in (("rect", "矩形"), ("arrow", "箭头"), ("pen", "画笔"), ("text", "文字")):
+            btn = self.tk.Button(
+                toolbar, text=label, width=5, relief="flat", bg="#ffffff", fg="#526078",
+                font=("Microsoft YaHei UI", 9), command=lambda n=name: set_tool(n),
+            )
+            btn.pack(side="left", padx=2)
+            tool_buttons[name] = btn
+        set_tool("rect")
+
+        def pick_color():
+            from tkinter import colorchooser
+            chosen = colorchooser.askcolor(parent=editor, initialcolor=state["color"])
+            if chosen and chosen[1]:
+                state["color"] = chosen[1]
+                color_btn.config(bg=chosen[1])
+
+        color_btn = self.tk.Button(
+            toolbar, text="颜色", width=5, relief="flat", bg=state["color"],
+            font=("Microsoft YaHei UI", 9), command=pick_color,
+        )
+        color_btn.pack(side="left", padx=2)
+
+        width_menu = self.tk.OptionMenu(toolbar, width_var, "2", "4", "6", "10")
+        width_menu.config(width=3, relief="flat", font=("Microsoft YaHei UI", 9))
+        width_menu.pack(side="left", padx=2)
+
+        def undo():
+            if ops:
+                ops.pop()
+                redraw()
+
+        def clear_all():
+            ops.clear()
+            redraw()
+
+        def cancel():
+            editor.destroy()
+            self.root.deiconify()
+            self.refresh()
+
+        def done():
+            note = note_var.get()
+            if note == "可选备注，会附在发送内容里":
+                note = ""
+            png = self._burn_annotations(cropped, ops)
+            editor.destroy()
+            self.root.deiconify()
+            self._send_region_feedback(png, note)
+
+        self.tk.Button(toolbar, text="撤销", width=4, command=undo, relief="flat",
+                       font=("Microsoft YaHei UI", 9)).pack(side="left", padx=2)
+        self.tk.Button(toolbar, text="清空", width=4, command=clear_all, relief="flat",
+                       font=("Microsoft YaHei UI", 9)).pack(side="left", padx=2)
+        self.tk.Button(toolbar, text="取消", width=4, command=cancel, relief="flat",
+                       bg="#fff3f3", fg="#d92d36", font=("Microsoft YaHei UI", 9)).pack(side="right", padx=2)
+        self.tk.Button(toolbar, text="完成", width=4, command=done, relief="flat",
+                       bg="#0867f2", fg="#ffffff", font=("Microsoft YaHei UI", 9)).pack(side="right", padx=2)
+
+    def _burn_annotations(self, base_img, ops):
+        """把标注烧录进位图，返回 PNG 字节。"""
+        import math
+
+        out = base_img.copy()
+        d = ImageDraw.Draw(out)
+        for op in ops:
+            t = op["type"]
+            color = op["color"]
+            w = max(1, int(op["width"]))
+            if t == "rect":
+                d.rectangle([op["x0"], op["y0"], op["x1"], op["y1"]], outline=color, width=w)
+            elif t == "arrow":
+                x0, y0, x1, y1 = op["x0"], op["y0"], op["x1"], op["y1"]
+                d.line([(x0, y0), (x1, y1)], fill=color, width=w)
+                ang = math.atan2(y1 - y0, x1 - x0)
+                hl = max(8, w * 3)
+                a1 = ang + math.radians(150)
+                a2 = ang - math.radians(150)
+                d.line([(x1, y1), (x1 + hl * math.cos(a1), y1 + hl * math.sin(a1))],
+                       fill=color, width=w)
+                d.line([(x1, y1), (x1 + hl * math.cos(a2), y1 + hl * math.sin(a2))],
+                       fill=color, width=w)
+            elif t == "pen":
+                d.line(op["points"], fill=color, width=w, joint="curve")
+            elif t == "text":
+                try:
+                    font = ImageFont.truetype("msyh.ttc", max(14, w * 3))
+                except Exception:
+                    font = ImageFont.load_default()
+                d.text((op["x"], op["y"]), op["text"], fill=color, font=font)
+        buf = io.BytesIO()
+        out.save(buf, "PNG")
+        return buf.getvalue()
+
+    def _send_region_feedback(self, png_bytes, note):
+        if not png_bytes:
+            self.refresh()
+            return
 
         def step_upload(ctx):
-            filename = f"windows_feedback_{int(time.time())}.jpg"
+            filename = f"region_feedback_{int(time.time())}.png"
             result = http_post_multipart(
                 f"{BRIDGE_URL.rstrip('/')}/upload",
                 fields={"to_clipboard": "true"},
-                files={"file": (filename, ctx["image_bytes"], "image/jpeg")},
+                files={"file": (filename, png_bytes, "image/png")},
             )
             if not result.get("ok"):
                 return False, result.get("raw") or "上传截图到剪贴板失败"
             return True, ""
 
+        if note and note.strip():
+            text = f"【截图反馈 · 标注】{note.strip()}"
+        else:
+            text = "【截图反馈 · 标注】请查看标注截图，结合画面分析问题"
         self._run_screenshot_feedback_flow(
-            [
-                ("截取 IDE 窗口", step_capture),
-                ("上传到剪贴板", step_upload),
-            ],
-            busy_text="正在发送 Windows 截图反馈",
+            [("上传到剪贴板", step_upload)],
+            busy_text="正在发送标注截图反馈",
+            final_text=text,
         )
 
     def locate_windows_target(self):
@@ -1232,9 +2061,14 @@ class FloatingWindowApp:
             return False
         return True
 
-    def _run_screenshot_feedback_flow(self, steps, busy_text="正在发送截图反馈"):
-        """串行执行截图反馈的前置步骤（截图 + 上传到剪贴板），最后统一粘贴到 IDE 并发送提示词。
+    def _run_screenshot_feedback_flow(self, steps, busy_text="正在发送截图反馈", final_text=None, send_prompt=True):
+        """串行执行截图反馈的前置步骤（截图 + 上传到剪贴板），最后统一粘贴到 IDE。
+
         steps: [(step_name, callable(ctx) -> (ok, message)), ...]
+        final_text: 发送时附带的提示词；为 None 时使用默认文案。
+        send_prompt: 是否在粘贴截图后发送一句提示词到 IDE。
+            Android 设备行的 [📷] 按钮传 False（截图已粘贴，无需多发一句话）；
+            Windows 标注反馈传 True（需要文字说明标注内容）。
         """
         self._set_status(busy_text)
 
@@ -1265,7 +2099,7 @@ class FloatingWindowApp:
 
             def step_send(ctx):
                 payload = {
-                    "text": "【截图反馈】请查看截图，结合画面分析问题",
+                    "text": final_text if final_text is not None else "【截图反馈】请查看截图，结合画面分析问题",
                     "target": ctx["ide"],
                 }
                 result = api_request("/send", method="POST", payload=payload)
@@ -1273,7 +2107,10 @@ class FloatingWindowApp:
                     return False, result.get("raw") or "发送提示词失败"
                 return True, ""
 
-            for step_name, step in (("粘贴到 IDE", step_inject), ("发送提示词", step_send)):
+            final_steps = [("粘贴到 IDE", step_inject)]
+            if send_prompt:
+                final_steps.append(("发送提示词", step_send))
+            for step_name, step in final_steps:
                 self._post_ui(
                     lambda desc=step_name, base=busy_text: self._set_status(f"{base}（{desc}）")
                 )
@@ -1433,14 +2270,15 @@ class FloatingWindowApp:
         self._schedule_input_draft_save()
 
     def _set_status(self, message, color="#657084", clear_after=0):
-        self.status_detail = ""
-        self.status_label.unbind("<Button-1>")
-        self.status_label.config(cursor="")
-        self.status_label.config(text=message, fg=color)
+        self.status_detail = message
         if message:
+            self.status_label.config(text=message, fg=color, cursor="hand2")
+            self.status_label.bind("<Button-1>", self._copy_status_detail)
             if not self.status_label.winfo_manager():
                 self.status_label.pack(fill="x", pady=(4, 0))
         else:
+            self.status_label.unbind("<Button-1>")
+            self.status_label.config(cursor="")
             self.status_label.pack_forget()
         if clear_after:
             self.root.after(clear_after, lambda: self._set_status(""))
@@ -1451,7 +2289,9 @@ class FloatingWindowApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(self.status_detail)
         self.root.update_idletasks()
-        self.status_label.config(text="连接详情已复制，服务恢复后会自动刷新", fg="#657084")
+        original = self.status_label.cget("text")
+        self.status_label.config(text="已复制到剪贴板", fg="#239957")
+        self.root.after(1800, lambda: self.status_label.config(text=original, fg="#657084"))
 
     def _post_ui(self, callback):
         self.ui_callbacks.put(callback)
@@ -2000,8 +2840,6 @@ class FloatingWindowApp:
         self._render_codex_quota({})
         self._set_status("AideLink 服务正在启动或重启，正在重新连接…（点击复制详情）", "#657084")
         self.status_detail = message
-        self.status_label.config(cursor="hand2")
-        self.status_label.bind("<Button-1>", self._copy_status_detail)
         self._clear_rows(self.ide_frame)
         self._clear_rows(self.task_frame)
         self.tk.Label(self.ide_frame, text="等待服务连接", bg="#ffffff", fg="#8a94a6", anchor="w").pack(fill="x", pady=8)
