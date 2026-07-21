@@ -1,15 +1,36 @@
 {
-  "trae": {
-    "name": "TRAE",
-    "scan_paths": ["%LOCALAPPDATA%\\Programs\\TRAE", "%LOCALAPPDATA%\\Programs\\Trae"],
-    "exe_pattern": "Trae.exe",
-    "color": "#4FC3F7"
+  "trae_solo_cn": {
+    "name": "Trae Solo CN",
+    "icon": "⚡",
+    "color": "#4FC3F7",
+    "scan_paths": [
+      "%LOCALAPPDATA%\\Programs\\TRAE SOLO CN",
+      "%LOCALAPPDATA%\\Programs\\Trae Solo CN"
+    ],
+    "exe_pattern": "trae solo cn*",
+    "aumid": ["ByteDance.TraeSoloCN"]
   },
-  "trae_cn": {
-    "name": "TRAE CN",
-    "scan_paths": ["%LOCALAPPDATA%\\Programs\\TRAE CN", "%LOCALAPPDATA%\\Programs\\Trae CN"],
-    "exe_pattern": "Trae CN.exe",
-    "color": "#29B6F6"
+  "trae_solo": {
+    "name": "Trae Solo",
+    "icon": "⚡",
+    "color": "#4FC3F7",
+    "scan_paths": [
+      "%LOCALAPPDATA%\\Programs\\Trae Solo",
+      "%LOCALAPPDATA%\\Programs\\TRAE SOLO"
+    ],
+    "exe_pattern": "trae solo*",
+    "aumid": ["ByteDance.TraeSolo"]
+  },
+  "trae": {
+    "name": "Trae",
+    "icon": "⚡",
+    "color": "#4FC3F7",
+    "scan_paths": [
+      "%LOCALAPPDATA%\\Programs\\Trae",
+      "%LOCALAPPDATA%\\Programs\\TRAE"
+    ],
+    "exe_pattern": "trae*",
+    "aumid": ["ByteDance.Trae"]
   },
   "antigravity_ide": {
     "name": "Antigravity IDE",

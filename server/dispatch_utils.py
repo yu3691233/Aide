@@ -4,12 +4,43 @@
 """
 import os
 import sys
+import time
+import socket
+import threading
 import subprocess
 import base64
 from datetime import datetime
 
 from paths import BRIDGE_DIR, IN_FILE, UPLOAD_FOLDER
 from config import load_settings
+
+
+def focus_floating_window_after_dispatch(delay_sec=10):
+    """派发成功后延迟把浮窗置顶并聚焦输入框，让目标 IDE 转后台。
+
+    目标 IDE 失去前台（仍可见、不最小化）→ 完成时弹 Windows toast（watcher→pending_test），
+    同时 App 端 HWND 截图监控不受影响。通过浮窗信号服务（端口 51231）发送 activate_focus。
+    """
+    def _worker():
+        try:
+            time.sleep(delay_sec)
+            port = int(os.environ.get("AIDELINK_FLOATING_WINDOW_PORT", "51231"))
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5) as client:
+                client.sendall(b"activate_focus")
+        except Exception:
+            pass
+
+    threading.Thread(target=_worker, daemon=True, name="focus-floating-window").start()
+
+
+def _maybe_focus_floating_window():
+    """派发成功后按设置延迟置顶浮窗+聚焦输入框（任何派发都走，让目标 IDE 转后台）。"""
+    try:
+        s = load_settings()
+        if s.get("focus_floating_window_after_dispatch", True):
+            focus_floating_window_after_dispatch(s.get("focus_floating_window_delay_sec", 10))
+    except Exception:
+        pass
 
 
 def is_port_in_use(port):
@@ -276,6 +307,7 @@ def dispatch_task(task, runtime):
             runtime.update_task(task_id, metadata=metadata)
             runtime.mark_task_running(task_id, ide)
             runtime.set_ide_status(ide, "busy", current_task_id=task_id)
+            _maybe_focus_floating_window()
             return True, f"任务 `{task_id}` 已提交到 OpenCode 会话 {result['session_id']}"
 
         # 桌面 IDE（trae/antigravity_ide/mimo/mimocode/oc/codex）：剪贴板注入。
@@ -309,6 +341,7 @@ def dispatch_task(task, runtime):
 
             runtime.mark_task_running(task_id, ide)
             runtime.set_ide_status(ide, "busy", current_task_id=task_id)
+            _maybe_focus_floating_window()
             return True, f"任务 `{task_id}` 已派发到 {ide.upper()}，正在唤醒 IDE。"
 
         # CLI IDE（oc/mimo）：HTTP API
@@ -323,6 +356,7 @@ def dispatch_task(task, runtime):
             runtime.mark_task_running(task_id, ide)
             runtime.set_ide_status(ide, "busy", current_task_id=task_id)
             runtime.update_task(task_id, metadata={"remote_response": resp.text})
+            _maybe_focus_floating_window()
             return True, f"任务 `{task_id}` 已提交到 {ide.upper()} 后台队列。"
 
         runtime.update_task(task_id, status="failed", error=resp.text)

@@ -23,14 +23,86 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # 默认 IDE AUMID 映射表（可通过配置文件覆盖）
+# 注意：Trae 有多个系列（Trae Solo CN / Trae Solo / Trae 国际版），必须按系列区分到不同 ide_key，
+# 否则用户同时安装并打开多个系列时，派发与通知会串台。
+# 派发键应与 manual_ides.json 的 key 一致（如 trae_solo_cn），这样 ide_status[<key>].current_task_id
+# 才能和通知落点对上，_auto_update_task_status 才找得到任务。
 DEFAULT_AUMID_MAP = {
-    "ByteDance.TraeSoloCN": "trae",
+    # Trae Solo CN（国内版）→ trae_solo_cn，与 manual_ides.json 的 trae_solo_cn 派发键/窗口绑定对齐
+    "ByteDance.TraeSoloCN": "trae_solo_cn",
+    # Trae Solo（国际版 Solo）→ trae_solo。AUMID 为推测值，待真实样本验证。
+    "ByteDance.TraeSolo": "trae_solo",
+    # Trae 国际版 → trae（若用户装了国际版，派发键用 trae）
     "ByteDance.Trae": "trae",
     "Cursor": "cursor",
     "OpenCode": "oc",
     "MimoCode": "mimo",
     "Antigravity": "antigravity_ide",
+    # WorkBuddy 自身：作为完成通知智能匹配的自测载体（AUMID 实测自 wpndatabase.db）
+    "WorkBuddy.WorkBuddy": "workbuddy",
 }
+
+# ---- 完成通知智能匹配（基于 wpndatabase.db 实测真实样本）----
+# 真实样本：
+#   WorkBuddy : title="任务已完成" body="任务已成功完成。您可以在编辑器中查看结果。"
+#   Trae 完成 : title="任务完成"  body="'<task>' 已完成"
+#   Trae 失败 : title="异常打断"  body="'<task>' 失败了"
+#   MiniMax   : body="等待你的确认"（等待用户输入，并非完成）
+#   Codex 空通知: texts=[]（中间态，并非完成）
+# 旧实现 _is_task_done_notification 直接 return True，会把 Trae 失败 / MiniMax 等待 / 空通知
+# 一律误判为完成。这里改为保守匹配：只在明确是完成类时返回 True。
+
+# 标题中出现即视为完成（短标题是状态标签，可靠）
+_COMPLETION_TITLE_KEYWORDS = (
+    "任务已完成", "任务完成", "已完成",
+    "completed", "finished", "done", "complete",
+)
+
+# 正文中的强完成短语（针对标题是任务名而非状态标签的 IDE，如 Codex）
+# 注意：单独的「完成」二字在正文里太常见（"我完成了第一步"），不作为正文信号。
+_COMPLETION_BODY_PHRASES = (
+    "已成功完成", "已经完成", "已完成并", "已完成：",
+    "已修改", "已提交", "已重启生效", "已修复", "已实现",
+    "completed", "finished",
+)
+
+# 负向关键词：出现即视为「非完成」（失败 / 等待 / 错误 / 更新 / 中断），
+# 即便同时命中完成关键词也以负向为准，避免误判污染 pending_test 队列。
+_NEGATIVE_KEYWORDS = (
+    "异常打断", "异常", "中断", "失败", "出错", "错误",
+    "error", "failed", "failure", "aborted", "crash",
+    "等待你的确认", "等待确认", "需确认", "等待你", "waiting",
+    "有新版本", "更新可用", "update available", "新消息", "new message",
+)
+
+
+def classify_completion(title, body):
+    """根据通知标题/正文判断是否为「任务完成」类通知。
+
+    保守策略：明确完成 → True；失败/等待/错误/更新/空 → False；模糊 → False。
+    非完成类通知仍会经 _process_notification 转发到手机（ide.notification），
+    只是不再触发自动 mark_task_done。
+    """
+    t = (title or "").strip()
+    b = (body or "").strip()
+    if not t and not b:
+        return False
+    combined = f"{t} {b}".lower()
+    # 负向优先：失败 / 等待 / 错误 / 更新 一律不当完成
+    for neg in _NEGATIVE_KEYWORDS:
+        if neg.lower() in combined:
+            return False
+    # 标题命中完成关键词（最可靠）
+    tl = t.lower()
+    for kw in _COMPLETION_TITLE_KEYWORDS:
+        if kw.lower() in tl:
+            return True
+    # 正文命中强完成短语，且不含问号（避免把"已完成 X，是否继续？"当完成）
+    if "?" not in combined and "？" not in combined:
+        for kw in _COMPLETION_BODY_PHRASES:
+            if kw.lower() in combined:
+                return True
+    return False
 
 # 通知数据库路径
 def _get_wpndb_path():
@@ -178,6 +250,44 @@ def _query_new_notifications(tmp_db, last_order):
     return notifications, max_order
 
 
+def _bring_ide_to_foreground(ide_key):
+    """把指定 IDE 窗口拉到前台（任务完成后让用户看结果）。仅 Windows。
+
+    用于浮窗派发的任务：完成时用户在电脑前（浮窗前台），把刚完成的 IDE 拉到前台方便看结果。
+    远程派发（安卓/Web/MCP）用户不在电脑前，调用方应已跳过。
+    """
+    if os.name != "nt" or not ide_key:
+        return
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        from window_binding import find_bound_window
+        win = find_bound_window(ide_key)
+        if not win:
+            return
+        hwnd = int(getattr(win, "_hWnd", 0) or 0)
+        if not hwnd:
+            return
+        fg = user32.GetForegroundWindow()
+        if fg == hwnd:
+            return
+        fg_tid = user32.GetWindowThreadProcessId(fg, None)
+        cur_tid = kernel32.GetCurrentThreadId()
+        attached = False
+        if fg_tid and fg_tid != cur_tid:
+            attached = user32.AttachThreadInput(cur_tid, fg_tid, True)
+        try:
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+            user32.BringWindowToTop(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(cur_tid, fg_tid, False)
+    except Exception:
+        pass
+
+
 class NotificationWatcher:
     """Windows 通知监控器"""
 
@@ -194,18 +304,40 @@ class NotificationWatcher:
         self._last_wal_mtime = 0
 
     def _match_ide(self, aumid):
-        """根据 AUMID 匹配 IDE，返回 ide key 或 None"""
+        """根据 AUMID 匹配 IDE，返回 ide key 或 None。
+
+        匹配策略（避免 Trae 多系列串台）：
+        1. 精确匹配（大小写不敏感）—— AUMID 是精确标识，优先精确。
+           旧实现用双向子串 `a in b or b in a`，会把 "ByteDance.Trae" 当成
+           "ByteDance.TraeSoloCN" 的子串而误归 trae_solo_cn，造成系列串台。
+        2. 前缀+分隔符匹配：处理带后缀的 AUMID（如 OpenAI.Codex_xxx!App），
+           仅当前缀后紧跟 ! . _ 或到结尾时才算命中，避免 Trae 误命中 TraeSoloCN。
+        """
         if not aumid:
             return None
         aumid_lower = aumid.lower()
-        for mapped_aumid, ide_key in self._config["aumid_map"].items():
-            if mapped_aumid.lower() in aumid_lower or aumid_lower in mapped_aumid.lower():
+        am = self._config["aumid_map"]
+        # 1) 精确匹配
+        for mapped_aumid, ide_key in am.items():
+            if mapped_aumid.lower() == aumid_lower:
+                return ide_key
+        # 2) 前缀 + 分隔符匹配
+        for mapped_aumid, ide_key in am.items():
+            m = mapped_aumid.lower()
+            if aumid_lower.startswith(m) and (
+                len(aumid_lower) == len(m) or aumid_lower[len(m)] in "!._"
+            ):
                 return ide_key
         return None
 
     def _is_task_done_notification(self, notif):
-        """只要是已知 IDE 发出的通知，都作为高优先级任务完成/通知消息推送至手机"""
-        return True
+        """判断该通知是否为「任务完成」类（委托给模块级 classify_completion）。
+
+        旧实现直接 return True，会把 Trae 的「异常打断/失败」、MiniMax 的「等待你的确认」、
+        Codex 的空通知等一律误判为完成并自动 mark_task_done。改为基于真实通知文本的保守匹配：
+        只有明确是完成类才返回 True，其余仍转发到手机但不自动落 pending_test。
+        """
+        return classify_completion(notif.get("title", ""), notif.get("body", ""))
 
     def _is_task_recently_started(self, ide_key, min_seconds=60):
         """检查该 IDE 当前任务是否刚启动（已废弃此抑制逻辑以防止丢失通知）"""
@@ -266,6 +398,13 @@ class NotificationWatcher:
             if task and task.get("status") == "running":
                 rt.mark_task_done(current_task_id, summary="IDE 报告任务完成")
                 print(f"[NotificationWatcher] Auto-marked task {current_task_id} as pending_test", flush=True)
+                # 完成后若任务是浮窗派发的（用户在电脑前），把对应 IDE 拉到前台看结果
+                try:
+                    _src = (task.get("metadata") or {}).get("created_from") or task.get("source") or ""
+                    if _src == "floating_window":
+                        _bring_ide_to_foreground(ide_key)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[NotificationWatcher] Failed to auto-update task status: {e}", flush=True)
 

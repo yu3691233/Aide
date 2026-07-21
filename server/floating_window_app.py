@@ -2225,6 +2225,62 @@ class FloatingWindowApp:
         if self.is_topmost:
             self.root.attributes("-topmost", True)
 
+    def activate_focus(self):
+        """置顶浮窗并把键盘焦点收到输入框。
+
+        派发成功后由 dispatch_task 延迟触发（经信号服务 activate_focus 命令）。
+        目的：让目标 IDE 失去前台（但仍可见、不最小化）→ IDE 完成时弹 Windows toast
+        （被 watcher 捕获→pending_test），同时 App 端 HWND 截图监控不受影响。
+        focus_force 在别的进程占前台时可能失败，故用 Win32 SetForegroundWindow +
+        AttachThreadInput 兜底（实测有效）。
+        """
+        self.activate()
+        try:
+            self.input_box.focus_set()
+            self.root.focus_force()
+        except Exception:
+            pass
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            hwnd = self.root.winfo_id()
+            # overrideredirect 窗口 winfo_id 通常即顶层 HWND；取祖先兜底
+            try:
+                root_hwnd = user32.GetAncestor(hwnd, 2)  # GA_ROOT=2
+                if root_hwnd:
+                    hwnd = root_hwnd
+            except Exception:
+                pass
+            fg = user32.GetForegroundWindow()
+            if fg == hwnd:
+                return
+            fg_tid = user32.GetWindowThreadProcessId(fg, None)
+            cur_tid = kernel32.GetCurrentThreadId()
+            attached = False
+            if fg_tid and fg_tid != cur_tid:
+                attached = user32.AttachThreadInput(cur_tid, fg_tid, True)
+            try:
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.SetForegroundWindow(hwnd)
+                user32.BringWindowToTop(hwnd)
+            finally:
+                if attached:
+                    user32.AttachThreadInput(cur_tid, fg_tid, False)
+            # 抢到前台后再聚焦输入框，确保键盘输入落到输入框
+            self.root.after(60, lambda: self._safe_focus_input())
+        except Exception:
+            pass
+
+    def _safe_focus_input(self):
+        try:
+            self.input_box.focus_set()
+        except Exception:
+            pass
+
     def _start_signal_server(self):
         def _serve():
             server = None
@@ -2255,6 +2311,8 @@ class FloatingWindowApp:
                             return
                         if command == b"activate":
                             self._post_ui(self.activate)
+                        if command == b"activate_focus":
+                            self._post_ui(self.activate_focus)
             except OSError:
                 return
             finally:
