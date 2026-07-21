@@ -247,23 +247,7 @@ def _ensure_adb_device(alias=None, ip=None, port=None, auto_enable=True, timeout
         _time.sleep(0.3)
         pending = _find_wireless_result(request_id, started_at, target_ips)
         if pending:
-            result_ip = pending.get("ip") or target_ip
-            result_port = int(pending.get("port") or target_port or 5555)
-            if pending.get("ok") and result_ip:
-                device, output = _connect_adb(result_ip, result_port)
-                tried.append({"ip": result_ip, "port": result_port, "output": output, "method": pending.get("method")})
-                if device:
-                    _remember_alias_connection(resolved_alias, device, result_ip, result_port)
-                    return {
-                        "ok": True,
-                        "device": device,
-                        "ip": result_ip,
-                        "port": result_port,
-                        "method": pending.get("method") or "app_command",
-                        "request_id": request_id,
-                        "tried": tried,
-                    }
-            elif pending.get("ok") is False:
+            if pending.get("ok") is False:
                 return {
                     "ok": False,
                     "error": f"App 开启失败: {pending.get('error', '未知错误')}",
@@ -271,22 +255,32 @@ def _ensure_adb_device(alias=None, ip=None, port=None, auto_enable=True, timeout
                     "request_id": request_id,
                     "tried": tried,
                 }
-
-        for item in candidates:
-            candidate_ip = item["ip"]
-            candidate_port = item.get("port") or port or 5555
-            device, output = _connect_adb(candidate_ip, candidate_port)
-            tried.append({"ip": candidate_ip, "port": candidate_port, "output": output})
-            if device:
-                _remember_alias_connection(resolved_alias, device, candidate_ip, candidate_port)
+            result_ip = pending.get("ip") or target_ip
+            result_port = int(pending.get("port") or target_port or 5555)
+            if pending.get("ok") and result_ip and result_port > 0:
+                # App 回报成功，重试 connect（端口刚开可能需要几秒就绪）
+                for attempt in range(5):
+                    device, output = _connect_adb(result_ip, result_port)
+                    tried.append({"ip": result_ip, "port": result_port, "output": output, "method": pending.get("method"), "attempt": attempt + 1})
+                    if device:
+                        _remember_alias_connection(resolved_alias, device, result_ip, result_port)
+                        return {
+                            "ok": True,
+                            "device": device,
+                            "ip": result_ip,
+                            "port": result_port,
+                            "method": pending.get("method") or "app_command",
+                            "request_id": request_id,
+                            "tried": tried,
+                        }
+                    _time.sleep(1)
+                # connect 重试 5 次仍失败，返回错误
                 return {
-                    "ok": True,
-                    "device": device,
-                    "ip": candidate_ip,
-                    "port": candidate_port,
-                    "method": "adb_connect_after_app_command",
+                    "ok": False,
+                    "error": f"App 已开启无线调试(ip={result_ip}, port={result_port})，但 adb connect 失败",
+                    "method": pending.get("method") or "app_command",
                     "request_id": request_id,
-                    "tried": tried,
+                    "tried": tried[-5:],
                 }
 
     return {
@@ -579,7 +573,7 @@ def api_adb_connect():
     alias = data.get("alias")
     ip = data.get("ip")
     port = data.get("port")
-    timeout = min(data.get("timeout", 30), 180)
+    timeout = min(data.get("timeout", 30), 60)
     if port is not None:
         port = int(port)
 
@@ -610,7 +604,7 @@ def api_adb_ensure():
     alias = data.get("alias")
     ip = data.get("ip")
     port = data.get("port")
-    timeout = min(int(data.get("timeout", 30)), 180)
+    timeout = min(int(data.get("timeout", 30)), 60)
     auto_enable = data.get("auto_enable", True)
     if isinstance(auto_enable, str):
         auto_enable = auto_enable.lower() not in ("0", "false", "no")
