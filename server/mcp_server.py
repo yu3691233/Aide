@@ -724,11 +724,38 @@ def handle_adb_install_project_apk(arguments):
         }
 
     if not connect_payload.get("ok"):
+        # 诊断：查询目标设备当前 AideLink 在线/ADB 连接状态，帮助用户判断失败原因
+        diag_hint = ""
+        try:
+            diag_payload = _bridge_get_json("/api/devices", timeout=5)
+            diag_devices = (diag_payload or {}).get("devices") or []
+            target_dev = None
+            for d in diag_devices:
+                if (resolved_alias and d.get("alias") == resolved_alias) or \
+                   (resolved_ip and (d.get("ip") == resolved_ip or resolved_ip in (d.get("ips") or []))):
+                    target_dev = d
+                    break
+            if target_dev:
+                import time as _diag_time
+                aide_online = "在线" if target_dev.get("is_online") else "离线"
+                adb_conn = "已连接" if target_dev.get("is_adb_connected") else "未连接"
+                last_ts = target_dev.get("last_active") or 0
+                ago = f"{int(_diag_time.time() - last_ts)}s 前" if last_ts else "无记录"
+                diag_hint = (
+                    f"\n诊断：AideLink={aide_online}，ADB={adb_conn}，最后活跃={ago}。"
+                )
+                if target_dev.get("is_online") and not target_dev.get("is_adb_connected"):
+                    diag_hint += "AideLink 在线但 ADB 未恢复——可能是 App 在后台无法响应 enable-wireless 命令，或无线调试被系统限制。建议：将 App 切到前台后重试，或在设备上手动开启无线调试。"
+                elif not target_dev.get("is_online"):
+                    diag_hint += "AideLink 离线——App 未运行或网络不通。建议：在设备上打开 AideLink App。"
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            pass
         return {
             "isError": True,
             "content": [{"type": "text", "text": (
                 f"[ensure_device] alias={resolved_alias or '(无)'} ip={resolved_ip} 无法建立 ADB 连接: "
                 f"{connect_payload.get('error', '未知错误')}。"
+                f"{diag_hint}"
                 "请确认 App 处于前台、无线调试开关可用，并重试。"
             )}],
         }

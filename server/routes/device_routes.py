@@ -579,7 +579,7 @@ def api_adb_connect():
     alias = data.get("alias")
     ip = data.get("ip")
     port = data.get("port")
-    timeout = min(data.get("timeout", 30), 60)
+    timeout = min(data.get("timeout", 30), 180)
     if port is not None:
         port = int(port)
 
@@ -610,7 +610,7 @@ def api_adb_ensure():
     alias = data.get("alias")
     ip = data.get("ip")
     port = data.get("port")
-    timeout = min(int(data.get("timeout", 30)), 90)
+    timeout = min(int(data.get("timeout", 30)), 180)
     auto_enable = data.get("auto_enable", True)
     if isinstance(auto_enable, str):
         auto_enable = auto_enable.lower() not in ("0", "false", "no")
