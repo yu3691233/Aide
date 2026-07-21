@@ -96,10 +96,15 @@ object WirelessAdbManager {
             if (context.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 try {
                     Settings.Global.putInt(context.contentResolver, "adb_wifi_enabled", 1)
-                    Thread.sleep(1500)
-                    var currentPort = getAdbPort()
-                    if (currentPort <= 0) {
-                        currentPort = discoverLocalAdbPort(context)
+                    // 系统无线调试服务启动需要时间，轮询等待端口就绪（最长 8 秒）
+                    var currentPort = 0
+                    val waitDeadline = System.currentTimeMillis() + 8000
+                    while (System.currentTimeMillis() < waitDeadline && currentPort <= 0) {
+                        Thread.sleep(500)
+                        currentPort = getAdbPort()
+                        if (currentPort <= 0) {
+                            currentPort = discoverLocalAdbPort(context)
+                        }
                     }
                     if (currentPort > 0) {
                         return@withContext Result.success(ConnectResult("adb connect $ip:$currentPort", "secure_settings", ip, currentPort))
