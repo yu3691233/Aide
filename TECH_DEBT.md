@@ -43,6 +43,7 @@
 | P2-006 | ⚠️ | watchdog / daemon 重启策略需复查 | `server/` | 加退避、上限、日志 |
 | P2-007 | ⚠️ | Android 大文件仍需拆分 | `AideLink-app/` | 优先拆职责过多的 Screen / ViewModel |
 | P2-008 | ⚠️ | Web 控制台仍有既有初始化错误 | `dashboard.html`、`static/js/config.js` | 核查 `qrCodeInstance` 重复声明及 `loadConfig` 对缺失元素直接赋值 |
+| P2-009 | ⚠️ | 浮窗额度显示策略待定 | `server/routes/floating_window_routes.py`、`server/floating_window_app.py` | 当前仅 codex 有额度功能，浮窗无条件显示 codex 额度。将来新增第二个 IDE 额度功能时再决定浮窗策略：按选中 IDE 显示（与 App 端一致）或多徽章显示所有支持额度功能的 IDE。约定：后端额度接口按 `ide_key` 命名空间走（如 `/api/codex/quota`、`/api/x/quota`），前端按选中 key 查对应接口，不提前抽象额度注册器。 |
 
 ---
 

@@ -50,7 +50,6 @@ class FloatingWindowAppModelTests(unittest.TestCase):
                 {"key": "oc", "name": "OpenCode", "running": False, "dispatchable": False},
             ],
             "selected_target": {"key": "trae", "name": "Trae"},
-            "codex_quota": {"available": True, "remaining_percent": 73},
             "task_summary": {
                 "needs_user": 2,
                 "by_status": {"draft": 2, "pending_test": 1, "running": 1, "queued": 1, "done": 3},
@@ -67,10 +66,6 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         self.assertEqual("执行中", model["tasks"][0]["status"])
         self.assertEqual("general", model["tasks"][0]["surface"])
         self.assertEqual("1.0.1", model["tasks"][0]["version"])
-        self.assertEqual(
-            {"available": True, "remaining_percent": 73},
-            model["codex_quota"],
-        )
 
     def test_task_groups_match_dispatch_and_completed_semantics(self):
         self.assertEqual("待派发", fwa._task_group_name({"status": "待派发"}))

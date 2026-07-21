@@ -663,7 +663,7 @@ def handle_adb_install_project_apk(arguments):
     # 2. Fetch settings (used both for default current_project and whitelist check).
     settings_payload = {}
     try:
-        settings_payload = _bridge_get_json("/api/settings", timeout=10)
+        settings_payload = _bridge_get_json("/settings", timeout=10)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
         settings_payload = {}
     settings_root = (settings_payload or {}).get("settings") or {}

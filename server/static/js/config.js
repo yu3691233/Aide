@@ -1693,6 +1693,7 @@ async function loadDevices() {
           ${ipsInfo}
           <div style="display:flex;gap:6px;margin-top:6px;">
             ${online && !d.is_adb_connected ? `<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px;" onclick="enableWirelessAdb('${d.online_ip || d.ip || ''}', '${alias}')">📡 开启调试</button>` : ''}
+            ${d.is_adb_connected && !online ? `<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px;" onclick="launchAideLink('${d.online_ip || d.ip || ''}', ${d.adb_port || 5555}, '${alias}')">🚀 启动AideLink</button>` : ''}
             ${d.is_adb_connected && d.device_id ? `<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px;" onclick="disconnectAdb('${d.device_id}', '${alias}')">🔌 断开</button>` : ''}
             ${!d.alias && d.ip ? `<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px;" onclick="setAliasForIp('${d.ip}', ${d.adb_port || 5555})">🏷 设置别名</button>` : ''}
             ${d.alias ? `<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px;color:var(--accent-red);" onclick="deleteDeviceAlias('${d.alias}')">🗑 删除</button>` : ''}
@@ -1861,6 +1862,27 @@ async function enableWirelessAdb(ip, alias) {
     showToast(`连接失败: ${e.message}`, 'error');
   }
   if (btn) { btn.disabled = false; btn.textContent = '📡 开启调试'; }
+}
+
+async function launchAideLink(ip, port, alias) {
+  const label = alias || ip;
+  const btn = event && event.target;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 启动中...'; }
+  showToast(`正在拉起 ${label} 的 AideLink 服务...`, 'info');
+  try {
+    const res = await apiCall('/api/adb/launch-app', 'POST', { ip, port, alias: label });
+    if (res && res.ok) {
+      showToast(`${label} 的 AideLink 服务已拉起，等待 SSE 心跳恢复...`, 'success');
+      // SSE 心跳恢复需要 5-8 秒，分阶段刷新
+      setTimeout(loadDevices, 5000);
+      setTimeout(loadDevices, 10000);
+    } else {
+      showToast(`${label} 启动失败: ${res ? res.error : '网络错误'}`, 'error');
+    }
+  } catch (e) {
+    showToast(`启动失败: ${e.message}`, 'error');
+  }
+  if (btn) { btn.disabled = false; btn.textContent = '🚀 启动AideLink'; }
 }
 
 async function disconnectAdb(deviceId, alias) {

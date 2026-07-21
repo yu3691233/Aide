@@ -876,6 +876,14 @@ class AideLinkChatViewModel @Inject constructor(
 
         }
 
+        // Codex 额度：仅在选中 Codex 时轮询；切到其他 IDE 时停止并清空，避免残留显示。
+        if (target == Target.CODEX) {
+            startCodexQuotaPolling()
+        } else {
+            stopCodexQuotaPolling()
+            _state.value = _state.value.copy(codexQuota = null)
+        }
+
         viewModelScope.launch(Dispatchers.IO) {
 
             loadProject()
@@ -1023,8 +1031,11 @@ class AideLinkChatViewModel @Inject constructor(
 
     }
 
-    /** 在 ChatScreen 期间按 5 分钟轮询 Codex 额度，与浮窗一致。 */
+    /** 在 ChatScreen 期间按 5 分钟轮询 Codex 额度。仅在选中 Codex 时生效。 */
     fun startCodexQuotaPolling() {
+
+        // 仅当当前选中的 IDE 是 Codex 时才轮询，其他 IDE 不发请求。
+        if (_state.value.target != Target.CODEX) return
 
         _codexQuotaPollingJob?.cancel()
 
@@ -2085,7 +2096,7 @@ class AideLinkChatViewModel @Inject constructor(
                 _state.value = _state.value.copy(toastMessage = "IDE 未切换到目标显示器，请先绑定窗口")
             }
 
-            val bytes = bridgeApi.screenshotFull(target = null, monitor = monitorName)
+            val bytes = bridgeApi.screenshotFull(target = targetKey, monitor = monitorName)
 
             if (bytes != null) {
 
@@ -2349,23 +2360,30 @@ class AideLinkChatViewModel @Inject constructor(
 
             runCatching {
 
+                val s = _state.value
+                // crops are in display-image space (from get_scaled_crop_config),
+                // so calib must match that space so the server scales up correctly
+                val calibX = s.originalImageWidth.takeIf { it > 0 } ?: s.calibWidth
+                val calibY = s.originalImageHeight.takeIf { it > 0 } ?: s.calibHeight
                 bridgeApi.saveCropConfig(
 
-                    target = _state.value.target.key,
+                    target = s.target.key,
 
-                    left = _state.value.cropLeft,
+                    left = s.cropLeft,
 
-                    right = _state.value.cropRight,
+                    right = s.cropRight,
 
-                    top = _state.value.cropTop,
+                    top = s.cropTop,
 
-                    bottom = _state.value.cropBottom,
+                    bottom = s.cropBottom,
 
-                    monitor = _state.value.selectedMonitor,
+                    monitor = s.selectedMonitor,
 
-                    dialogPosition = _state.value.dialogPosition,
-                    focusInputEnabled = _state.value.focusInputEnabled,
-                    inputPoint = _state.value.inputPoint,
+                    dialogPosition = s.dialogPosition,
+                    calibWidth = calibX,
+                    calibHeight = calibY,
+                    focusInputEnabled = s.focusInputEnabled,
+                    inputPoint = s.inputPoint,
 
                 )
 
@@ -2435,17 +2453,18 @@ class AideLinkChatViewModel @Inject constructor(
             )
 
             val pos = _state.value.dialogPosition
+            val sCrop = _state.value
 
-            val cw = _state.value.originalImageWidth
-            val ch = _state.value.originalImageHeight
+            val cw = sCrop.originalImageWidth.takeIf { it > 0 } ?: sCrop.calibWidth
+            val ch = sCrop.originalImageHeight.takeIf { it > 0 } ?: sCrop.calibHeight
 
             runCatching {
 
                 bridgeApi.saveCropConfig(target, safeL, safeR, safeT, safeB, mon,
 
                     dialogPosition = pos, calibWidth = cw, calibHeight = ch,
-                    focusInputEnabled = _state.value.focusInputEnabled,
-                    inputPoint = _state.value.inputPoint)
+                    focusInputEnabled = sCrop.focusInputEnabled,
+                    inputPoint = sCrop.inputPoint)
 
             }
 

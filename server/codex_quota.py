@@ -12,10 +12,14 @@ USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 AUTH_FILE = Path.home() / ".codex" / "auth.json"
 _CACHE_TTL_SECONDS = 300
 _MIN_REFRESH_SECONDS = 120
+# Codex 桌面端连续未运行超过该时长后，不再向远程额度接口发起新请求，
+# 直接返回缓存（额度不会变化，避免无谓的网络调用）。
+_STALE_RUNNING_SECONDS = 600
 _cache_lock = threading.Lock()
 _cached_at = 0.0
 _cached_result = None
 _executed_task_baseline = set()
+_last_codex_running_at = 0.0
 
 
 def _load_current_credentials():
@@ -77,9 +81,32 @@ def fetch_current_codex_quota(timeout=8):
     }
 
 
-def get_current_codex_quota(force=False, executed_task_ids=None):
-    global _cached_at, _cached_result, _executed_task_baseline
+def get_current_codex_quota(force=False, executed_task_ids=None, codex_running=None):
+    """获取 Codex 周额度（带缓存）。
+
+    :param codex_running: Codex 桌面端是否在运行。
+        - True：刷新最后运行时间，正常走缓存逻辑。
+        - False：若距上次运行已超过 _STALE_RUNNING_SECONDS，则跳过远程请求，
+          直接返回缓存（额度不会变化），避免 codex 未启动时频繁请求。
+        - None：不感知运行状态（手机 App 端，App 自身已按选中 IDE 控制调用）。
+    """
+    global _cached_at, _cached_result, _executed_task_baseline, _last_codex_running_at
     now = time.monotonic()
+
+    if codex_running:
+        _last_codex_running_at = now
+
+    # Codex 长时间未运行时，不发起新的远程请求，直接返回缓存。
+    if (
+        codex_running is False
+        and not force
+        and (now - _last_codex_running_at) > _STALE_RUNNING_SECONDS
+    ):
+        with _cache_lock:
+            if _cached_result is not None:
+                return dict(_cached_result)
+        return {"available": False, "error": "Codex 未运行，额度暂不可用"}
+
     current_executed = {
         str(task_id).strip()
         for task_id in (executed_task_ids or [])

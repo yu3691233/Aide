@@ -293,6 +293,14 @@ def focus_calibrated_input(target, win):
         if is_trae and not click_enabled:
             focus_config = dict(config)
             focus_config["focus_input_enabled"] = True
+        if not activate_window(win):
+            return False
+        time.sleep(0.2)
+        # 窗口激活后再读取客户区 rect（窗口状态可能已变）
+        if not user32.GetClientRect(hwnd, ctypes.byref(client_rect)):
+            print(f"[ERROR] Cannot read client bounds for calibrated focus: {target}")
+            return False
+
         point = se.get_input_focus_client_point(
             focus_config,
             client_rect.right - client_rect.left,
@@ -307,9 +315,6 @@ def focus_calibrated_input(target, win):
 
         click_x = origin.x + point[0]
         click_y = origin.y + point[1]
-        if not activate_window(win):
-            return False
-        time.sleep(0.2)
         print(f"[INFO] Clicking calibrated input for {target.upper()} at ({click_x}, {click_y})")
         pyautogui.click(click_x, click_y)
         time.sleep(0.35)

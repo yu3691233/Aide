@@ -220,6 +220,11 @@ def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callba
 
     queue_file = BASE_DIR / "state" / f"task_queue_{test_ide}.json"
     queue = _load_queue(queue_file)
+    # 清理队列中已不存在或已终止的任务条目，防止 stale 条目堵塞新派发
+    _VALID_QUEUE_STATUSES = {"queued", "running", "dispatched", "pending_test", "merging"}
+    all_tasks = {t["task_id"]: t for t in runtime.read_tasks()}
+    queue = [q for q in queue if q["task_id"] in all_tasks
+             and (all_tasks[q["task_id"]].get("status") or "") in _VALID_QUEUE_STATUSES]
     queue.append({
         "task_id": test_task_id,
         "title": f"[测试] {orig_title}",
@@ -269,6 +274,7 @@ def api_tasks_dispatch():
     print(f"[DEBUG] api_tasks_dispatch received: {data}", flush=True)
     task_ids = data.get("task_ids", [])
     target_ide = data.get("target_ide")
+    print(f"[TRACE] target_ide={target_ide!r}, workbuddy? {target_ide == 'workbuddy'}", flush=True)
     selected_surface = str(data.get("surface") or "").strip().lower()
     if selected_surface not in _SURFACE_LABELS:
         selected_surface = ""

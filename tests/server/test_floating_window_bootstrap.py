@@ -17,11 +17,6 @@ from task_runtime import TaskRuntime
 class FloatingWindowBootstrapTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.quota_patcher = patch(
-            "codex_quota.get_current_codex_quota",
-            return_value={"available": True, "remaining_percent": 72, "period": "weekly"},
-        )
-        self.quota_patcher.start()
         self.project = str(Path(self.tmp.name) / "Project")
         Path(self.project).mkdir()
         self.runtime = TaskRuntime(self.tmp.name)
@@ -29,7 +24,6 @@ class FloatingWindowBootstrapTests(unittest.TestCase):
         self.app.register_blueprint(floating_window_bp)
 
     def tearDown(self):
-        self.quota_patcher.stop()
         self.tmp.cleanup()
 
     def _create_task(self, status, project=None, target_ide="codex"):

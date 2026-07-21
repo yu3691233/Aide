@@ -297,6 +297,71 @@ def get_scaled_crop_config(target, monitor_name=None):
     return cfg
 
 
+def _derive_input_region(cfg, target, monitor_name, monitors):
+    """当 cfg 没有 input_region 时，优先从任何已校准的显示器推算默认值，
+    否则从 dialog_position + 裁剪边距 推算。
+
+    按物理像素做等比例映射。找不到参考时按 dialog_position 取可见区域中心/偏右/偏左，
+    Y 取可见区域底部附近。
+    """
+    if cfg.get("input_region") is not None:
+        return
+
+    calib_w = cfg.get("calib_width", 0) or 0
+    calib_h = cfg.get("calib_height", 0) or 0
+
+    # 1. 找任意已保存 input_region 的显示器做参考（排除当前显示器）
+    ref = None
+    for m_name, m_crops in monitors.items():
+        if m_name == monitor_name:
+            continue
+        mc = m_crops.get(target)
+        if mc and mc.get("input_region"):
+            ref = mc
+            break
+
+    if ref:
+        pri_w = ref.get("calib_width", 1) or 1
+        pri_h = ref.get("calib_height", 1) or 1
+        tgt_w = calib_w if calib_w > 0 else pri_w
+        tgt_h = calib_h if calib_h > 0 else pri_h
+        pri_in = ref["input_region"]
+        cfg["input_region"] = {
+            "x": round(min(pri_in["x"] * pri_w / tgt_w, 0.99), 6),
+            "y": round(min(pri_in["y"] * pri_h / tgt_h, 0.99), 6),
+            "width": 0.01,
+            "height": 0.01,
+        }
+        if not cfg.get("focus_input_enabled") and ref.get("focus_input_enabled"):
+            cfg["focus_input_enabled"] = True
+        return
+
+    # 2. 没有参考显示器→不推算 Y（Y 必须来自实际校准，不能靠裁剪边距算）。
+    #    只推算 X：从 dialog_position 取可见区域水平位置
+    if calib_w <= 0 or calib_h <= 0:
+        return
+    pos = cfg.get("dialog_position", "center")
+    left = cfg.get("left", 0)
+    right = cfg.get("right", 0)
+    vis_w = calib_w - left - right
+    if vis_w <= 0:
+        return
+
+    if pos == "right":
+        x_in_vis = vis_w * 0.75
+    elif pos == "left":
+        x_in_vis = vis_w * 0.25
+    else:
+        x_in_vis = vis_w * 0.5
+
+    cfg["input_region"] = {
+        "x": round(min((left + x_in_vis) / calib_w, 0.99), 6),
+        "y": 0.88,
+        "width": 0.01,
+        "height": 0.01,
+    }
+
+
 def get_crop_config(target, monitor_name=None):
     """获取指定目标的裁剪配置，支持按显示器隔离，支持从特定显示器 fallback 到主屏 primary 或 default"""
     crops = read_crops()
@@ -311,17 +376,19 @@ def get_crop_config(target, monitor_name=None):
         # 1. 优先从主显示器 "primary" 继承裁剪配置
         primary_crops = monitors.get("primary", {})
         if target in primary_crops:
-            return primary_crops[target]
+            return dict(primary_crops[target])
 
         # 2. 次优从默认 "default" 继承配置
         default_crops = monitors.get("default", {})
         if target in default_crops:
-            return default_crops[target]
+            return dict(default_crops[target])
 
     default_entry = {"left": 0, "right": 0, "top": 0, "bottom": 0,
                      "dialog_position": "center", "calib_width": 0, "calib_height": 0,
                      "focus_input_enabled": False, "input_region": None}
-    return monitor_crops.get(target, default_entry)
+    cfg = dict(monitor_crops.get(target, default_entry))
+    _derive_input_region(cfg, target, monitor_name, monitors)
+    return cfg
 
 
 def _normalize_input_region(region):
@@ -344,7 +411,12 @@ def _normalize_input_region(region):
 
 
 def get_input_focus_client_point(config, client_width, client_height):
-    """返回输入框区域中心在客户区内的像素坐标；未启用或无效时返回 None。"""
+    """返回输入框区域中心在客户区内的像素坐标；未启用或无效时返回 None。
+
+    input_region 的 x/y 为全图比例（显示空间 0..1），
+    y 方向使用「到底边固定偏移」策略：先按校准分辨率算出物理像素到底边偏距，
+    派发时从当前窗口高度减去该偏距，从而在窗口高度变化时点击位置保持稳定。
+    """
     if not config.get("focus_input_enabled"):
         return None
     try:
@@ -354,8 +426,22 @@ def get_input_focus_client_point(config, client_width, client_height):
     if not region or client_width <= 0 or client_height <= 0:
         return None
     x_ratio = region["x"] + region["width"] / 2
-    y_ratio = region["y"] + region["height"] / 2
-    return round(client_width * x_ratio), round(client_height * y_ratio)
+    y_full_ratio = region["y"] + region["height"] / 2  # 全图比例：由上往下
+
+    # 水平：等比缩放（输入框宽度随窗口等比扩展）
+    click_x = round(client_width * x_ratio)
+
+    # 垂直：固定到底边偏距
+    calib_h = config.get("calib_height", client_height) or client_height
+    if calib_h > 0 and client_height != calib_h:
+        # 校准时的物理到底边偏距 = calib_h * (1 - y_full_ratio)
+        bottom_offset = int(calib_h * (1.0 - y_full_ratio))
+        click_y = client_height - bottom_offset
+    else:
+        # 窗口高度没变或没有校准基线：直接用等比
+        click_y = round(client_height * y_full_ratio)
+
+    return click_x, click_y
 
 
 def set_crop_config(target, left, right, top, bottom, monitor_name=None, dialog_position=None,
@@ -393,23 +479,30 @@ def set_crop_config(target, left, right, top, bottom, monitor_name=None, dialog_
         phys_w = existing.get("calib_width", 0)
         phys_h = existing.get("calib_height", 0)
 
+    # Preserve the original calibration baseline if it already exists,
+    # so _adjust_crop_margins always compares against the first-calibration size.
+    orig_calib_w = existing.get("calib_width", 0)
+    orig_calib_h = existing.get("calib_height", 0)
+
     if phys_w > 0 and phys_h > 0 and calib_width and int(calib_width) > 0 and calib_height and int(calib_height) > 0:
-        # Scale the client's crop margins to physical coordinates
+        # Scale the client's crop margins from sender's space to physical coordinates
         scale_x = phys_w / float(calib_width)
         scale_y = phys_h / float(calib_height)
         left = int(left * scale_x)
         right = int(right * scale_x)
         top = int(top * scale_y)
         bottom = int(bottom * scale_y)
+
+    # Use the original calibration baseline if set; otherwise set it now.
+    if orig_calib_w > 0 and orig_calib_h > 0:
+        calib_width = orig_calib_w
+        calib_height = orig_calib_h
+    elif phys_w > 0 and phys_h > 0:
         calib_width = phys_w
         calib_height = phys_h
     else:
-        if phys_w > 0 and phys_h > 0:
-            calib_width = phys_w
-            calib_height = phys_h
-        else:
-            calib_width = calib_width or existing.get("calib_width", 0)
-            calib_height = calib_height or existing.get("calib_height", 0)
+        calib_width = calib_width or existing.get("calib_width", 0)
+        calib_height = calib_height or existing.get("calib_height", 0)
 
     normalized_region = _normalize_input_region(input_region) if input_region is not None else existing.get("input_region")
     focus_enabled = existing.get("focus_input_enabled", False) if focus_input_enabled is None else bool(focus_input_enabled)

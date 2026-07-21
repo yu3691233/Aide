@@ -272,6 +272,15 @@ def get_active_ide_status():
             pass
 
         busy = busy_status == "busy"
+        # 租约已过期时视为可派发
+        if busy and lease_expires_at:
+            try:
+                from datetime import datetime
+                expires = datetime.fromisoformat(lease_expires_at)
+                if expires <= datetime.now():
+                    busy = False
+            except Exception:
+                pass
         blocking_reasons = []
         if not running:
             blocking_reasons.append("ide_not_running")

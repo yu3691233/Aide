@@ -6,7 +6,6 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,9 +33,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +66,62 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.ui.text.font.FontWeight
+
+private data class CalibrationGeometry(
+    val drawLeft: Int = 0,
+    val drawTop: Int = 0,
+    val drawSrcWidth: Int = 0,
+    val drawSrcHeight: Int = 0,
+    val dstX: Float = 0f,
+    val dstY: Float = 0f,
+    val dstW: Float = 0f,
+    val dstH: Float = 0f,
+    val scaleFactorX: Float = 1f,
+    val scaleFactorY: Float = 1f,
+    val origW: Int = 0,
+    val origH: Int = 0
+)
+
+private fun computeCalibrationGeometry(
+    imgWidth: Int, imgHeight: Int,
+    scaledCropLeft: Float, scaledCropRight: Float, scaledCropTop: Float, scaledCropBottom: Float,
+    canvasW: Float, canvasH: Float,
+    scaleFactorX: Float, scaleFactorY: Float,
+    origW: Int, origH: Int
+): CalibrationGeometry {
+    val drawLeft = scaledCropLeft.toInt().coerceIn(0, imgWidth - 1)
+    val drawRight = scaledCropRight.toInt().coerceIn(0, imgWidth - drawLeft - 1)
+    val drawTop = scaledCropTop.toInt().coerceIn(0, imgHeight - 1)
+    val drawBottom = scaledCropBottom.toInt().coerceIn(0, imgHeight - drawTop - 1)
+    val drawSrcWidth = imgWidth - drawLeft - drawRight
+    val drawSrcHeight = imgHeight - drawTop - drawBottom
+    if (drawSrcWidth <= 0 || drawSrcHeight <= 0 || canvasW <= 0 || canvasH <= 0) {
+        return CalibrationGeometry(
+            scaleFactorX = scaleFactorX, scaleFactorY = scaleFactorY,
+            origW = origW, origH = origH
+        )
+    }
+    val imgRatio = drawSrcWidth.toFloat() / drawSrcHeight.toFloat()
+    val canvasRatio = canvasW / canvasH
+    val dstW: Float
+    val dstH: Float
+    if (imgRatio > canvasRatio) {
+        dstW = canvasW
+        dstH = canvasW / imgRatio
+    } else {
+        dstH = canvasH
+        dstW = canvasH * imgRatio
+    }
+    val dstX = (canvasW - dstW) / 2
+    val dstY = 0f
+    return CalibrationGeometry(
+        drawLeft = drawLeft, drawTop = drawTop,
+        drawSrcWidth = drawSrcWidth, drawSrcHeight = drawSrcHeight,
+        dstX = dstX, dstY = dstY, dstW = dstW, dstH = dstH,
+        scaleFactorX = scaleFactorX, scaleFactorY = scaleFactorY,
+        origW = origW, origH = origH
+    )
+}
 
 @Composable
 fun ZoomableLiveMonitorDialog(
@@ -165,10 +222,23 @@ fun ZoomableLiveMonitorDialog(
 
 
                 // Middle: Zoomable Canvas Box (occupying remaining space)
+                var boxSize by remember { mutableStateOf(IntSize(0, 0)) }
+                val geometryState = remember { mutableStateOf(CalibrationGeometry()) }
+                LaunchedEffect(boxSize, image.width, image.height, originalWidth, originalHeight,
+                    scaledCropLeft, scaledCropRight, scaledCropTop, scaledCropBottom) {
+                    geometryState.value = computeCalibrationGeometry(
+                        image.width, image.height,
+                        scaledCropLeft, scaledCropRight, scaledCropTop, scaledCropBottom,
+                        boxSize.width.toFloat(), boxSize.height.toFloat(),
+                        scaleFactorX, scaleFactorY,
+                        originalWidth, originalHeight
+                    )
+                }
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
+                        .onSizeChanged { boxSize = it }
                         .pointerInput(Unit) {
                             detectTransformGestures { _, pan, zoom, _ ->
                                 val newScale = (scale * zoom).coerceIn(1f, 5f)
@@ -185,39 +255,15 @@ fun ZoomableLiveMonitorDialog(
                         ),
                     contentAlignment = Alignment.Center
                 ) {
+                    val g = geometryState.value
                     Canvas(modifier = Modifier.fillMaxSize()) {
-                        val imgWidth = image.width
-                        val imgHeight = image.height
-                        val drawLeft = scaledCropLeft.toInt().coerceIn(0, imgWidth - 1)
-                        val drawRight = scaledCropRight.toInt().coerceIn(0, imgWidth - drawLeft - 1)
-                        val drawTop = scaledCropTop.toInt().coerceIn(0, imgHeight - 1)
-                        val drawBottom = scaledCropBottom.toInt().coerceIn(0, imgHeight - drawTop - 1)
-                        val drawSrcWidth = imgWidth - drawLeft - drawRight
-                        val drawSrcHeight = imgHeight - drawTop - drawBottom
-                        if (drawSrcWidth > 0 && drawSrcHeight > 0) {
-                            val canvasW = size.width
-                            val canvasH = size.height
-                            val imgRatio = drawSrcWidth.toFloat() / drawSrcHeight.toFloat()
-                            val canvasRatio = canvasW / canvasH
-
-                            val dstW: Float
-                            val dstH: Float
-                            if (imgRatio > canvasRatio) {
-                                dstW = canvasW
-                                dstH = canvasW / imgRatio
-                            } else {
-                                dstH = canvasH
-                                dstW = canvasH * imgRatio
-                            }
-                            val dstX = (canvasW - dstW) / 2
-                            val dstY = 0f
-
+                        if (g.drawSrcWidth > 0 && g.drawSrcHeight > 0) {
                             drawImage(
                                 image = image,
-                                srcOffset = IntOffset(drawLeft, drawTop),
-                                srcSize = IntSize(drawSrcWidth, drawSrcHeight),
-                                dstOffset = IntOffset(dstX.toInt(), dstY.toInt()),
-                                dstSize = IntSize(dstW.toInt(), dstH.toInt())
+                                srcOffset = IntOffset(g.drawLeft, g.drawTop),
+                                srcSize = IntSize(g.drawSrcWidth, g.drawSrcHeight),
+                                dstOffset = IntOffset(g.dstX.toInt(), g.dstY.toInt()),
+                                dstSize = IntSize(g.dstW.toInt(), g.dstH.toInt())
                             )
                         }
                     }
@@ -227,10 +273,19 @@ fun ZoomableLiveMonitorDialog(
                                 .fillMaxSize()
                                 .pointerInput(Unit) {
                                     detectTapGestures { point ->
-                                        onInputPointChange(
-                                            (point.x / size.width).coerceIn(0f, 0.99f),
-                                            (point.y / size.height).coerceIn(0f, 0.99f)
-                                        )
+                                        val geo = geometryState.value
+                                        if (geo.drawSrcWidth > 0 && geo.drawSrcHeight > 0 && geo.dstW > 0 && geo.dstH > 0) {
+                                            val relX = (point.x - geo.dstX) / geo.dstW
+                                            val relY = (point.y - geo.dstY) / geo.dstH
+                                            val srcX = geo.drawLeft + (relX * geo.drawSrcWidth)
+                                            val srcY = geo.drawTop + (relY * geo.drawSrcHeight)
+                                            val origX = srcX / geo.scaleFactorX
+                                            val origY = srcY / geo.scaleFactorY
+                                            onInputPointChange(
+                                                (origX / geo.origW).coerceIn(0f, 0.99f),
+                                                (origY / geo.origH).coerceIn(0f, 0.99f)
+                                            )
+                                        }
                                         inputCalibration = false
                                     }
                                 }
@@ -238,11 +293,22 @@ fun ZoomableLiveMonitorDialog(
                     }
                     if (focusInputEnabled && inputPoint != null) {
                         Canvas(modifier = Modifier.fillMaxSize()) {
-                            drawCircle(
-                                color = Color(0xFF3FB950),
-                                radius = 8f,
-                                center = Offset(inputPoint.x * size.width, inputPoint.y * size.height)
-                            )
+                            val geo = geometryState.value
+                            if (geo.drawSrcWidth > 0 && geo.drawSrcHeight > 0 && geo.dstW > 0 && geo.dstH > 0) {
+                                val origPx = inputPoint.x * geo.origW
+                                val origPy = inputPoint.y * geo.origH
+                                val dispX = origPx * geo.scaleFactorX
+                                val dispY = origPy * geo.scaleFactorY
+                                val cropRelX = (dispX - geo.drawLeft) / geo.drawSrcWidth
+                                val cropRelY = (dispY - geo.drawTop) / geo.drawSrcHeight
+                                val centerX = geo.dstX + cropRelX * geo.dstW
+                                val centerY = geo.dstY + cropRelY * geo.dstH
+                                drawCircle(
+                                    color = Color(0xFF3FB950),
+                                    radius = 8f,
+                                    center = Offset(centerX, centerY)
+                                )
+                            }
                         }
                     }
                 }

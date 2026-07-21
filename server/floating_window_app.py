@@ -80,6 +80,9 @@ DEFAULT_COLLAPSED_GROUPS = frozenset({"待测试", "已完成"})
 TEST_FEEDBACK_MARKER = "\n\n---\n测试反馈："
 QUICK_REPLIES_FILE = Path(__file__).resolve().parent / "state" / "floating_quick_replies.json"
 WINDOW_STATE_FILE = Path(__file__).resolve().parent / "state" / "floating_window_state.json"
+# 记录浮窗启动时获取 Codex 额度的时间戳，10 分钟内重启不重复获取。
+QUOTA_LAST_FETCH_FILE = Path(__file__).resolve().parent / "state" / "floating_window_quota_last_fetch.json"
+QUOTA_STARTUP_FETCH_INTERVAL = 600
 PLATFORM_SPECS = (
     ("android", "smartphone", "#35a853", "Android"),
     ("web", "globe", "#0867f2", "Web"),
@@ -223,7 +226,6 @@ def build_home_model(payload):
     summary = payload.get("task_summary") or {}
     tasks = payload.get("tasks") or []
     selected = payload.get("selected_target") or {}
-    codex_quota = payload.get("codex_quota") or {}
 
     by_status = summary.get("by_status") or {}
     pending_test = int(by_status.get("pending_test") or 0) + int(by_status.get("timeout") or 0)
@@ -255,10 +257,6 @@ def build_home_model(payload):
         ],
         "selected_target": selected.get("name") or selected.get("key") or "未选择 IDE",
         "selected_target_key": selected.get("key"),
-        "codex_quota": {
-            "available": bool(codex_quota.get("available")),
-            "remaining_percent": codex_quota.get("remaining_percent"),
-        },
         "summary": {
             "待派发": pending_dispatch,
             "待测试": pending_test,
@@ -421,6 +419,7 @@ class FloatingWindowApp:
         self.refresh_in_progress = False
         self.last_render_signature = None
         self.connection_failed = False
+        self._startup_quota_done = False
         self.status_detail = ""
         self.ui_callbacks = queue.Queue()
         self.editing_task_id = None
@@ -484,8 +483,13 @@ class FloatingWindowApp:
 
         self.quota_frame = tk.Frame(self.title_bar, bg=card, highlightthickness=0)
         self.quota_frame.place(relx=0.55, rely=0.5, anchor="center")
+        self.quota_prefix = tk.Label(
+            self.quota_frame, text="codex", fg="#8a94a6", bg=card,
+            font=("Microsoft YaHei UI", 7), width=5, anchor="w",
+        )
+        self.quota_prefix.pack(side="left", padx=(0, 2))
         self.quota_canvas = tk.Canvas(
-            self.quota_frame, width=74, height=8, bg=card, highlightthickness=0
+            self.quota_frame, width=40, height=8, bg=card, highlightthickness=0
         )
         self.quota_canvas.pack(side="left", padx=(0, 4))
         self.quota_label = tk.Label(
@@ -493,9 +497,10 @@ class FloatingWindowApp:
             font=("Microsoft YaHei UI", 8), width=4, anchor="w",
         )
         self.quota_label.pack(side="left")
-        for widget in (self.quota_frame, self.quota_canvas, self.quota_label):
+        for widget in (self.quota_frame, self.quota_prefix, self.quota_canvas, self.quota_label):
             widget.bind("<ButtonPress-1>", self._start_drag)
             widget.bind("<B1-Motion>", self._drag)
+            widget.bind("<ButtonRelease-1>", self._on_quota_click)
 
         actions = tk.Frame(self.title_bar, bg=card, highlightthickness=0)
         actions.pack(side="right", padx=5, pady=2)
@@ -969,7 +974,6 @@ class FloatingWindowApp:
         self.title_label.config(text=model["project_name"])
         self._render_capability_icons(model["capabilities"])
         self._render_context_tools(model["capabilities"])
-        self._render_codex_quota(model.get("codex_quota") or {})
         self._set_status("")
 
         self._clear_rows(self.ide_frame)
@@ -2138,15 +2142,67 @@ class FloatingWindowApp:
         self.quota_canvas.delete("all")
         remaining = quota.get("remaining_percent")
         if not quota.get("available") or not isinstance(remaining, (int, float)):
-            self.quota_canvas.create_rectangle(0, 2, 74, 6, fill="#e5e9ef", outline="")
+            self.quota_canvas.create_rectangle(0, 2, 40, 6, fill="#e5e9ef", outline="")
             self.quota_label.config(text="--%", fg="#8a94a6")
             return
         remaining = max(0, min(100, round(remaining)))
-        self.quota_canvas.create_rectangle(0, 2, 74, 6, fill="#e5e9ef", outline="")
+        self.quota_canvas.create_rectangle(0, 2, 40, 6, fill="#e5e9ef", outline="")
         self.quota_canvas.create_rectangle(
-            0, 2, round(74 * remaining / 100), 6, fill="#2fb66d", outline=""
+            0, 2, round(40 * remaining / 100), 6, fill="#2fb66d", outline=""
         )
         self.quota_label.config(text=f"{remaining}%", fg="#239957")
+
+    def _on_quota_click(self, _event):
+        """点击额度条时获取 Codex 额度。拖拽时不触发。"""
+        if getattr(self, "drag_moved", False):
+            return
+        if getattr(self, "_quota_fetching", False):
+            return
+        self._quota_fetching = True
+        self.quota_label.config(text="···", fg="#8a94a6")
+
+        def worker():
+            try:
+                resp = api_request("api/codex/quota?force=1", timeout=10)
+                quota = resp.get("quota") or {}
+            except Exception:
+                quota = {}
+            self.root.after(0, lambda: self._on_quota_fetched(quota))
+
+        threading.Thread(target=worker, daemon=True, name="AideLinkQuotaFetch").start()
+
+    def _on_quota_fetched(self, quota):
+        self._quota_fetching = False
+        self._render_codex_quota(quota)
+
+    def _maybe_fetch_quota_on_startup(self):
+        """浮窗启动且首次连接成功后获取一次额度；10 分钟内重启不重复获取。"""
+        try:
+            last = 0.0
+            if QUOTA_LAST_FETCH_FILE.exists():
+                data = json.loads(QUOTA_LAST_FETCH_FILE.read_text(encoding="utf-8"))
+                last = float(data.get("last_fetch_at") or 0.0)
+        except (OSError, ValueError, json.JSONDecodeError):
+            last = 0.0
+        if (time.time() - last) < QUOTA_STARTUP_FETCH_INTERVAL:
+            return
+
+        def worker():
+            try:
+                resp = api_request("api/codex/quota?force=1", timeout=10)
+                quota = resp.get("quota") or {}
+            except Exception:
+                quota = {}
+            try:
+                QUOTA_LAST_FETCH_FILE.parent.mkdir(parents=True, exist_ok=True)
+                QUOTA_LAST_FETCH_FILE.write_text(
+                    json.dumps({"last_fetch_at": time.time()}), encoding="utf-8"
+                )
+            except OSError:
+                pass
+            self.root.after(0, lambda: self._render_codex_quota(quota))
+
+        threading.Thread(target=worker, daemon=True, name="AideLinkQuotaStartup").start()
 
     def select_ide(self, key):
         should_send = bool(self._input_text())
@@ -2837,7 +2893,6 @@ class FloatingWindowApp:
         self.last_render_signature = None
         self.root.title(WINDOW_TITLE_FALLBACK)
         self.title_label.config(text=WINDOW_TITLE_FALLBACK)
-        self._render_codex_quota({})
         self._set_status("AideLink 服务正在启动或重启，正在重新连接…（点击复制详情）", "#657084")
         self.status_detail = message
         self._clear_rows(self.ide_frame)
@@ -2887,6 +2942,9 @@ class FloatingWindowApp:
                 self.connection_failed = False
                 self.last_render_signature = signature
                 self._render(result.model)
+            if not self._startup_quota_done:
+                self._startup_quota_done = True
+                self._maybe_fetch_quota_on_startup()
         else:
             self._render_error(result.error or "AideLink 服务连接失败")
 

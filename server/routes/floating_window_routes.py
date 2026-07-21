@@ -16,21 +16,6 @@ from task_contracts import is_inspiration, summarize_tasks_for_project, task_mat
 
 floating_window_bp = Blueprint("floating_window", __name__)
 
-_EXECUTED_TASK_STATUSES = {
-    "queued", "dispatched", "running", "pending_test", "test_failed",
-    "done", "completed", "failed", "timeout",
-}
-
-
-def _executed_task_ids(tasks):
-    return [
-        task.get("task_id")
-        for task in tasks
-        if isinstance(task, dict)
-        and str(task.get("status") or "").strip().lower() in _EXECUTED_TASK_STATUSES
-        and task.get("task_id")
-    ]
-
 
 def _browser_window():
     if os.name != "nt":
@@ -93,6 +78,15 @@ def _ide_statuses():
         runtime_state = runtime_status.get("status", "idle")
         running = bool(running_statuses.get(key, False))
         busy = runtime_state == "busy"
+        # 租约已过期时视为可派发
+        if busy and runtime_status.get("lease_expires_at"):
+            try:
+                from datetime import datetime
+                expires = datetime.fromisoformat(runtime_status["lease_expires_at"])
+                if expires <= datetime.now():
+                    busy = False
+            except Exception:
+                pass
         dispatchable = running and not busy
         blocking_reasons = []
         if not running:
@@ -207,7 +201,6 @@ def api_floating_window_bootstrap():
     )
     ides = _ide_statuses()
     selected = _selected_target(settings, ides)
-    from codex_quota import get_current_codex_quota
 
     return jsonify({
         "ok": True,
@@ -217,12 +210,6 @@ def api_floating_window_bootstrap():
         "capabilities": project.get("capabilities", ["general"]) if project else ["general"],
         "ides": ides,
         "selected_target": selected,
-        # This endpoint is polled only by the live floating window. The quota
-        # module keeps a five-minute cache and refreshes early after three newly
-        # executed tasks.
-        "codex_quota": get_current_codex_quota(
-            executed_task_ids=_executed_task_ids(all_tasks),
-        ),
         "task_summary": summary["summary"],
         "tasks": [
             map_task_for_client(task)

@@ -541,13 +541,14 @@ fun AideLinkChatScreen(
 
                     Spacer(modifier = Modifier.weight(1f))
 
-                    // Codex 周额度：与桌面浮窗保持一致的视觉（迷你进度条 + 百分比）。
-                    // 点击强制刷新一次（绕过服务端缓存）。
-                    CodexQuotaChip(
-                        quota = state.codexQuota,
-                        loading = state.codexQuotaLoading,
-                        onClick = { viewModel.loadCodexQuota(force = true) },
-                    )
+                    // Codex 周额度：仅在选中 Codex 时显示，避免其他 IDE 出现无关额度。
+                    if (state.target == AideLinkChatViewModel.Target.CODEX) {
+                        CodexQuotaChip(
+                            quota = state.codexQuota,
+                            loading = state.codexQuotaLoading,
+                            onClick = { viewModel.loadCodexQuota(force = true) },
+                        )
+                    }
 
                     Spacer(modifier = Modifier.width(4.dp))
 
