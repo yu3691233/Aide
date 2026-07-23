@@ -1875,7 +1875,7 @@ class FloatingWindowApp:
         pages = interfaces[0].get("pages") if interfaces else []
         pages = sorted(
             pages or [],
-            key=lambda page: (not bool(page.get("is_current")), page.get("name", "")),
+            key=lambda page: not bool(page.get("is_current")),
         )
         dialog = self.tk.Toplevel(self.root)
         dialog.title("从项目界面地图选择组件")

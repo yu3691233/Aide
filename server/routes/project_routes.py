@@ -446,10 +446,23 @@ def api_project_map_interfaces():
                 for child in children:
                     walk(child, next_path)
                 return
-            if node.get("category") not in {"交互", "展示", "布局"}:
+            raw_name = str(node.get("name") or "").strip()
+            category = node.get("category")
+            legacy_web_match = re.match(
+                r"^(按钮|输入框|输入|下拉框|表格|折叠面板|链接|文本域|文本|图片|图标)\s*[:：]\s*(.*)$",
+                raw_name,
+            )
+            if category not in {"交互", "展示", "布局"} and not (
+                surface == "web" and legacy_web_match
+            ):
                 return
+            normalized_name = (
+                f"[{legacy_web_match.group(1)}] {legacy_web_match.group(2).strip()}"
+                if legacy_web_match
+                else raw_name
+            )
             clean_label = re.sub(
-                r"^\[[^\]]+\]\s*", "", str(node.get("name") or "")
+                r"^\[[^\]]+\]\s*", "", normalized_name
             ).strip()
             lowered_label = clean_label.lower()
             technical_identifier = bool(
@@ -468,7 +481,7 @@ def api_project_map_interfaces():
                 return
             components.append({
                 "id": node.get("id", ""),
-                "name": node.get("name", ""),
+                "name": normalized_name,
                 "area": " / ".join(item for item in path if item)
                 or str(node.get("area") or "").strip(),
                 "file": node.get("file", ""),
@@ -517,8 +530,8 @@ def api_project_map_interfaces():
                 ],
             ]
         pages = [flatten_page(page) for page in category_pages]
-        pages = [page for page in pages if page["components"]]
-        pages.sort(key=lambda page: (not page["is_current"], page["name"]))
+        # 稳定排序只提升当前界面，其余保持项目地图中的原始产品顺序。
+        pages.sort(key=lambda page: not page["is_current"])
         type_groups = {}
         for page in pages:
             for component in page["components"]:
