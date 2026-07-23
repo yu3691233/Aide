@@ -2,7 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
@@ -119,6 +119,46 @@ class MonitorCropPersistenceTests(unittest.TestCase):
 
         self.assertEqual(primary_key, external_key)
         self.assertTrue(primary_key.startswith("monitor_"))
+
+    def test_explicit_recalibration_replaces_old_size_baseline(self):
+        topology = [monitor("primary", "monitor_a", primary=True)]
+        with patch.object(screenshot_engine, "get_all_monitors", return_value=topology):
+            screenshot_engine.set_crop_config(
+                "codex",
+                50,
+                60,
+                70,
+                80,
+                "primary",
+                calib_width=1000,
+                calib_height=800,
+            )
+
+            captured = Mock()
+            captured.size = (2000, 1600)
+            window = Mock()
+            with patch.object(screenshot_engine, "_find_target_window", return_value=window), \
+                    patch("capture_window.capture_window_winrt", return_value=captured):
+                screenshot_engine.set_crop_config(
+                    "codex",
+                    100,
+                    110,
+                    120,
+                    130,
+                    "primary",
+                    calib_width=1000,
+                    calib_height=800,
+                )
+
+        stored = screenshot_engine.read_crops()["monitors"]["monitor_a"]["codex"]
+        self.assertEqual(200, stored["left"])
+        self.assertEqual(240, stored["top"])
+        self.assertEqual(2000, stored["calib_width"])
+        self.assertEqual(1600, stored["calib_height"])
+        self.assertEqual(
+            (stored["left"], stored["right"], stored["top"], stored["bottom"]),
+            screenshot_engine._adjust_crop_margins(stored, 2000, 1600),
+        )
 
 
 if __name__ == "__main__":

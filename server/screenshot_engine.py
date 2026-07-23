@@ -564,12 +564,13 @@ def set_crop_config(target, left, right, top, bottom, monitor_name=None, dialog_
         phys_w = existing.get("calib_width", 0)
         phys_h = existing.get("calib_height", 0)
 
-    # Preserve the original calibration baseline if it already exists,
-    # so _adjust_crop_margins always compares against the first-calibration size.
     orig_calib_w = existing.get("calib_width", 0)
     orig_calib_h = existing.get("calib_height", 0)
+    has_client_calibration_size = bool(
+        calib_width and int(calib_width) > 0 and calib_height and int(calib_height) > 0
+    )
 
-    if phys_w > 0 and phys_h > 0 and calib_width and int(calib_width) > 0 and calib_height and int(calib_height) > 0:
+    if phys_w > 0 and phys_h > 0 and has_client_calibration_size:
         # Scale the client's crop margins from sender's space to physical coordinates
         scale_x = phys_w / float(calib_width)
         scale_y = phys_h / float(calib_height)
@@ -578,8 +579,13 @@ def set_crop_config(target, left, right, top, bottom, monitor_name=None, dialog_
         top = int(top * scale_y)
         bottom = int(bottom * scale_y)
 
-    # Use the original calibration baseline if set; otherwise set it now.
-    if orig_calib_w > 0 and orig_calib_h > 0:
+    # An explicit calibration save is one atomic snapshot: persist the converted
+    # margins together with the current physical window size. Keeping an older
+    # baseline makes the next read apply the resize delta a second time.
+    if phys_w > 0 and phys_h > 0 and has_client_calibration_size:
+        calib_width = phys_w
+        calib_height = phys_h
+    elif orig_calib_w > 0 and orig_calib_h > 0:
         calib_width = orig_calib_w
         calib_height = orig_calib_h
     elif phys_w > 0 and phys_h > 0:

@@ -2464,7 +2464,7 @@ class AideLinkChatViewModel @Inject constructor(
             val cw = sCrop.originalImageWidth.takeIf { it > 0 } ?: sCrop.calibWidth
             val ch = sCrop.originalImageHeight.takeIf { it > 0 } ?: sCrop.calibHeight
 
-            runCatching {
+            val saved = runCatching {
 
                 bridgeApi.saveCropConfig(target, safeL, safeR, safeT, safeB, mon,
 
@@ -2472,6 +2472,13 @@ class AideLinkChatViewModel @Inject constructor(
                     focusInputEnabled = sCrop.focusInputEnabled,
                     inputPoint = sCrop.inputPoint)
 
+            }.getOrDefault(false)
+
+            if (!saved) {
+                _state.value = _state.value.copy(
+                    toastMessage = "裁剪保存失败，已保留当前调整，请重试",
+                )
+                return@launch
             }
 
             refreshMonitorImage(cropped = true)
