@@ -220,11 +220,11 @@ function renderComponentMap(data) {
 
     <div style="display:flex; gap:6px;">
 
-      <button class="btn btn-sm btn-outline active-tab" id="btn-comp-android" onclick="switchComponentPlatform('android')">📱 Android</button>
+      <button class="btn btn-sm btn-outline ${currentComponentPlatform === 'android' ? 'active-tab' : ''}" id="btn-comp-android" onclick="switchComponentPlatform('android')">📱 Android</button>
 
-      <button class="btn btn-sm btn-outline" id="btn-comp-web" onclick="switchComponentPlatform('web')">🌐 Web</button>
+      <button class="btn btn-sm btn-outline ${currentComponentPlatform === 'web' ? 'active-tab' : ''}" id="btn-comp-web" onclick="switchComponentPlatform('web')">🌐 Web</button>
 
-      <button class="btn btn-sm btn-outline" id="btn-comp-windows" onclick="switchComponentPlatform('windows')">🪟 Windows</button>
+      <button class="btn btn-sm btn-outline ${currentComponentPlatform === 'windows' ? 'active-tab' : ''}" id="btn-comp-windows" onclick="switchComponentPlatform('windows')">🪟 Windows</button>
 
     </div>
 
@@ -757,12 +757,6 @@ function formatNodeForPrompt(info) {
 function switchComponentPlatform(platform) {
 
   currentComponentPlatform = platform;
-
-  document.getElementById('btn-comp-android').classList.toggle('active-tab', platform === 'android');
-
-  document.getElementById('btn-comp-web').classList.toggle('active-tab', platform === 'web');
-
-  document.getElementById('btn-comp-windows').classList.toggle('active-tab', platform === 'windows');
 
   renderComponentMap(currentComponentMap);
 

@@ -2118,25 +2118,22 @@ def generate_component_map(project_map=None):
                 category = node.get("category", "")
                 name = node.get("name", "")
                 
-                # Android 组件：必须有 category
+                # 三端统一优先解析新格式 "[类型] 标签"，兼容 Web 旧格式 "类型: 标签"。
+                if name.startswith("[") and "]" in name:
+                    comp_type = name[1:name.index("]")].strip() or "其他"
+                    comp_label = name[name.index("]") + 1:].strip()
+                elif platform_name == "Web" and ": " in name:
+                    comp_type = name[:name.index(": ")].strip() or "其他"
+                    comp_label = name[name.index(": ") + 2:].strip()
+                else:
+                    comp_type = "其他"
+                    comp_label = name
+
+                # Android/Windows 组件必须来自可见分类。
                 if platform_name in {"Android", "Windows"}:
                     if category not in VISIBLE_CATEGORIES:
                         return
-                    if name.startswith("[") and "]" in name:
-                        comp_type = name[1:name.index("]")]
-                        comp_label = name[name.index("]") + 2:]
-                    else:
-                        comp_type = "其他"
-                        comp_label = name
                 else:
-                    # Web 组件：从 name 中提取类型和标签
-                    # 格式: "按钮: 🔄 刷新列表 触发 loadTasksList()"
-                    if ": " in name:
-                        comp_type = name[:name.index(": ")]
-                        comp_label = name[name.index(": ") + 2:]
-                    else:
-                        comp_type = "其他"
-                        comp_label = name
                     # Web 组件都视为可见
                     category = "展示"
                 

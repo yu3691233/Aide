@@ -41,6 +41,27 @@ class ProjectScannerInterfaceTests(unittest.TestCase):
         self.assertIn("[输入] 描述需求", names)
         self.assertIn("[链接] 历史记录", names)
 
+    def test_component_map_classifies_new_web_node_format(self):
+        project_map = {
+            "categories": [{
+                "id": "web_manager_ui",
+                "children": [{
+                    "id": "page",
+                    "name": "🌐 首页",
+                    "children": [
+                        {"id": "save", "name": "[按钮] 保存", "category": "交互"},
+                        {"id": "query", "name": "[输入] 搜索", "category": "交互"},
+                    ],
+                }],
+            }],
+        }
+
+        component_map = project_scanner.generate_component_map(project_map)
+        types = {item["type"]: item["count"] for item in component_map["web"]["component_types"]}
+
+        self.assertEqual({"按钮": 1, "输入": 1}, types)
+        self.assertNotIn("其他", types)
+
     def test_cache_is_isolated_and_validated_by_current_project(self):
         first = self.root / "first"
         second = self.root / "second"
