@@ -95,6 +95,15 @@ object WirelessAdbManager {
             // 非 Root 设备优先使用 WRITE_SECURE_SETTINGS，保留系统随机 TLS 端口。
             if (context.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 try {
+                    // 单纯重复写入 1 不会清理系统遗留的 TLS 监听器：
+                    // getprop/本机回环可能仍显示旧端口，但局域网已经无法连接。
+                    // 一键连接本身允许短暂重启无线调试，因此先关闭并等待旧监听器退出，
+                    // 再重新开启，让系统发布当前可连接的随机端口。
+                    Settings.Global.putInt(context.contentResolver, "adb_wifi_enabled", 0)
+                    val stopDeadline = System.currentTimeMillis() + 2000
+                    while (System.currentTimeMillis() < stopDeadline && getTlsAdbPort() > 0) {
+                        Thread.sleep(200)
+                    }
                     Settings.Global.putInt(context.contentResolver, "adb_wifi_enabled", 1)
                     // 系统无线调试服务启动需要时间，轮询等待端口就绪（最长 8 秒）
                     var currentPort = 0

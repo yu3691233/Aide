@@ -1,0 +1,72 @@
+"""Regression tests for exact wireless-ADB connection validation."""
+
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
+sys.path.insert(0, str(SERVER_DIR))
+
+from routes import device_routes
+
+
+class _FakeAdbResult:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class AdbConnectionValidationTests(unittest.TestCase):
+    def test_explicit_port_does_not_reuse_another_port_on_same_ip(self):
+        with patch.object(
+            device_routes,
+            "_adb_devices",
+            return_value={
+                "192.168.3.52:39371": "device",
+                "192.168.3.31:5555": "device",
+            },
+        ):
+            self.assertIsNone(
+                device_routes._connected_adb_device_for("192.168.3.52", 34977)
+            )
+            self.assertEqual(
+                "192.168.3.52:39371",
+                device_routes._connected_adb_device_for("192.168.3.52"),
+            )
+
+    def test_connect_output_is_not_success_without_device_state(self):
+        results = [_FakeAdbResult(0, "connected to 192.168.3.52:34977", "")]
+        with (
+            patch.object(device_routes, "_run_adb", side_effect=results),
+            patch.object(device_routes, "_connected_adb_device_for", return_value=None),
+            patch.object(device_routes._time, "sleep"),
+        ):
+            connected, output = device_routes._connect_adb("192.168.3.52", 34977)
+
+        self.assertIsNone(connected)
+        self.assertIn("connected to", output)
+
+    def test_connect_succeeds_only_after_exact_device_is_visible(self):
+        results = [
+            _FakeAdbResult(0, "connected to 192.168.3.52:39371", ""),
+            _FakeAdbResult(0, "", ""),
+        ]
+        with (
+            patch.object(device_routes, "_run_adb", side_effect=results),
+            patch.object(
+                device_routes,
+                "_connected_adb_device_for",
+                side_effect=[None, "192.168.3.52:39371"],
+            ),
+            patch.object(device_routes._time, "sleep"),
+        ):
+            connected, _ = device_routes._connect_adb("192.168.3.52", 39371)
+
+        self.assertEqual("192.168.3.52:39371", connected)
+
+
+if __name__ == "__main__":
+    unittest.main()

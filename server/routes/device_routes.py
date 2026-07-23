@@ -76,8 +76,10 @@ def _connected_adb_device_for(ip=None, port=None):
     for device_id, state in devices.items():
         if state != "device":
             continue
-        if expected and device_id == expected:
-            return device_id
+        if expected:
+            if device_id == expected:
+                return device_id
+            continue
         if device_id == ip or device_id.startswith(f"{ip}:"):
             return device_id
     return None
@@ -91,17 +93,20 @@ def _connect_adb(ip, port, timeout=5):
         res = _run_adb(["connect", device_id], timeout=timeout)
         output = "\n".join(x for x in [res.stdout.strip(), res.stderr.strip()] if x)
         text = output.lower()
-        if "connected" in text or "already connected" in text:
-            try:
-                _run_adb(["-s", device_id, "wait-for-device"], timeout=10)
-            except Exception:
-                pass
-            connected = _connected_adb_device_for(ip, port) or device_id
-            try:
-                _run_adb(["-s", connected, "shell", "pm", "grant", "cc.aidelink.app", "android.permission.WRITE_SECURE_SETTINGS"], timeout=3)
-            except Exception:
-                pass
-            return connected, output
+        if res.returncode == 0 or "connected" in text or "already connected" in text:
+            # adb connect 的输出可能声称 connected，但设备尚未进入可用状态；
+            # 仅以 adb devices 中同一 ip:port 的 device 状态为成功依据。
+            # 不使用 wait-for-device：未配对或僵尸端口会让它每次阻塞 10 秒，
+            # 导致外层 5 次重试远超接口声明的 timeout。
+            for _ in range(5):
+                connected = _connected_adb_device_for(ip, port)
+                if connected:
+                    try:
+                        _run_adb(["-s", connected, "shell", "pm", "grant", "cc.aidelink.app", "android.permission.WRITE_SECURE_SETTINGS"], timeout=3)
+                    except Exception:
+                        pass
+                    return connected, output
+                _time.sleep(0.2)
         return None, output
     except Exception as e:
         return None, str(e)

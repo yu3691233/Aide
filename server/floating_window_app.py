@@ -1570,8 +1570,13 @@ class FloatingWindowApp:
             self._set_status("设备没有可连接的 IP", "#b42318", 1800)
             return
         port = device.get("adb_port") or 5555
-        alias = device.get("alias") or ip
-        payload = {"ip": ip, "port": port, "timeout": 60}
+        configured_alias = device.get("alias")
+        alias = configured_alias or ip
+        payload = (
+            {"alias": configured_alias, "timeout": 60}
+            if configured_alias
+            else {"ip": ip, "port": port, "timeout": 60}
+        )
 
         def on_success(result):
             method = result.get("method", "adb_connect")
@@ -1600,7 +1605,8 @@ class FloatingWindowApp:
             self._set_status("设备没有 IP，无法安装", "#b42318", 1800)
             return
         port = device.get("adb_port") or 5555
-        alias = device.get("alias") or ip
+        configured_alias = device.get("alias")
+        alias = configured_alias or ip
         project_path = (self.current_model.get("project_path") or "").strip()
         if not project_path:
             self._set_status("当前项目未识别，无法安装", "#b42318", 1800)
@@ -1613,7 +1619,11 @@ class FloatingWindowApp:
                 device_port = port
             else:
                 # AideLink 在线：走完整 ensure_device 链路（enable_wireless + adb connect）
-                connect_payload = {"ip": ip, "port": port, "timeout": 60}
+                connect_payload = (
+                    {"alias": configured_alias, "timeout": 60}
+                    if configured_alias
+                    else {"ip": ip, "port": port, "timeout": 60}
+                )
                 try:
                     connect_resp = api_request("/api/adb/connect", method="POST", payload=connect_payload, timeout=75)
                 except Exception as exc:
