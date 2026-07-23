@@ -315,6 +315,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (name === 'tasks') {
 
+      loadProjectListDash();
+
       loadTasksList();
 
       loadProjectMap();

@@ -412,16 +412,6 @@
 
               </div>
 
-              <div class="form-group">
-                <label class="form-label">目标项目</label>
-                <div id="project-list-dashboard" style="margin-bottom: 8px;"></div>
-                <div style="display: flex; gap: 8px;">
-                  <input id="project-path-manual-dash" type="text" placeholder="项目完整路径（可选）" style="width:220px;padding:5px 8px">
-                  <button type="button" class="btn btn-sm" onclick="browseAndAddProjectDash()">📁 添加项目</button>
-                  <button class="btn btn-sm" onclick="loadProjectListDash()">🔄 刷新</button>
-                </div>
-              </div>
-
             </div>
 
           </div>
@@ -842,6 +832,35 @@
 
       <div class="page" id="page-tasks">
 
+        <div class="card" id="project-workspace-card">
+
+          <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <span>📁 当前项目工作台</span>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn btn-sm btn-outline" onclick="document.getElementById('project-library-details').open = true; document.getElementById('project-path-manual-dash').focus()">➕ 添加项目</button>
+              <button class="btn btn-sm btn-outline" onclick="loadProjectListDash()">🔄 刷新项目</button>
+              <button class="btn btn-sm btn-primary" onclick="scanProjectMap(false)">🗺️ 扫描当前项目</button>
+            </div>
+          </div>
+
+          <div id="current-project-summary" style="margin-top:14px;padding:14px 16px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);">
+            <div style="color:var(--text-muted);font-size:13px;">正在读取当前项目...</div>
+          </div>
+
+          <details id="project-library-details" style="margin-top:12px;">
+            <summary style="cursor:pointer;color:var(--text-secondary);font-size:13px;user-select:none;">管理项目库（切换、添加或移除项目）</summary>
+            <div style="margin-top:12px;">
+              <div id="project-list-dashboard" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px;margin-bottom:10px;"></div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <input id="project-path-manual-dash" class="table-input" type="text" placeholder="输入项目完整路径，或使用文件夹选择器" style="flex:1;min-width:280px;padding:6px 10px">
+                <button type="button" class="btn btn-sm btn-primary" onclick="browseAndAddProjectDash()">📁 添加项目</button>
+              </div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">切换项目后，任务列表和项目地图会自动刷新；移除项目不会删除磁盘文件。</div>
+            </div>
+          </details>
+
+        </div>
+
         <div class="card">
 
           <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;" onclick="toggleTasksCollapse(event)">
@@ -1111,32 +1130,50 @@ async function loadProjectListDash() {
 }
 function renderProjectListDash(projects, current) {
   const el = document.getElementById('project-list-dashboard');
+  const summary = document.getElementById('current-project-summary');
   if (!el) return;
-  if (!projects.length) { el.innerHTML = '<p style="color:#888;margin:0;font-size:13px">暂无项目</p>'; return; }
+  const currentKey = String(current || '').toLowerCase().replace(/\//g, '\\');
+  const currentProject = projects.find(p => String(p.path || '').toLowerCase().replace(/\//g, '\\') === currentKey);
+  if (summary) {
+    summary.innerHTML = currentProject
+      ? '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">'
+        + '<div><div style="display:flex;align-items:center;gap:8px;"><strong style="font-size:16px;">'+escapeHtml(currentProject.name || '未命名项目')+'</strong><span style="padding:2px 7px;border-radius:10px;background:rgba(63,185,80,.14);color:var(--accent-green);font-size:11px;">当前项目</span></div>'
+        + '<div style="margin-top:5px;color:var(--text-muted);font:12px monospace;word-break:break-all;">'+escapeHtml(currentProject.path || '')+'</div></div>'
+        + '<div style="display:flex;gap:6px;"><button class="btn btn-sm btn-outline" onclick="document.getElementById(\'project-library-details\').open=true">切换项目</button><button class="btn btn-sm btn-outline" onclick="document.getElementById(\'project-map-tree\').scrollIntoView({behavior:\'smooth\',block:\'start\'})">查看地图</button></div></div>'
+      : '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;"><div><strong>尚未选择项目</strong><div style="color:var(--text-muted);font-size:12px;margin-top:4px;">添加或选择项目后，任务和项目地图会按当前项目组织。</div></div><button class="btn btn-sm btn-primary" onclick="document.getElementById(\'project-library-details\').open=true;document.getElementById(\'project-path-manual-dash\').focus()">添加项目</button></div>';
+  }
+  if (!projects.length) { el.innerHTML = '<p style="color:var(--text-muted);margin:0;font-size:13px">项目库为空</p>'; return; }
   el.innerHTML = projects.map((p, i) => {
-    const cur = p.path === current;
-    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;margin-bottom:4px;background:'+(cur?'#1a3a1a':'#1a1d24')+';border:1px solid '+(cur?'#4caf50':'#333')+';border-radius:6px;font-size:13px">'
-      +'<div><b>'+(p.name||'?')+'</b> '+(cur?'<span style="color:#4caf50">当前</span>':'')+'<br><span style="color:#888;font-size:11px">'+p.path+'</span></div>'
+    const cur = String(p.path || '').toLowerCase().replace(/\//g, '\\') === currentKey;
+    const encodedPath = encodeURIComponent(p.path || '');
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:'+(cur?'rgba(63,185,80,.08)':'var(--bg-primary)')+';border:1px solid '+(cur?'rgba(63,185,80,.5)':'var(--border-color)')+';border-radius:8px;font-size:13px">'
+      +'<div style="min-width:0;"><b>'+escapeHtml(p.name||'?')+'</b> '+(cur?'<span style="color:var(--accent-green);font-size:11px;">当前</span>':'')+'<br><span style="color:var(--text-muted);font-size:11px;word-break:break-all;">'+escapeHtml(p.path || '')+'</span></div>'
       +'<div style="display:flex;gap:4px">'
-      +(cur?'':'<button class="btn btn-sm" onclick="selectProjectDash(\''+p.path.replace(/\\/g,'\\\\')+'\')" style="font-size:11px;padding:3px 8px">选择</button>')
-      +'<button class="btn btn-sm btn-danger" onclick="deleteProjectDash('+i+')" style="font-size:11px;padding:3px 8px">删除</button>'
+      +(cur?'':'<button class="btn btn-sm btn-primary" onclick="selectProjectDash(decodeURIComponent(\''+encodedPath+'\'))" style="font-size:11px;padding:3px 8px">切换</button>')
+      +'<button class="btn btn-sm btn-outline" onclick="deleteProjectDash('+i+')" style="font-size:11px;padding:3px 8px;color:var(--accent-red)">移除</button>'
       +'</div></div>';
   }).join('');
 }
 async function selectProjectDash(path) {
   try {
-    await fetch('/api/projects/select', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})});
-    loadProjectListDash();
-  } catch(e) { console.error(e); }
+    const response = await fetch('/api/projects/select', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})});
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) throw new Error(result.message || '项目切换失败');
+    projectMapLoaded = false;
+    await Promise.all([loadProjectListDash(), loadTasksList(), loadProjectMap()]);
+    showToast('已切换到项目：' + (result.name || path), 'success');
+  } catch(e) { console.error(e); showToast(e.message || '项目切换失败', 'error'); }
 }
 async function deleteProjectDash(idx) {
-  if (!confirm('确定删除？')) return;
+  if (!confirm('确定从项目库移除？磁盘文件不会被删除。')) return;
   try {
     const response = await fetch('/api/projects/'+idx, {method:'DELETE'});
     const body = await response.json().catch(() => ({}));
     if (!response.ok || body.ok === false) throw new Error(body.message || '删除失败');
-    loadProjectListDash();
-  } catch(e) { window.alert('删除失败：' + e.message); }
+    projectMapLoaded = false;
+    await Promise.all([loadProjectListDash(), loadTasksList(), loadProjectMap()]);
+    showToast('已从项目库移除', 'success');
+  } catch(e) { showToast('移除失败：' + e.message, 'error'); }
 }
 async function browseAndAddProjectDash() {
   try {
@@ -1145,7 +1182,7 @@ async function browseAndAddProjectDash() {
       const direct = await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:manual})});
       const directResult = await direct.json();
       if (!direct.ok || !directResult.ok) throw new Error(directResult.message || '项目路径无效');
-      loadProjectListDash(); return;
+      await loadProjectListDash(); showToast('项目已添加', 'success'); return;
     }
     const r = await fetch('/api/browse-folder', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
     const data = await r.json();
@@ -1161,17 +1198,18 @@ async function browseAndAddProjectDash() {
       if (retry && retry.trim()) {
         const retryAdd = await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:retry.trim()})});
         const retryResult = await retryAdd.json();
-        if (retryAdd.ok && retryResult.ok) { loadProjectListDash(); return; }
+        if (retryAdd.ok && retryResult.ok) { await loadProjectListDash(); showToast('项目已添加', 'success'); return; }
         window.alert(retryResult.message || '添加项目失败');
       }
       return;
     }
-    loadProjectListDash();
-  } catch(e) { console.error(e); window.alert('添加项目失败：' + e.message); }
+    await loadProjectListDash();
+    showToast('项目已添加，可在项目库中切换', 'success');
+  } catch(e) { console.error(e); showToast('添加项目失败：' + e.message, 'error'); }
 }
 document.addEventListener('DOMContentLoaded', loadProjectListDash);
 
-// 首次安装提示：不强制阻塞业务页面，用户可关闭并从设置页继续配置。
+// 首次安装提示：不强制阻塞业务页面，优先引导到任务管理添加项目。
 document.addEventListener('DOMContentLoaded', () => {
   if (localStorage.getItem('aidelink_setup_wizard_done')) return;
   setTimeout(() => {
@@ -1181,7 +1219,7 @@ document.addEventListener('DOMContentLoaded', () => {
       '<h2 style="margin:0 0 12px">欢迎使用 AideLink</h2>' +
       '<p>首次使用建议依次完成：添加目标项目、检查桌面 IDE、配置手机连接。</p>' +
       '<label style="display:flex;align-items:flex-start;gap:8px;margin-top:14px;font-size:13px;color:var(--text-secondary);"><input type="checkbox" id="setup-allow-elevated-ide" style="margin-top:2px;accent-color:var(--accent-blue);"><span>允许手机远程启动需要管理员权限的 IDE<br><small style="color:var(--text-muted);">仅在无人值守控制电脑时建议开启</small></span></label>' +
-      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px"><button id="setup-wizard-skip" class="btn btn-outline">稍后设置</button><button id="setup-wizard-open" class="btn btn-primary">打开设置</button></div></div>';
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px"><button id="setup-wizard-skip" class="btn btn-outline">稍后设置</button><button id="setup-wizard-open" class="btn btn-primary">进入任务管理</button></div></div>';
     document.body.appendChild(overlay);
     const finish = async () => {
       try {
@@ -1194,17 +1232,22 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('aidelink_setup_wizard_done','1'); overlay.remove();
     };
     overlay.querySelector('#setup-wizard-skip').onclick = finish;
-    overlay.querySelector('#setup-wizard-open').onclick = () => { finish(); document.querySelector('[data-tab="config"]')?.click(); };
+    overlay.querySelector('#setup-wizard-open').onclick = () => { finish(); switchPage('tasks'); document.getElementById('project-library-details').open = true; };
   }, 800);
 });
 
 // 浮窗等外部入口通过 URL 参数自动触发对应功能：
+//   ?page=tasks      —— 打开任务管理 / 当前项目工作台
 //   ?debug=1         —— 启用 Ctrl+点击 组件定位模式
 //   ?calibrate=<key> —— 启动指定 IDE 的校准流程
 document.addEventListener('DOMContentLoaded', () => {
   const params = new URLSearchParams(location.search);
+  const pageName = (params.get('page') || '').trim();
   const calibrateKey = (params.get('calibrate') || '').trim();
   const debugFlag = (params.get('debug') || '').trim();
+  if (pageName && pages[pageName]) {
+    setTimeout(() => switchPage(pageName), 0);
+  }
   if (calibrateKey && typeof startCalibration === 'function') {
     // 等待核心 JS 初始化完成后再触发校准流程
     setTimeout(() => startCalibration(calibrateKey), 600);

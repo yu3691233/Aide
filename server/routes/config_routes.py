@@ -340,12 +340,23 @@ def delete_project(idx):
     removed = projects.pop(idx)
     settings["projects"] = projects
     # 如果删除的是当前项目，清空 current_project
-    if project_path_key(settings.get("current_project", "")) == project_path_key(removed.get("path", "")):
+    removed_current = project_path_key(settings.get("current_project", "")) == project_path_key(removed.get("path", ""))
+    if removed_current:
         # Keep a usable current project when removing the active entry.
         settings["current_project"] = projects[0].get("path", "") if projects else ""
         settings["project_dir"] = settings["current_project"]
     _save_settings(settings)
-    return jsonify({"ok": True, "projects": projects})
+    if removed_current and settings["current_project"]:
+        try:
+            import project_scanner
+            project_scanner.scan_and_save()
+        except Exception as e:
+            print(f"[delete_project] scan failed: {e}", flush=True)
+    return jsonify({
+        "ok": True,
+        "projects": projects,
+        "current_project": settings.get("current_project", ""),
+    })
 
 
 @config_bp.route('/api/projects/select', methods=['POST'])

@@ -323,7 +323,7 @@ def _build_project_menu():
             _project_select_handler(path),
         ))
     if not items:
-        items.append(MenuItem("暂无目标项目，请先在 Web 设置中添加", None, enabled=False))
+        items.append(MenuItem("暂无目标项目，请先在 Web 任务管理中添加", None, enabled=False))
     return Menu(*items)
 
 

@@ -116,16 +116,6 @@
   </div>
 
   <section>
-    <h2>目标项目</h2>
-    <div id="project-list" style="margin-bottom: 12px;"></div>
-    <div class="actions" style="gap: 8px;">
-      <input id="project-path-manual" type="text" placeholder="项目文件夹完整路径（可选）" style="min-width:260px;padding:6px 8px">
-      <button type="button" onclick="browseAndAddProject()">📁 添加项目</button>
-      <button onclick="refreshProjectList()">🔄 刷新列表</button>
-    </div>
-  </section>
-
-  <section>
     <h2>服务器 & 唤醒</h2>
     <div class="field">
       <label>AideLink 服务器地址 <span class="hint">手机连接 PC 的 Flask 后端</span></label>
@@ -406,119 +396,10 @@ async function saveAll() {
   }
 }
 
-// ============================================================
-// 项目列表管理
-// ============================================================
-
-async function loadProjectList() {
-  try {
-    const r = await fetch('/api/projects');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
-    renderProjectList(data.projects || [], data.current_project || '');
-  } catch (e) {
-    console.error('加载项目列表失败:', e);
-  }
-}
-
-function renderProjectList(projects, current) {
-  const container = document.getElementById('project-list');
-  if (!projects.length) {
-    container.innerHTML = '<p style="color:#888;margin:0">暂无项目，请点击"添加项目"选择文件夹</p>';
-    return;
-  }
-  container.innerHTML = projects.map((p, i) => {
-    const isCurrent = p.path === current;
-    const bg = isCurrent ? '#e8f5e9' : '#f5f5f5';
-    const border = isCurrent ? '2px solid #4caf50' : '1px solid #ddd';
-    const badge = isCurrent ? '<span style="color:#4caf50;font-weight:bold">当前</span>' : '';
-    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;margin-bottom:6px;background:${bg};border:${border};border-radius:6px">
-      <div>
-        <div style="font-weight:500">${p.name || '未命名'} ${badge}</div>
-        <div style="font-size:12px;color:#666;margin-top:2px">${p.path}</div>
-      </div>
-      <div style="display:flex;gap:6px">
-        ${!isCurrent ? `<button onclick="selectProject('${p.path.replace(/\\/g, '\\\\')}')" style="padding:4px 10px;border:1px solid #4caf50;background:#4caf50;color:#fff;border-radius:4px;cursor:pointer;font-size:12px">选择</button>` : ''}
-        <button onclick="deleteProject(${i})" style="padding:4px 10px;border:1px solid #e53935;background:transparent;color:#e53935;border-radius:4px;cursor:pointer;font-size:12px">删除</button>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-async function selectProject(path) {
-  try {
-    const r = await fetch('/api/projects/select', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path }),
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    showStatus('项目已切换', 'ok');
-    loadProjectList();
-  } catch (e) {
-    showStatus('切换失败: ' + e.message, 'err');
-  }
-}
-
-async function deleteProject(idx) {
-  if (!confirm('确定删除此项目？（任务文件不会被删除）')) return;
-  try {
-    const r = await fetch(`/api/projects/${idx}`, { method: 'DELETE' });
-    if (!r.ok) { const body = await r.json().catch(() => ({})); throw new Error(body.message || ('HTTP ' + r.status)); }
-    showStatus('项目已删除', 'ok');
-    loadProjectList();
-  } catch (e) {
-    showStatus('删除失败: ' + e.message, 'err');
-  }
-}
-
-async function browseAndAddProject() {
-  try {
-    const manual = document.getElementById('project-path-manual')?.value.trim();
-    if (manual) {
-      const direct = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: manual }) });
-      const directResult = await direct.json();
-      if (!direct.ok || !directResult.ok) throw new Error(directResult.message || '项目路径无效');
-      showStatus('项目已添加', 'ok'); loadProjectList(); return;
-    }
-    const r = await fetch('/api/browse-folder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    const data = await r.json();
-    let path = data.ok ? data.path : '';
-    if (!path) {
-      path = window.prompt('系统文件夹选择器不可用，请输入项目文件夹的完整路径：', '');
-      if (!path) return;
-    }
-    const r2 = await fetch('/api/projects', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: path.trim() }),
-    });
-    if (!r2.ok) {
-      const e = await r2.json();
-      const retry = window.prompt((e.message || '添加失败') + '\n请手动输入项目文件夹完整路径：', '');
-      if (retry && retry.trim()) {
-        const retryResponse = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: retry.trim() }) });
-        const retryResult = await retryResponse.json();
-        if (retryResponse.ok && retryResult.ok) { showStatus('项目已添加', 'ok'); loadProjectList(); return; }
-        throw new Error(retryResult.message || '添加失败');
-      }
-      return;
-    }
-    showStatus('项目已添加', 'ok');
-    loadProjectList();
-  } catch (e) {
-    showStatus('添加失败: ' + e.message, 'err');
-  }
-}
-
-function refreshProjectList() { loadProjectList(); }
-
 // 进入页面立即加载
 loadSettings();
-loadProjectList();
 // 每 30 秒自动刷新一次
 setInterval(loadSettings, 30000);
-setInterval(loadProjectList, 30000);
 </script>
 </body>
 </html>

@@ -3488,7 +3488,7 @@ class FloatingWindowApp:
                 )
             if projects:
                 menu.add_separator()
-            menu.add_command(label="项目设置…", command=self.open_settings)
+            menu.add_command(label="项目管理…", command=self.open_project_management)
             menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
             self._set_status("")
 
@@ -3856,6 +3856,9 @@ class FloatingWindowApp:
 
     def open_settings(self):
         webbrowser.open(f"{BRIDGE_URL.rstrip('/')}/settings.html")
+
+    def open_project_management(self):
+        webbrowser.open(f"{BRIDGE_URL.rstrip('/')}/?page=tasks")
 
     def run(self):
         self.root.mainloop()
