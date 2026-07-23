@@ -62,6 +62,33 @@ class ProjectScannerInterfaceTests(unittest.TestCase):
         self.assertEqual({"按钮": 1, "输入": 1}, types)
         self.assertNotIn("其他", types)
 
+    def test_component_type_map_preserves_page_and_nested_area(self):
+        project_map = {
+            "categories": [{
+                "id": "windows_ui",
+                "children": [{
+                    "id": "page",
+                    "name": "🪟 创建任务",
+                    "children": [{
+                        "id": "area",
+                        "name": "智能提示词",
+                        "category": "布局",
+                        "children": [{
+                            "id": "target",
+                            "name": "[按钮] 添加目标",
+                            "category": "交互",
+                        }],
+                    }],
+                }],
+            }],
+        }
+
+        component_map = project_scanner.generate_component_map(project_map)
+        item = component_map["windows"]["component_types"][0]["items"][0]
+
+        self.assertEqual("🪟 创建任务", item["page"])
+        self.assertEqual("智能提示词", item["area"])
+
     def test_cache_is_isolated_and_validated_by_current_project(self):
         first = self.root / "first"
         second = self.root / "second"

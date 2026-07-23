@@ -2208,18 +2208,21 @@ def generate_component_map(project_map=None):
             "windows": {"component_types": [], "total": 0},
         }
     
-    VISIBLE_CATEGORIES = {"交互", "展示"}
+    VISIBLE_CATEGORIES = {"交互", "展示", "布局"}
     
     def build_platform_map(categories, platform_name):
         """为单个平台构建组件地图"""
         type_map = {}
         counter = [0]
         
-        def walk_node(node, page_name=""):
+        def walk_node(node, page_name="", area_path=None):
+            area_path = list(area_path or [])
             if "children" in node:
-                current_page = node.get("name", page_name)
+                next_area = area_path
+                if page_name and node.get("name") != page_name:
+                    next_area = area_path + [node.get("name", "")]
                 for child in node["children"]:
-                    walk_node(child, current_page)
+                    walk_node(child, page_name, next_area)
             else:
                 category = node.get("category", "")
                 name = node.get("name", "")
@@ -2253,13 +2256,14 @@ def generate_component_map(project_map=None):
                     "line_start": node.get("line_start", 0),
                     "line_end": node.get("line_end", 0),
                     "page": page_name,
+                    "area": " / ".join(part for part in area_path if part),
                     "description": node.get("description", ""),
                 })
                 counter[0] += 1
         
         for cat in categories:
-            for component in cat.get("children", []):
-                walk_node(component)
+            for page in cat.get("children", []):
+                walk_node(page, page.get("name", ""), [])
         
         # 排序
         TYPE_ORDER = {

@@ -446,7 +446,7 @@ def api_project_map_interfaces():
                 for child in children:
                     walk(child, next_path)
                 return
-            if node.get("category") not in {"交互", "展示"}:
+            if node.get("category") not in {"交互", "展示", "布局"}:
                 return
             clean_label = re.sub(
                 r"^\[[^\]]+\]\s*", "", str(node.get("name") or "")
@@ -519,11 +519,35 @@ def api_project_map_interfaces():
         pages = [flatten_page(page) for page in category_pages]
         pages = [page for page in pages if page["components"]]
         pages.sort(key=lambda page: (not page["is_current"], page["name"]))
+        type_groups = {}
+        for page in pages:
+            for component in page["components"]:
+                match = re.match(r"^\[([^\]]+)\]\s*(.*)$", component["name"])
+                component_type = match.group(1).strip() if match else "其他"
+                label = match.group(2).strip() if match else component["name"]
+                type_groups.setdefault(component_type, []).append({
+                    **component,
+                    "name": label,
+                    "page": page["name"],
+                    "page_id": page["id"],
+                    "is_current": page["is_current"],
+                })
         selected.append({
             "surface": surface_name,
             "name": category.get("name", surface_name),
             "pages": pages,
             "component_count": sum(len(page["components"]) for page in pages),
+            "component_types": [
+                {
+                    "type": component_type,
+                    "count": len(items),
+                    "items": items,
+                }
+                for component_type, items in sorted(
+                    type_groups.items(),
+                    key=lambda pair: (-len(pair[1]), pair[0]),
+                )
+            ],
         })
     return jsonify({
         "success": True,

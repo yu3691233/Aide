@@ -1879,8 +1879,8 @@ class FloatingWindowApp:
         )
         dialog = self.tk.Toplevel(self.root)
         dialog.title("从项目界面地图选择组件")
-        dialog.geometry("620x430")
-        dialog.minsize(540, 360)
+        dialog.geometry("760x460")
+        dialog.minsize(680, 380)
         dialog.configure(bg="#ffffff")
         dialog.transient(self.root)
 
@@ -1905,30 +1905,49 @@ class FloatingWindowApp:
             font=("Microsoft YaHei UI", 8),
         ).pack(anchor="w", padx=14, pady=(0, 10))
 
+        catalog = interfaces[0] if interfaces else {}
+        component_types = list(catalog.get("component_types") or [])
+        mode = {"value": "interface"}
+        mode_row = self.tk.Frame(dialog, bg="#ffffff")
+        mode_row.pack(fill="x", padx=14, pady=(10, 0))
+
         search_var = self.tk.StringVar()
         search = self.tk.Entry(
             dialog, textvariable=search_var, relief="solid", bd=1,
             font=("Microsoft YaHei UI", 9),
         )
-        search.pack(fill="x", padx=14, pady=(12, 8), ipady=5)
+        search.pack(fill="x", padx=14, pady=(8, 8), ipady=5)
 
         content = self.tk.Frame(dialog, bg="#ffffff")
         content.pack(fill="both", expand=True, padx=14)
-        page_column = self.tk.Frame(content, bg="#ffffff")
-        page_column.pack(side="left", fill="y", padx=(0, 8))
-        self.tk.Label(
-            page_column, text="1  选择界面", bg="#ffffff", fg="#344054",
+        primary_column = self.tk.Frame(content, bg="#ffffff")
+        primary_column.pack(side="left", fill="y", padx=(0, 8))
+        primary_title = self.tk.Label(
+            primary_column, text="1  选择界面", bg="#ffffff", fg="#344054",
             font=("Microsoft YaHei UI", 8, "bold"),
-        ).pack(anchor="w", pady=(0, 4))
-        page_list = self.tk.Listbox(
-            page_column, width=24, exportselection=False, relief="solid", bd=1,
+        )
+        primary_title.pack(anchor="w", pady=(0, 4))
+        primary_list = self.tk.Listbox(
+            primary_column, width=19, exportselection=False, relief="solid", bd=1,
             font=("Microsoft YaHei UI", 9),
         )
-        page_list.pack(fill="y", expand=True)
+        primary_list.pack(fill="y", expand=True)
+        secondary_column = self.tk.Frame(content, bg="#ffffff")
+        secondary_column.pack(side="left", fill="y", padx=(0, 8))
+        secondary_title = self.tk.Label(
+            secondary_column, text="2  选择区域", bg="#ffffff", fg="#344054",
+            font=("Microsoft YaHei UI", 8, "bold"),
+        )
+        secondary_title.pack(anchor="w", pady=(0, 4))
+        secondary_list = self.tk.Listbox(
+            secondary_column, width=19, exportselection=False, relief="solid", bd=1,
+            font=("Microsoft YaHei UI", 9),
+        )
+        secondary_list.pack(fill="y", expand=True)
         component_column = self.tk.Frame(content, bg="#ffffff")
         component_column.pack(side="left", fill="both", expand=True)
         self.tk.Label(
-            component_column, text="2  选择组件（可选）", bg="#ffffff", fg="#344054",
+            component_column, text="3  选择组件（可选）", bg="#ffffff", fg="#344054",
             font=("Microsoft YaHei UI", 8, "bold"),
         ).pack(anchor="w", pady=(0, 4))
         component_list = self.tk.Listbox(
@@ -1938,19 +1957,73 @@ class FloatingWindowApp:
         component_list.pack(fill="both", expand=True)
 
         visible_components = []
+        visible_secondary = []
 
         def clean_name(value):
             return re.sub(r"^\[[^\]]+\]\s*", "", str(value or "")).strip()
 
         def selected_page():
-            selection = page_list.curselection()
+            selection = primary_list.curselection()
             return pages[selection[0]] if selection and selection[0] < len(pages) else None
 
         def render_components(_event=None):
-            nonlocal visible_components
-            page = selected_page()
+            nonlocal visible_components, visible_secondary
             query = search_var.get().strip().lower()
-            candidates = list((page or {}).get("components") or [])
+            primary_selection = primary_list.curselection()
+            secondary_selection = secondary_list.curselection()
+            candidates = []
+            if mode["value"] == "interface":
+                page = selected_page()
+                page_components = list((page or {}).get("components") or [])
+                areas = []
+                for item in page_components:
+                    area = str(item.get("area") or "").strip()
+                    if area and area not in areas:
+                        areas.append(area)
+                visible_secondary = [""] + areas
+                secondary_list.delete(0, "end")
+                secondary_list.insert("end", "全部组件")
+                for area in areas:
+                    secondary_list.insert("end", area)
+                selected_area = ""
+                if secondary_selection and secondary_selection[0] < len(visible_secondary):
+                    selected_area = visible_secondary[secondary_selection[0]]
+                    secondary_list.selection_set(secondary_selection[0])
+                else:
+                    secondary_list.selection_set(0)
+                candidates = [
+                    item for item in page_components
+                    if not selected_area
+                    or str(item.get("area") or "") == selected_area
+                    or str(item.get("area") or "").startswith(selected_area + " / ")
+                ]
+            else:
+                type_group = (
+                    component_types[primary_selection[0]]
+                    if primary_selection and primary_selection[0] < len(component_types)
+                    else None
+                )
+                type_items = list((type_group or {}).get("items") or [])
+                page_names = []
+                for item in type_items:
+                    page_name = str(item.get("page") or "")
+                    if page_name and page_name not in page_names:
+                        page_names.append(page_name)
+                visible_secondary = page_names
+                secondary_list.delete(0, "end")
+                for page_name in page_names:
+                    secondary_list.insert("end", page_name)
+                selected_page_name = ""
+                if secondary_selection and secondary_selection[0] < len(page_names):
+                    selected_page_name = page_names[secondary_selection[0]]
+                    secondary_list.selection_set(secondary_selection[0])
+                elif page_names:
+                    selected_page_name = page_names[0]
+                    secondary_list.selection_set(0)
+                candidates = [
+                    item for item in type_items
+                    if not selected_page_name or item.get("page") == selected_page_name
+                ]
             if query:
                 candidates = [
                     item for item in candidates
@@ -1967,6 +2040,53 @@ class FloatingWindowApp:
                 label = clean_name(item.get("name"))
                 component_list.insert("end", f"{label}  ·  {area}" if area else label)
 
+        def render_primary():
+            primary_list.delete(0, "end")
+            secondary_list.delete(0, "end")
+            component_list.delete(0, "end")
+            if mode["value"] == "interface":
+                primary_title.config(text="1  选择界面")
+                secondary_title.config(text="2  选择区域")
+                for page in pages:
+                    page_name = page.get("name") or "未命名界面"
+                    primary_list.insert(
+                        "end",
+                        f"● 当前  {page_name}" if page.get("is_current") else page_name,
+                    )
+            else:
+                primary_title.config(text="1  选择组件类型")
+                secondary_title.config(text="2  所属界面")
+                for group in component_types:
+                    primary_list.insert(
+                        "end", f"{group.get('type') or '其他'} ({group.get('count', 0)})"
+                    )
+            if primary_list.size():
+                primary_list.selection_set(0)
+            render_components()
+
+        def switch_mode(value):
+            mode["value"] = value
+            interface_mode_btn.config(
+                bg="#0867f2" if value == "interface" else "#f2f4f7",
+                fg="#ffffff" if value == "interface" else "#344054",
+            )
+            type_mode_btn.config(
+                bg="#0867f2" if value == "type" else "#f2f4f7",
+                fg="#ffffff" if value == "type" else "#344054",
+            )
+            render_primary()
+
+        interface_mode_btn = self.tk.Button(
+            mode_row, text="按界面", command=lambda: switch_mode("interface"),
+            relief="flat", bg="#0867f2", fg="#ffffff", padx=12, pady=4,
+        )
+        interface_mode_btn.pack(side="left")
+        type_mode_btn = self.tk.Button(
+            mode_row, text="按组件类型", command=lambda: switch_mode("type"),
+            relief="flat", bg="#f2f4f7", fg="#344054", padx=12, pady=4,
+        )
+        type_mode_btn.pack(side="left", padx=(6, 0))
+
         def save_target(target, status):
             self.prompt_component_name = str(target.get("name") or "")
             self.prompt_component_location = str(target.get("location") or target.get("page") or "")
@@ -1981,31 +2101,47 @@ class FloatingWindowApp:
             self.insert_component_target(target)
             self._set_status(status, "#239957", 1800)
 
-        def apply_page_selection(_event=None):
-            page = selected_page()
+        def apply_location_selection(_event=None):
+            page = selected_page() if mode["value"] == "interface" else None
+            secondary_selection = secondary_list.curselection()
+            if mode["value"] == "type":
+                page_name = (
+                    visible_secondary[secondary_selection[0]]
+                    if secondary_selection and secondary_selection[0] < len(visible_secondary)
+                    else ""
+                )
+                page = next(
+                    (item for item in pages if item.get("name") == page_name), None
+                )
             if not page:
                 self._set_status("请先选择界面", "#b42318", 1600)
                 return
             page_name = re.sub(r"^[^\w\u4e00-\u9fff]+", "", str(page.get("name") or "")).strip()
+            area = ""
+            if mode["value"] == "interface" and secondary_selection:
+                index = secondary_selection[0]
+                area = visible_secondary[index] if index < len(visible_secondary) else ""
             save_target({
-                "id": f"page:{surface}:{page.get('id') or page_name}",
+                "id": f"location:{surface}:{page.get('id') or page_name}:{area}",
                 "surface": surface,
                 "page": page_name,
+                "area": area,
                 "name": "",
-                "location": page_name,
+                "location": " / ".join(part for part in (page_name, area) if part),
                 "file": page.get("file", ""),
                 "source": page.get("source", ""),
-                "target_kind": "interface",
-            }, "已选择整个界面")
+                "target_kind": "area" if area else "interface",
+            }, "已选择界面区域" if area else "已选择整个界面")
 
         def apply_selection(_event=None):
-            page = selected_page()
             selection = component_list.curselection()
-            if not page or not selection or selection[0] >= len(visible_components):
-                self._set_status("请选择组件，或使用“选择界面”", "#b42318", 1600)
+            if not selection or selection[0] >= len(visible_components):
+                self._set_status("请选择组件，或直接选择界面/区域", "#b42318", 1600)
                 return
             item = visible_components[selection[0]]
-            page_name = re.sub(r"^[^\w\u4e00-\u9fff]+", "", str(page.get("name") or "")).strip()
+            page = selected_page() if mode["value"] == "interface" else None
+            raw_page_name = str((page or {}).get("name") or item.get("page") or "")
+            page_name = re.sub(r"^[^\w\u4e00-\u9fff]+", "", raw_page_name).strip()
             area = str(item.get("area") or "").strip()
             location_parts = [part for part in (page_name, area) if part]
             target = {
@@ -2023,18 +2159,9 @@ class FloatingWindowApp:
             }
             save_target(target, "已从项目地图选择组件")
 
-        for page in pages:
-            page_name = page.get("name") or "未命名界面"
-            page_list.insert(
-                "end",
-                f"● 当前打开  {page_name}" if page.get("is_current") else page_name,
-            )
-        if pages:
-            page_list.selection_set(0)
-            render_components()
-        else:
-            component_list.insert("end", "当前项目地图中没有可选组件")
-        page_list.bind("<<ListboxSelect>>", render_components)
+        render_primary()
+        primary_list.bind("<<ListboxSelect>>", render_components)
+        secondary_list.bind("<<ListboxSelect>>", render_components)
         component_list.bind("<Double-Button-1>", apply_selection)
         search_var.trace_add("write", lambda *_args: render_components())
 
@@ -2051,7 +2178,7 @@ class FloatingWindowApp:
             bg="#ffffff", fg="#475467", padx=10, pady=6,
         ).pack(side="right", padx=(8, 0))
         self.tk.Button(
-            footer, text="选择界面", command=apply_page_selection, relief="flat",
+            footer, text="选择界面/区域", command=apply_location_selection, relief="flat",
             bg="#eaf2ff", fg="#0867f2", padx=12, pady=6,
         ).pack(side="right", padx=(8, 0))
         self.tk.Button(
