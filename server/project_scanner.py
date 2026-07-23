@@ -14,13 +14,29 @@ AideLink 项目结构扫描器
 import os
 import re
 import json
+import hashlib
 from datetime import datetime
 from json_utils import safe_read_json, safe_write_json
 
 # 项目根目录（AideLink 仓库根）
-from paths import PROJECT_ROOT
+from paths import PROJECT_ROOT, STATE_DIR, get_project_root
 BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FILE = os.path.join(BRIDGE_DIR, "project_map.json")
+PROJECT_MAP_CACHE_DIR = os.path.join(str(STATE_DIR), "project_maps")
+
+
+def _current_root():
+    return os.path.abspath(str(get_project_root()))
+
+
+def _normalized_root(path):
+    return os.path.normcase(os.path.normpath(str(path or "")))
+
+
+def _cache_file(project_root=None):
+    root = _normalized_root(project_root or _current_root())
+    digest = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(PROJECT_MAP_CACHE_DIR, f"project_map_{digest}.json")
 
 
 def _get_app_name():
@@ -956,6 +972,49 @@ def _scan_kotlin_screens_fallback():
     return screen_categories
 
 
+def _scan_kotlin_screens_generic(project_root):
+    """发现任意 Android/Compose 工程中的真实 Screen/Dialog 界面文件。"""
+    candidates = []
+    ignored_dirs = {".git", ".gradle", "build", "node_modules", ".idea", "generated"}
+    for root, dirs, files in os.walk(project_root):
+        dirs[:] = [d for d in dirs if d not in ignored_dirs]
+        normalized = root.replace("\\", "/").lower()
+        if "/src/main/" not in normalized:
+            continue
+        for filename in files:
+            if not filename.endswith(".kt"):
+                continue
+            if not re.search(r"(screen|dialog|sheet|page|view)\.kt$", filename, re.IGNORECASE):
+                continue
+            candidates.append(os.path.join(root, filename))
+            if len(candidates) >= 300:
+                break
+        if len(candidates) >= 300:
+            break
+
+    groups = {}
+    for filepath in candidates:
+        rel_path = os.path.relpath(filepath, project_root).replace("\\", "/")
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as source:
+                content = source.read()
+        except OSError:
+            continue
+        if "@Composable" not in content:
+            continue
+        nodes = scan_kotlin_file(filepath, rel_path)
+        if not nodes:
+            continue
+        group_name = os.path.basename(os.path.dirname(filepath)) or "screens"
+        group = groups.setdefault(group_name, {
+            "id": f"screen_{_make_id(group_name)}",
+            "name": f"📱 {group_name}",
+            "children": [],
+        })
+        group["children"].extend(nodes)
+    return list(groups.values())
+
+
 def _scan_kotlin_other():
     """扫描 Android 客户端的 data/service/navigation 等"""
     base = os.path.join(
@@ -1191,6 +1250,98 @@ def _get_web_manager_ui():
     }
 
 
+def _scan_generic_web_interfaces(project_root, excluded_files=None):
+    """扫描任意项目中的 HTML 页面，以用户可见页面和控件组织界面地图。"""
+    excluded = {
+        os.path.normcase(os.path.normpath(path))
+        for path in (excluded_files or [])
+    }
+    ignored_dirs = {
+        ".git", "node_modules", "dist", "build", ".next", "coverage",
+        "vendor", "fonts", "ffmpeg", "__pycache__",
+    }
+    html_files = []
+    for root, dirs, files in os.walk(project_root):
+        dirs[:] = [d for d in dirs if d not in ignored_dirs]
+        for filename in files:
+            if filename.lower().endswith((".html", ".htm")):
+                filepath = os.path.join(root, filename)
+                if os.path.normcase(os.path.normpath(filepath)) not in excluded:
+                    html_files.append(filepath)
+            if len(html_files) >= 100:
+                break
+        if len(html_files) >= 100:
+            break
+
+    pages = []
+    for filepath in sorted(html_files):
+        try:
+            if os.path.getsize(filepath) > 2 * 1024 * 1024:
+                continue
+            with open(filepath, "r", encoding="utf-8", errors="replace") as source:
+                html = source.read()
+        except OSError:
+            continue
+        rel_path = os.path.relpath(filepath, project_root).replace("\\", "/")
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+        h1_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.I | re.S)
+        raw_title = (title_match or h1_match)
+        page_name = re.sub(r"<[^>]+>", "", raw_title.group(1)).strip() if raw_title else ""
+        page_name = page_name or os.path.splitext(os.path.basename(filepath))[0]
+
+        components = []
+        patterns = [
+            ("交互", "按钮", r"<button\b[^>]*>(.*?)</button>"),
+            ("交互", "链接", r"<a\b[^>]*>(.*?)</a>"),
+            ("展示", "标题", r"<h[1-4]\b[^>]*>(.*?)</h[1-4]>"),
+        ]
+        for category, kind, pattern in patterns:
+            for index, match in enumerate(re.finditer(pattern, html, re.I | re.S)):
+                label = re.sub(r"<[^>]+>", " ", match.group(1))
+                label = re.sub(r"\s+", " ", label).strip()
+                if not label or len(label) > 80:
+                    continue
+                line = html.count("\n", 0, match.start()) + 1
+                components.append({
+                    "id": f"web_{_make_id(rel_path)}_{kind}_{line}_{index}",
+                    "name": f"[{kind}] {label}",
+                    "file": rel_path,
+                    "line_start": line,
+                    "line_end": line,
+                    "description": f"{page_name}中的{kind}",
+                    "category": category,
+                })
+
+        form_pattern = re.compile(r"<(input|textarea|select)\b([^>]*)>", re.I | re.S)
+        for index, match in enumerate(form_pattern.finditer(html)):
+            attrs = match.group(2)
+            input_type = re.search(r'type=["\']?([^"\'\s>]+)', attrs, re.I)
+            if input_type and input_type.group(1).lower() in {"hidden", "submit", "image"}:
+                continue
+            label_match = re.search(r'(?:placeholder|aria-label|title|name|id)=["\']([^"\']+)', attrs, re.I)
+            label = label_match.group(1).strip() if label_match else match.group(1).lower()
+            line = html.count("\n", 0, match.start()) + 1
+            components.append({
+                "id": f"web_{_make_id(rel_path)}_field_{line}_{index}",
+                "name": f"[输入] {label}",
+                "file": rel_path,
+                "line_start": line,
+                "line_end": line,
+                "description": f"{page_name}中的输入控件",
+                "category": "交互",
+            })
+
+        if components:
+            pages.append({
+                "id": f"web_page_{_make_id(rel_path)}",
+                "name": f"🌐 {page_name}",
+                "description": f"页面文件: {rel_path}",
+                "file": rel_path,
+                "children": components[:400],
+            })
+    return pages
+
+
 def _split_by_cards(page_html, page_id):
     """按 <div class="card"> 切分页面为多个 section"""
     import re
@@ -1328,12 +1479,13 @@ def scan_project():
     """
     # 外部目标项目可能不是 AideLink Android 工程；此时跳过 Android 专用
     # 扫描，避免对不存在的 app/src/main/java/... 路径调用 listdir。
-    app_root = os.path.join(str(PROJECT_ROOT), _get_app_name(), "app", "src", "main")
+    project_root = _current_root()
+    app_root = os.path.join(project_root, _get_app_name(), "app", "src", "main")
     if os.path.isdir(app_root):
         screen_cats = _scan_kotlin_screens()
         other_cats = _scan_kotlin_other()
     else:
-        screen_cats = []
+        screen_cats = _scan_kotlin_screens_generic(project_root)
         other_cats = []
 
     android_category = {
@@ -1344,7 +1496,7 @@ def scan_project():
     }
 
     # PC 服务端
-    server_cats = _scan_python_server() if os.path.isdir(os.path.join(str(PROJECT_ROOT), "server")) else []
+    server_cats = _scan_python_server() if os.path.isdir(os.path.join(project_root, "server")) else []
     server_category = {
         "id": "server",
         "name": "🖥️ PC 服务端",
@@ -1352,12 +1504,27 @@ def scan_project():
         "children": server_cats,
     }
 
-    web_manager_ui = _get_web_manager_ui()
+    dashboard_path = os.path.join(project_root, "server", "templates", "dashboard.html")
+    if os.path.isfile(dashboard_path):
+        web_manager_ui = _get_web_manager_ui()
+    else:
+        web_manager_ui = {
+            "id": "web_manager_ui",
+            "name": "🌐 Web 界面",
+            "icon": "web",
+            "children": [],
+        }
+    generic_web_pages = _scan_generic_web_interfaces(
+        project_root,
+        excluded_files=[dashboard_path] if os.path.isfile(dashboard_path) else [],
+    )
+    if generic_web_pages:
+        web_manager_ui["children"].extend(generic_web_pages)
 
     project_map = {
-        "version": 1,
+        "version": 2,
         "scan_time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-        "project_root": PROJECT_ROOT.replace('\\', '/'),
+        "project_root": project_root.replace("\\", "/"),
         "categories": [android_category, server_category, web_manager_ui],
     }
 
@@ -1365,11 +1532,11 @@ def scan_project():
 
 
 def scan_and_save():
-    """扫描项目并保存到 project_map.json"""
+    """扫描当前项目并保存到按项目隔离的缓存。"""
     result = scan_project()
     try:
-        safe_write_json(OUTPUT_FILE, result)
-        print(f"[OK] 项目地图已保存到 {OUTPUT_FILE}")
+        save_map(result)
+        print(f"[OK] 项目地图已保存到 {_cache_file(result.get('project_root'))}")
         total_nodes = _count_nodes(result.get("categories", []))
         print(f"[OK] 共扫描 {total_nodes} 个节点")
     except Exception as e:
@@ -1378,9 +1545,21 @@ def scan_and_save():
 
 
 def load_cached():
-    """加载缓存的项目地图"""
-    data = safe_read_json(OUTPUT_FILE, None)
-    return data
+    """仅加载当前项目自己的缓存，拒绝返回其它项目的旧地图。"""
+    current_root = _current_root()
+    data = safe_read_json(_cache_file(current_root), None)
+    if data and _normalized_root(data.get("project_root")) == _normalized_root(current_root):
+        return data
+    return None
+
+
+def save_map(data):
+    """保存地图；供普通扫描和 AI 增强扫描共同使用。"""
+    if not data:
+        return
+    root = data.get("project_root") or _current_root()
+    os.makedirs(PROJECT_MAP_CACHE_DIR, exist_ok=True)
+    safe_write_json(_cache_file(root), data)
 
 
 def _count_nodes(categories):

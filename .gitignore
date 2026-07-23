@@ -30,6 +30,7 @@ server/state/*.json
 server/state/*.jpg
 server/state/*.jpeg
 server/state/*.png
+server/state/project_maps/
 server/manual_ides.json
 server/scanned_ides.json
 server/disabled_ides.json
