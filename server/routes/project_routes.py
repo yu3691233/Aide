@@ -423,7 +423,36 @@ def api_project_map_interfaces():
 
     runtime_pages = []
     runtime_status = dict(cache.get("runtime_status") or {})
-    if surface == "windows":
+    if surface == "android":
+        try:
+            from runtime_interface_scanner import scan_android_runtime
+            runtime_pages, android_status = scan_android_runtime()
+            try:
+                from android_project import inspect_android_project
+                expected_packages = {
+                    item.get("application_id")
+                    for item in inspect_android_project(
+                        cache.get("project_root") or project_scanner.get_project_root()
+                    ).get("modules") or []
+                    if item.get("application_id")
+                }
+            except Exception:
+                expected_packages = set()
+            active_package = android_status.get("package", "")
+            if expected_packages and active_package and active_package not in expected_packages:
+                runtime_pages = []
+                android_status.update({
+                    "available": False,
+                    "message": f"手机前台应用 {active_package} 不属于当前项目",
+                    "expected_packages": sorted(expected_packages),
+                })
+            runtime_status["android"] = android_status
+        except Exception as exc:
+            runtime_status["android"] = {
+                "available": False,
+                "message": str(exc),
+            }
+    elif surface == "windows":
         try:
             from runtime_interface_scanner import scan_windows_runtime
             runtime_pages, windows_status = scan_windows_runtime(
@@ -521,12 +550,14 @@ def api_project_map_interfaces():
         if not category:
             continue
         category_pages = list(category.get("children") or [])
-        if surface_name == "windows" and runtime_pages:
+        if surface_name in {"android", "windows"} and runtime_pages:
             category_pages = [
                 *runtime_pages,
                 *[
                     page for page in category_pages
-                    if not str(page.get("source") or "").startswith("windows_")
+                    if not str(page.get("source") or "").startswith(
+                        f"{surface_name}_"
+                    )
                 ],
             ]
         pages = [flatten_page(page) for page in category_pages]

@@ -41,6 +41,17 @@ class ProjectScannerInterfaceTests(unittest.TestCase):
         self.assertIn("[输入] 描述需求", names)
         self.assertIn("[链接] 历史记录", names)
 
+    def test_function_end_ignores_default_lambda_braces_in_signature(self):
+        lines = [
+            "fun DemoScreen(",
+            "    onDone: () -> Unit = {},",
+            ") {",
+            "    Button(onClick = onDone) { Text(\"完成\") }",
+            "}",
+        ]
+
+        self.assertEqual(4, project_scanner._find_function_end(lines, 0))
+
     def test_component_map_classifies_new_web_node_format(self):
         project_map = {
             "categories": [{
@@ -231,6 +242,41 @@ fun Header() {
         main = pages[0]
         self.assertTrue(any(child.get("name") == "Header" for child in main["children"]))
         self.assertFalse(any(child.get("name") == "SettingsScreen" for child in main["children"]))
+
+    def test_android_interface_scan_follows_set_content_and_ignores_legacy_screen(self):
+        source_root = self.root / "app" / "src" / "main" / "kotlin" / "demo"
+        source_root.mkdir(parents=True)
+        (source_root / "MainActivity.kt").write_text(
+            """class MainActivity {
+    fun onCreate() {
+        setContent { ActiveScreen(onDone = {}) }
+    }
+}
+""",
+            encoding="utf-8",
+        )
+        (source_root / "Screens.kt").write_text(
+            """@Composable
+fun ActiveScreen(onDone: () -> Unit = {}) {
+    Button(onClick = onDone) { Text("保存") }
+}
+@Composable
+fun LegacyScreen() {
+    Button(onClick = {}) { Text("旧页面") }
+}
+""",
+            encoding="utf-8",
+        )
+
+        pages = project_scanner._scan_android_interfaces(str(self.root))
+
+        self.assertEqual(["ActiveScreen"], [
+            page["name"].removeprefix("📱 ") for page in pages
+        ])
+        self.assertTrue(any(
+            "保存" in str(component.get("name") or "")
+            for component in pages[0]["children"]
+        ))
 
     def test_android_xml_layout_is_available_as_interface(self):
         layout = self.root / "app" / "src" / "main" / "res" / "layout" / "activity_login.xml"

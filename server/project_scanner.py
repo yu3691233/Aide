@@ -461,17 +461,28 @@ _RE_VIEWMODEL = re.compile(
 
 def _find_function_end(lines, start_line_0based):
     """从函数定义行向下找，用大括号计数估算函数结束行（0-based）"""
-    depth = 0
-    started = False
+    brace_depth = 0
+    paren_depth = 0
+    saw_parameter_list = False
+    body_started = False
     for i in range(start_line_0based, len(lines)):
         line = lines[i]
         for ch in line:
+            if not body_started:
+                if ch == '(':
+                    paren_depth += 1
+                    saw_parameter_list = True
+                elif ch == ')' and saw_parameter_list:
+                    paren_depth = max(0, paren_depth - 1)
+                elif ch == '{' and saw_parameter_list and paren_depth == 0:
+                    body_started = True
+                    brace_depth = 1
+                continue
             if ch == '{':
-                depth += 1
-                started = True
+                brace_depth += 1
             elif ch == '}':
-                depth -= 1
-                if started and depth <= 0:
+                brace_depth -= 1
+                if brace_depth <= 0:
                     return i
     return len(lines) - 1
 
@@ -1130,6 +1141,7 @@ def _scan_android_interfaces(project_root):
     registry = {}
     bodies = {}
     routes = {}
+    entry_call_names = set()
 
     for root, dirs, files in os.walk(project_root):
         dirs[:] = [item for item in dirs if item not in ignored_dirs]
@@ -1146,7 +1158,16 @@ def _scan_android_interfaces(project_root):
             except OSError:
                 continue
             if "@Composable" not in content:
+                # Activity 入口通常只负责 setContent 调用，本身不含 @Composable。
+                if "setContent" in content:
+                    for match in re.finditer(r"\bsetContent\s*\{", content):
+                        snippet = content[match.end():match.end() + 4000]
+                        entry_call_names.update(re.findall(r"\b([A-Z]\w*)\s*\(", snippet))
                 continue
+            if "setContent" in content:
+                for match in re.finditer(r"\bsetContent\s*\{", content):
+                    snippet = content[match.end():match.end() + 4000]
+                    entry_call_names.update(re.findall(r"\b([A-Z]\w*)\s*\(", snippet))
             lines = content.splitlines()
             for node in scan_kotlin_file(filepath, rel_path):
                 name = node.get("composable")
@@ -1176,6 +1197,22 @@ def _scan_android_interfaces(project_root):
         if re.search(r"(?:Screen|Page)$", name)
         and not name.lower().startswith(("preview", "test"))
     }
+    reachable = set()
+    pending = [name for name in entry_call_names if name in registry]
+    while pending:
+        name = pending.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        for called in re.findall(r"\b([A-Za-z_]\w*)\s*\(", bodies.get(name, "")):
+            if called in registry and called not in reachable:
+                pending.append(called)
+    # 优先按 Activity.setContent 的真实调用图过滤旧页面；无法发现入口时，
+    # 再退回 NavHost 路由集合，兼容库模块和非常规工程结构。
+    if reachable:
+        page_names &= reachable
+    elif routes:
+        page_names &= set(routes)
 
     def component_children(name, page_name, visited, depth=0):
         if name in visited or depth > 4:
