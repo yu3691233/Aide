@@ -16,6 +16,7 @@ import re
 import json
 import hashlib
 import ast
+import copy
 from datetime import datetime
 from json_utils import safe_read_json, safe_write_json
 
@@ -427,6 +428,11 @@ _RE_COMPOSABLE_SIMPLE = re.compile(
 )
 # 匹配 @Composable 注解（独占一行）
 _RE_COMPOSABLE_ANNO = re.compile(r'@Composable', re.MULTILINE)
+_RE_COMPOSE_UI_BUILDER = re.compile(
+    r'^\s*(?:(?:private|internal|public)\s+)?fun\s+'
+    r'(?:LazyListScope|LazyGridScope|ColumnScope|RowScope)\.(\w+)\s*\(',
+    re.MULTILINE,
+)
 # 匹配 class/object 定义
 _RE_CLASS = re.compile(
     r'^\s*(?:@\w+\s+)*(?:data\s+)?(?:class|object)\s+(\w+)',
@@ -604,7 +610,35 @@ def scan_kotlin_file(filepath, rel_path):
             
         nodes.append(node)
 
-    # 3. 提取 ViewModel 类
+    # 3. Compose 的 LazyListScope/ColumnScope 等 UI DSL 函数没有 @Composable，
+    # 但它们直接决定页面分区，必须纳入组件调用图。
+    existing_composables = {node.get("composable") for node in nodes}
+    for match in _RE_COMPOSE_UI_BUILDER.finditer(content):
+        func_name = match.group(1)
+        if func_name in existing_composables:
+            continue
+        line_num_0 = content[:match.start()].count("\n")
+        end_line_0 = _find_function_end(lines, line_num_0)
+        ui_children = extract_ui_elements(
+            lines, line_num_0, end_line_0, _STRINGS_DICT, rel_path,
+        )
+        if not ui_children:
+            continue
+        readable = re.sub(r"(?<!^)(?=[A-Z])", " ", func_name).replace("_", " ").strip()
+        nodes.append({
+            "id": _make_id(func_name),
+            "name": readable,
+            "file": rel_path,
+            "line_start": line_num_0 + 1,
+            "line_end": end_line_0 + 1,
+            "composable": func_name,
+            "description": f"页面区域: {readable}",
+            "last_modified": _get_file_mtime(filepath),
+            "line_count": end_line_0 - line_num_0 + 1,
+            "children": ui_children,
+        })
+
+    # 4. 提取 ViewModel 类
     for m in _RE_VIEWMODEL.finditer(content):
         vm_name = m.group(1)
         line_num_0 = content[:m.start()].count('\n')
@@ -1075,6 +1109,201 @@ def _scan_kotlin_screens_generic(project_root):
     return list(groups.values())
 
 
+def _scan_android_interfaces(project_root):
+    """按真实 Composable 页面与组件调用关系构建通用 Android 界面地图。"""
+    ignored_dirs = {".git", ".gradle", "build", "node_modules", ".idea", "generated"}
+    registry = {}
+    bodies = {}
+    routes = {}
+
+    for root, dirs, files in os.walk(project_root):
+        dirs[:] = [item for item in dirs if item not in ignored_dirs]
+        if "/src/main/" not in root.replace("\\", "/").lower():
+            continue
+        for filename in files:
+            if not filename.endswith(".kt"):
+                continue
+            filepath = os.path.join(root, filename)
+            rel_path = os.path.relpath(filepath, project_root).replace("\\", "/")
+            try:
+                with open(filepath, "r", encoding="utf-8", errors="replace") as source:
+                    content = source.read()
+            except OSError:
+                continue
+            if "@Composable" not in content:
+                continue
+            lines = content.splitlines()
+            for node in scan_kotlin_file(filepath, rel_path):
+                name = node.get("composable")
+                if not name:
+                    continue
+                registry[name] = node
+                start = max(0, int(node.get("line_start") or 1) - 1)
+                end = min(len(lines), int(node.get("line_end") or len(lines)))
+                bodies[name] = "\n".join(lines[start:end])
+
+            # 支持字符串路由、常量路由和带 arguments 的 composable 声明。
+            for match in re.finditer(r'\bcomposable\s*\(([\s\S]{0,800}?)\)\s*\{([\s\S]{0,1600}?)\n\s*\}', content):
+                declaration, block = match.groups()
+                route_match = re.search(
+                    r'(?:route\s*=\s*)?(?:"([^"]+)"|([A-Za-z_]\w*(?:\.\w+)*))',
+                    declaration,
+                )
+                screen_match = re.search(r'\b([A-Z]\w*(?:Screen|Page))\s*\(', block)
+                if route_match and screen_match:
+                    routes[screen_match.group(1)] = route_match.group(1) or route_match.group(2)
+
+    if not registry:
+        return []
+
+    page_names = {
+        name for name in registry
+        if re.search(r"(?:Screen|Page)$", name)
+        and not name.lower().startswith(("preview", "test"))
+    }
+
+    def component_children(name, page_name, visited, depth=0):
+        if name in visited or depth > 4:
+            return []
+        visited = visited | {name}
+        source_node = registry.get(name) or {}
+        own_children = []
+        for child in source_node.get("children") or []:
+            if str(child.get("name") or "").startswith("🎨 容器整体:"):
+                continue
+            child_name = str(child.get("name") or "")
+            if re.match(
+                r"^\[(?:文本|图标|间距|表面|分割线|水平分割线|垂直分割线)\]\s*"
+                r"(?:Text|Icon|Spacer|Surface|Divider|HorizontalDivider|VerticalDivider)$",
+                child_name,
+            ):
+                continue
+            item = copy.deepcopy(child)
+            item["id"] = f"android_{_make_id(page_name)}_{_make_id(name)}_{item.get('id', '')}"
+            item["source"] = "compose_static"
+            item["confidence"] = 0.82 if "[" in str(item.get("name") or "") else 0.7
+            own_children.append(item)
+
+        calls = []
+        for called in re.findall(r'\b([A-Za-z_]\w*)\s*\(', bodies.get(name, "")):
+            if called in registry and called != name and called not in calls:
+                calls.append(called)
+        for called in calls:
+            # 页面之间的导航关系由页面列表表达，不能把另一个完整页面复制进当前页面。
+            if called in page_names:
+                continue
+            nested = component_children(called, page_name, visited, depth + 1)
+            if not nested:
+                continue
+            called_node = registry[called]
+            own_children.append({
+                "id": f"android_{_make_id(page_name)}_{_make_id(called)}",
+                "name": called_node.get("name") or get_friendly_name(called),
+                "description": called_node.get("description") or f"{page_name}中的功能区域",
+                "file": called_node.get("file", ""),
+                "line_start": called_node.get("line_start", 0),
+                "line_end": called_node.get("line_end", 0),
+                "source": "compose_call_graph",
+                "confidence": 0.86,
+                "children": nested,
+            })
+        return own_children
+
+    pages = []
+    for name in sorted(page_names):
+        node = registry[name]
+        children = component_children(name, name, set())
+        def has_visible_component(items):
+            return any(
+                child.get("category") in {"交互", "展示"}
+                or has_visible_component(child.get("children") or [])
+                for child in items
+            )
+        if not children or not has_visible_component(children):
+            continue
+        friendly = get_friendly_name(name)
+        pages.append({
+            "id": f"android_page_{_make_id(name)}",
+            "name": f"📱 {friendly}",
+            "description": node.get("description") or f"Android 界面: {name}",
+            "route": routes.get(name, ""),
+            "file": node.get("file", ""),
+            "line_start": node.get("line_start", 0),
+            "line_end": node.get("line_end", 0),
+            "source": "compose_navigation" if name in routes else "compose_screen",
+            "confidence": 0.9 if name in routes else 0.82,
+            "children": children,
+        })
+    return pages
+
+
+def _scan_android_xml_interfaces(project_root):
+    """发现传统 Android XML layout，兼容非 Compose 用户项目。"""
+    pages = []
+    ignored_dirs = {".git", ".gradle", "build", ".idea", "generated"}
+    for root, dirs, files in os.walk(project_root):
+        dirs[:] = [item for item in dirs if item not in ignored_dirs]
+        normalized = root.replace("\\", "/").lower()
+        if "/src/main/res/layout" not in normalized:
+            continue
+        for filename in sorted(files):
+            if not filename.endswith(".xml"):
+                continue
+            filepath = os.path.join(root, filename)
+            rel_path = os.path.relpath(filepath, project_root).replace("\\", "/")
+            try:
+                with open(filepath, "r", encoding="utf-8", errors="replace") as source:
+                    content = source.read()
+            except OSError:
+                continue
+            components = []
+            for index, match in enumerate(re.finditer(r"<([A-Za-z_][\w.]*)\b([^>]*)>", content), 1):
+                tag, attrs = match.groups()
+                short_type = tag.rsplit(".", 1)[-1]
+                if short_type in {
+                    "LinearLayout", "RelativeLayout", "ConstraintLayout", "FrameLayout",
+                    "CoordinatorLayout", "ScrollView", "NestedScrollView", "merge",
+                }:
+                    continue
+                label_match = re.search(
+                    r'android:(?:text|hint|contentDescription)\s*=\s*"([^"]+)"',
+                    attrs,
+                )
+                id_match = re.search(r'android:id\s*=\s*"@\+?id/([^"]+)"', attrs)
+                label = (label_match.group(1) if label_match else "") or (
+                    id_match.group(1).replace("_", " ") if id_match else short_type
+                )
+                category = "交互" if re.search(
+                    r"(Button|EditText|CheckBox|RadioButton|Switch|Spinner|SeekBar|RecyclerView)",
+                    short_type,
+                    re.IGNORECASE,
+                ) else "展示"
+                line = content[:match.start()].count("\n") + 1
+                components.append({
+                    "id": f"android_xml_{_make_id(rel_path)}_{index}",
+                    "name": f"[{short_type}] {label}",
+                    "file": rel_path,
+                    "line_start": line,
+                    "line_end": line,
+                    "description": f"XML 布局中的 {short_type}",
+                    "category": category,
+                    "source": "android_xml",
+                    "confidence": 0.9 if label_match or id_match else 0.65,
+                })
+            if components:
+                page_name = os.path.splitext(filename)[0].replace("_", " ")
+                pages.append({
+                    "id": f"android_xml_page_{_make_id(rel_path)}",
+                    "name": f"📱 {page_name}",
+                    "description": f"Android XML 界面: {rel_path}",
+                    "file": rel_path,
+                    "source": "android_xml",
+                    "confidence": 0.86,
+                    "children": components,
+                })
+    return pages
+
+
 def _scan_kotlin_other():
     """扫描 Android 客户端的 data/service/navigation 等"""
     base = os.path.join(
@@ -1422,6 +1651,8 @@ def _scan_python_desktop_interfaces(project_root):
         "Canvas": ("画布", "展示"),
         "Frame": ("区域", "布局"),
         "Toplevel": ("弹窗", "交互"),
+        "create_text": ("文本", "展示"),
+        "create_image": ("图标", "展示"),
     }
     page_labels = {
         "create": "创建任务",
@@ -1444,6 +1675,39 @@ def _scan_python_desktop_interfaces(project_root):
             if item.arg == keyword and isinstance(item.value, ast.Constant):
                 return str(item.value.value or "").strip()
         return ""
+
+    def page_and_area(owner_name):
+        lowered = owner_name.lower()
+        if "prompt" in lowered or "create_tab" in lowered:
+            page = "创建任务"
+        elif any(key in lowered for key in ("task_tab", "task_card", "group_header", "manage")):
+            page = "任务管理"
+        elif "tools" in lowered:
+            page = "工具"
+        elif "setting" in lowered:
+            page = "设置"
+        elif any(key in lowered for key in ("component_map", "component_locator", "screenshot_dialog")):
+            page = "组件定位"
+        elif lowered in {"build_ui", "_build_ui", "create_ui", "_create_ui"}:
+            page = "主界面"
+        elif any(key in lowered for key in ("dialog", "popup", "picker")):
+            page = owner_name.strip("_").replace("_", " ")
+        else:
+            return None, None
+        area_rules = (
+            ("prompt_builder", "智能提示词"),
+            ("create_tab", "待派发任务"),
+            ("task_card", "任务卡片"),
+            ("task_tab", "任务分组"),
+            ("group_header", "分组标题"),
+            ("component_map", "地图选择"),
+            ("component_locator", "组件定位"),
+            ("screenshot", "截图识别"),
+            ("quota", "额度状态"),
+            ("build_ui", "窗口框架"),
+        )
+        area = next((label for key, label in area_rules if key in lowered), None)
+        return page, area or owner_name.strip("_").replace("_", " ")
 
     pages = {}
     file_count = 0
@@ -1468,20 +1732,8 @@ def _scan_python_desktop_interfaces(project_root):
             for owner in ast.walk(tree):
                 if not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                owner_lower = owner.name.lower()
-                if "prompt" in owner_lower:
-                    page_key = "create"
-                elif "task_tab" in owner_lower:
-                    page_key = "manage"
-                else:
-                    page_key = next((key for key in page_labels if key in owner_lower), None)
-                if page_key:
-                    page_name = page_labels[page_key]
-                elif owner_lower in {"build_ui", "_build_ui", "create_ui", "_create_ui"}:
-                    page_name = "主界面"
-                elif "dialog" in owner_lower or "popup" in owner_lower:
-                    page_name = owner.name.strip("_").replace("_", " ")
-                else:
+                page_name, area_name = page_and_area(owner.name)
+                if not page_name:
                     continue
                 page = pages.setdefault(page_name, {
                     "id": f"windows_page_{_make_id(page_name)}",
@@ -1490,13 +1742,35 @@ def _scan_python_desktop_interfaces(project_root):
                     "file": rel_path,
                     "children": [],
                 })
-                seen = {child["id"] for child in page["children"]}
+                area = next(
+                    (child for child in page["children"] if child.get("area_key") == owner.name),
+                    None,
+                )
+                if area is None:
+                    area = {
+                        "id": f"windows_area_{_make_id(rel_path)}_{_make_id(owner.name)}",
+                        "name": area_name,
+                        "description": f"{page_name}中的{area_name}区域",
+                        "file": rel_path,
+                        "line_start": owner.lineno,
+                        "line_end": getattr(owner, "end_lineno", owner.lineno),
+                        "source": "tkinter_function",
+                        "confidence": 0.84,
+                        "area_key": owner.name,
+                        "children": [],
+                    }
+                    page["children"].append(area)
+                seen = {child["id"] for child in area["children"]}
                 for node in ast.walk(owner):
                     if not isinstance(node, ast.Call):
                         continue
                     raw_type = call_name(node.func)
                     widget_type = next(
-                        (name for name in widget_types if raw_type == name or raw_type.endswith(name)),
+                        (
+                            name for name in widget_types
+                            if raw_type == name
+                            or (name[:1].isupper() and raw_type.endswith(name))
+                        ),
                         None,
                     )
                     if not widget_type and raw_type.lower().endswith("button"):
@@ -1505,7 +1779,7 @@ def _scan_python_desktop_interfaces(project_root):
                         continue
                     kind, category = widget_types[widget_type]
                     positional_label = ""
-                    if raw_type.lower().endswith("button"):
+                    if widget_type == "Button":
                         positional_label = next(
                             (
                                 str(arg.value).strip()
@@ -1525,7 +1799,7 @@ def _scan_python_desktop_interfaces(project_root):
                     if node_id in seen:
                         continue
                     seen.add(node_id)
-                    page["children"].append({
+                    area["children"].append({
                         "id": node_id,
                         "name": f"[{kind}] {label}",
                         "file": rel_path,
@@ -1540,6 +1814,10 @@ def _scan_python_desktop_interfaces(project_root):
                 break
         if file_count >= 200:
             break
+    for page in pages.values():
+        page["children"] = [area for area in page["children"] if area.get("children")]
+        for area in page["children"]:
+            area.pop("area_key", None)
     return [page for page in pages.values() if page["children"]]
 
 
@@ -1681,19 +1959,13 @@ def scan_project():
     # 外部目标项目可能不是 AideLink Android 工程；此时跳过 Android 专用
     # 扫描，避免对不存在的 app/src/main/java/... 路径调用 listdir。
     project_root = _current_root()
-    app_root = os.path.join(project_root, _get_app_name(), "app", "src", "main")
-    if os.path.isdir(app_root):
-        screen_cats = _scan_kotlin_screens()
-        other_cats = _scan_kotlin_other()
-    else:
-        screen_cats = _scan_kotlin_screens_generic(project_root)
-        other_cats = []
+    screen_cats = _scan_android_interfaces(project_root) + _scan_android_xml_interfaces(project_root)
 
     android_category = {
         "id": "android_app",
         "name": "📱 Android 客户端",
         "icon": "phone_android",
-        "children": screen_cats + other_cats + _learned_pages("android"),
+        "children": screen_cats + _learned_pages("android"),
     }
 
     # PC 服务端

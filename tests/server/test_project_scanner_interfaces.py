@@ -93,10 +93,67 @@ class App:
         self.assertEqual(2, len(pages))
         create_page = next(page for page in pages if "创建任务" in page["name"])
         tools_page = next(page for page in pages if "工具" in page["name"])
-        names = [item["name"] for item in create_page["children"]]
+        names = [
+            item["name"]
+            for area in create_page["children"]
+            for item in area["children"]
+        ]
         self.assertIn("[按钮] 生成提示词", names)
         self.assertIn("[输入框] Entry", names)
-        self.assertIn("[按钮] 组件定位", [item["name"] for item in tools_page["children"]])
+        tool_names = [
+            item["name"]
+            for area in tools_page["children"]
+            for item in area["children"]
+        ]
+        self.assertIn("[按钮] 组件定位", tool_names)
+
+    def test_android_compose_scanner_builds_pages_from_call_graph(self):
+        screen = self.root / "app" / "src" / "main" / "kotlin" / "demo" / "MainScreen.kt"
+        screen.parent.mkdir(parents=True)
+        screen.write_text(
+            """@Composable
+fun MainScreen() {
+    Header()
+    Button(onClick = {}) { Text("保存") }
+}
+@Composable
+fun SettingsScreen() {
+    Text("设置")
+}
+@Composable
+fun Header() {
+    Text("标题")
+}
+""",
+            encoding="utf-8",
+        )
+
+        pages = project_scanner._scan_android_interfaces(str(self.root))
+
+        self.assertEqual(["MainScreen", "SettingsScreen"], [
+            page["name"].removeprefix("📱 ") for page in pages
+        ])
+        main = pages[0]
+        self.assertTrue(any(child.get("name") == "Header" for child in main["children"]))
+        self.assertFalse(any(child.get("name") == "SettingsScreen" for child in main["children"]))
+
+    def test_android_xml_layout_is_available_as_interface(self):
+        layout = self.root / "app" / "src" / "main" / "res" / "layout" / "activity_login.xml"
+        layout.parent.mkdir(parents=True)
+        layout.write_text(
+            """<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android">
+            <EditText android:id="@+id/account" android:hint="账号" />
+            <Button android:id="@+id/login" android:text="登录" />
+            </LinearLayout>""",
+            encoding="utf-8",
+        )
+
+        pages = project_scanner._scan_android_xml_interfaces(str(self.root))
+
+        self.assertEqual(1, len(pages))
+        self.assertEqual(["[EditText] 账号", "[Button] 登录"], [
+            item["name"] for item in pages[0]["children"]
+        ])
 
     def test_screenshot_learned_component_survives_map_regeneration(self):
         with patch.object(project_scanner, "PROJECT_MAP_CACHE_DIR", str(self.cache_dir)):
