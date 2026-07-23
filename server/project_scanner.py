@@ -1761,6 +1761,19 @@ def _scan_python_desktop_interfaces(project_root):
                     }
                     page["children"].append(area)
                 seen = {child["id"] for child in area["children"]}
+                assigned_names = {}
+                for assignment in ast.walk(owner):
+                    if not isinstance(assignment, (ast.Assign, ast.AnnAssign)):
+                        continue
+                    value = getattr(assignment, "value", None)
+                    if not isinstance(value, ast.Call):
+                        continue
+                    targets = assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            assigned_names[id(value)] = target.id
+                        elif isinstance(target, ast.Attribute):
+                            assigned_names[id(value)] = target.attr
                 for node in ast.walk(owner):
                     if not isinstance(node, ast.Call):
                         continue
@@ -1793,8 +1806,11 @@ def _scan_python_desktop_interfaces(project_root):
                         or literal_keyword(node, "placeholder_text")
                         or literal_keyword(node, "name")
                         or positional_label
+                        or assigned_names.get(id(node), "")
                         or widget_type
                     )
+                    if label in {"input_box", "task_input", "task_content", "description_input"}:
+                        label = "任务内容"
                     node_id = f"windows_{_make_id(rel_path)}_{_make_id(owner.name)}_{node.lineno}_{widget_type.lower()}"
                     if node_id in seen:
                         continue
@@ -1818,6 +1834,36 @@ def _scan_python_desktop_interfaces(project_root):
         page["children"] = [area for area in page["children"] if area.get("children")]
         for area in page["children"]:
             area.pop("area_key", None)
+    # 全局任务输入框在代码上通常创建于主窗口，但产品语义属于“创建任务”。
+    task_inputs = []
+    main_page = pages.get("主界面")
+    if main_page:
+        for area in main_page.get("children") or []:
+            moved = [
+                child for child in area.get("children") or []
+                if "任务内容" in str(child.get("name") or "")
+            ]
+            task_inputs.extend(moved)
+            area["children"] = [
+                child for child in area.get("children") or [] if child not in moved
+            ]
+        main_page["children"] = [area for area in main_page["children"] if area.get("children")]
+    if task_inputs:
+        create_page = pages.setdefault("创建任务", {
+            "id": "windows_page_create_task",
+            "name": "🪟 创建任务",
+            "description": "Python 桌面界面: 创建任务",
+            "file": task_inputs[0].get("file", ""),
+            "children": [],
+        })
+        create_page["children"].insert(0, {
+            "id": "windows_area_task_input",
+            "name": "底部输入区",
+            "description": "直接描述任务内容的输入区域",
+            "source": "tkinter_semantic",
+            "confidence": 0.9,
+            "children": task_inputs,
+        })
     return [page for page in pages.values() if page["children"]]
 
 

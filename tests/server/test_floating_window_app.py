@@ -836,6 +836,29 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app.root.destroy.assert_called_once_with()
         app.root.withdraw.assert_not_called()
 
+    def test_component_target_pool_is_project_scoped_and_builds_short_phrase(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.current_model = {"project_path": "F:/demo"}
+        app.component_pools = {}
+        app._save_input_draft = Mock()
+        target = {
+            "id": "web-task-content",
+            "surface": "web",
+            "page": "任务管理",
+            "area": "项目界面地图",
+            "name": "[下拉框] Android客户端",
+        }
+
+        app._add_component_target(target)
+
+        self.assertEqual([target], app.component_pools["F:/demo"])
+        self.assertEqual(
+            "Web端-任务管理-项目界面地图-Android客户端",
+            app._component_phrase(target),
+        )
+        app.current_model = {"project_path": "F:/other"}
+        self.assertEqual([], app._current_component_pool())
+
 
 if __name__ == "__main__":
     unittest.main()

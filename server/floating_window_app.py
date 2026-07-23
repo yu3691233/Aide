@@ -435,6 +435,7 @@ class FloatingWindowApp:
         self.prompt_component_name = ""
         self.prompt_component_location = ""
         self.prompt_component_ref = {}
+        self.component_pools = {}
         self.prompt_candidates = []
         self.expanded_task_id = None
         self.test_selection_mode = False
@@ -572,7 +573,7 @@ class FloatingWindowApp:
         send_icon_item = input_shell.create_image(368, 40, image=send_image, tags=("send-action", "send-icon"))
         input_shell.tag_bind("add-action", "<Button-1>", lambda _event: self.show_composer_menu())
         input_shell.tag_bind("expand-action", "<Button-1>", lambda _event: self.toggle_input_expanded())
-        input_shell.tag_bind("prompt-action", "<Button-1>", lambda _event: self.compose_smart_prompt())
+        input_shell.tag_bind("prompt-action", "<Button-1>", lambda _event: self.handle_prompt_action())
         input_shell.tag_bind("send-action", "<Button-1>", lambda _event: self._send_input())
         self.send_btn = input_shell
         self.send_btn._text_item = "send-icon"
@@ -1024,14 +1025,14 @@ class FloatingWindowApp:
         heading.pack(fill="x", padx=9, pady=(1, 6))
         tk.Label(
             heading,
-            text="智能提示词",
+            text="修改目标",
             bg="#f8faff",
             fg="#263246",
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side="left")
         tk.Label(
             heading,
-            text="生成后可编辑，Enter 加入待派发",
+            text="点击目标插入输入框，右键可移除",
             bg="#f8faff",
             fg="#7a8496",
             font=("Microsoft YaHei UI", 7),
@@ -1067,79 +1068,34 @@ class FloatingWindowApp:
                 cursor="hand2",
             ).grid(row=0, column=index, sticky="ew", padx=2)
 
-        fields = tk.Frame(panel, bg="#f8faff")
-        fields.pack(fill="x", padx=9)
-        component_col = tk.Frame(fields, bg="#f8faff")
-        component_col.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        tk.Label(
-            component_col,
-            text="组件 / 页面",
-            bg="#f8faff",
-            fg="#657084",
-            anchor="w",
-            font=("Microsoft YaHei UI", 7),
-        ).pack(fill="x")
-        component_entry = tk.Entry(
-            component_col,
-            relief="solid",
-            bd=1,
-            fg="#263246",
-            font=("Microsoft YaHei UI", 8),
-        )
-        component_entry.pack(fill="x", ipady=4, pady=(2, 0))
-        component_entry.insert(0, getattr(self, "prompt_component_name", ""))
-        self.prompt_component_name_entry = component_entry
-        component_entry.bind(
-            "<KeyRelease>",
-            lambda _event, field=component_entry: setattr(
-                self, "prompt_component_name", field.get().strip()
-            ),
-        )
-        component_entry.bind(
-            "<FocusOut>",
-            lambda _event, field=component_entry: setattr(
-                self, "prompt_component_name", field.get().strip()
-            ),
-        )
-
-        location_col = tk.Frame(fields, bg="#f8faff")
-        location_col.pack(side="left", fill="x", expand=True, padx=(5, 0))
-        tk.Label(
-            location_col,
-            text="所在位置",
-            bg="#f8faff",
-            fg="#657084",
-            anchor="w",
-            font=("Microsoft YaHei UI", 7),
-        ).pack(fill="x")
-        location_entry = tk.Entry(
-            location_col,
-            relief="solid",
-            bd=1,
-            fg="#263246",
-            font=("Microsoft YaHei UI", 8),
-        )
-        location_entry.pack(fill="x", ipady=4, pady=(2, 0))
-        location_entry.insert(0, getattr(self, "prompt_component_location", ""))
-        self.prompt_component_location_entry = location_entry
-        location_entry.bind(
-            "<KeyRelease>",
-            lambda _event, field=location_entry: setattr(
-                self, "prompt_component_location", field.get().strip()
-            ),
-        )
-        location_entry.bind(
-            "<FocusOut>",
-            lambda _event, field=location_entry: setattr(
-                self, "prompt_component_location", field.get().strip()
-            ),
-        )
-
-        action_row = tk.Frame(panel, bg="#f8faff")
-        action_row.pack(fill="x", padx=9, pady=(7, 1))
+        target_row = tk.Frame(panel, bg="#f8faff")
+        target_row.pack(fill="x", padx=9, pady=(0, 2))
+        pool = self._current_component_pool()
+        for item in pool[:6]:
+            phrase = self._component_phrase(item)
+            short_label = str(item.get("name") or phrase).strip()
+            if len(short_label) > 12:
+                short_label = short_label[:11] + "…"
+            button = tk.Button(
+                target_row,
+                text=short_label,
+                command=lambda value=item: self.insert_component_target(value),
+                relief="flat", bd=0, bg="#edf2fa", fg="#40516b",
+                activebackground="#dde8f8", font=("Microsoft YaHei UI", 7),
+                padx=6, pady=3, cursor="hand2",
+            )
+            button.pack(side="left", padx=(0, 4), pady=2)
+            button.bind("<Button-3>", lambda _event, value=item: self.remove_component_target(value))
+        if len(pool) > 6:
+            tk.Button(
+                target_row, text=f"更多 {len(pool) - 6}",
+                command=self.show_component_pool_menu,
+                relief="flat", bd=0, bg="#f3f5f8", fg="#657084",
+                font=("Microsoft YaHei UI", 7), padx=5, pady=3,
+            ).pack(side="left", padx=(0, 4))
         tk.Button(
-            action_row,
-            text="组件定位",
+            target_row,
+            text="＋ 添加目标",
             command=self.open_prompt_component_locator,
             relief="flat",
             bg="#edf2fa",
@@ -1150,20 +1106,6 @@ class FloatingWindowApp:
             pady=3,
             cursor="hand2",
         ).pack(side="left")
-        tk.Button(
-            action_row,
-            text="生成智能提示词",
-            command=self.compose_smart_prompt,
-            relief="flat",
-            bg="#7757e8",
-            fg="#ffffff",
-            activebackground="#6444d5",
-            activeforeground="#ffffff",
-            font=("Microsoft YaHei UI", 7, "bold"),
-            padx=10,
-            pady=3,
-            cursor="hand2",
-        ).pack(side="right")
 
         candidates = getattr(self, "prompt_candidates", []) or []
         if candidates:
@@ -2026,10 +1968,16 @@ class FloatingWindowApp:
                 "source": item.get("source", ""),
                 "confidence": item.get("confidence", 0),
             }
+            target = {
+                **self.prompt_component_ref,
+                "name": self.prompt_component_name,
+                "location": self.prompt_component_location,
+            }
+            self._add_component_target(target)
             dialog.destroy()
             self.active_tab = "create"
             self._render(self.current_model)
-            self._save_input_draft()
+            self.insert_component_target(target)
             self._set_status("已从项目地图选择组件", "#239957", 1800)
 
         for page in pages:
@@ -2430,6 +2378,11 @@ class FloatingWindowApp:
                 "source": "screenshot",
                 "confidence": learned_component["confidence"],
             }
+            self._add_component_target({
+                **self.prompt_component_ref,
+                "name": self.prompt_component_name,
+                "location": self.prompt_component_location,
+            })
             threading.Thread(
                 target=lambda: api_request(
                     "/api/project-map/learn-component",
@@ -3240,6 +3193,130 @@ class FloatingWindowApp:
             except (AttributeError, self.tk.TclError):
                 pass
 
+    def _component_pool_key(self):
+        model = getattr(self, "current_model", {}) or {}
+        return str(model.get("project_path") or model.get("project_name") or "default")
+
+    def _current_component_pool(self):
+        pools = getattr(self, "component_pools", {}) or {}
+        return list(pools.get(self._component_pool_key()) or [])
+
+    @staticmethod
+    def _component_phrase(item):
+        surface = str(item.get("surface") or item.get("platform") or "").lower()
+        surface_label = {"web": "Web端", "android": "Android端", "windows": "Windows端"}.get(
+            surface, str(item.get("platform") or "").strip()
+        )
+        values = [
+            surface_label,
+            str(item.get("page") or "").lstrip("📱🌐🪟📡✨ ").strip(),
+            str(item.get("area") or item.get("location") or "").strip(),
+            str(item.get("name") or "").strip(),
+        ]
+        parts = []
+        for value in values:
+            value = re.sub(r"^\[[^\]]+\]\s*", "", value)
+            for part in re.split(r"\s*/\s*|\s*·\s*", value):
+                part = part.strip()
+                if part and part not in parts:
+                    parts.append(part)
+        return "-".join(parts)
+
+    def _add_component_target(self, item):
+        target = dict(item or {})
+        phrase = self._component_phrase(target)
+        if not phrase:
+            return
+        key = self._component_pool_key()
+        if not hasattr(self, "component_pools"):
+            self.component_pools = {}
+        pool = self._current_component_pool()
+        identity = str(target.get("id") or phrase)
+        pool = [
+            existing for existing in pool
+            if str(existing.get("id") or self._component_phrase(existing)) != identity
+        ]
+        pool.insert(0, target)
+        self.component_pools[key] = pool[:12]
+        self._save_input_draft()
+
+    def remove_component_target(self, item):
+        key = self._component_pool_key()
+        if not hasattr(self, "component_pools"):
+            self.component_pools = {}
+        identity = str(item.get("id") or self._component_phrase(item))
+        self.component_pools[key] = [
+            existing for existing in self._current_component_pool()
+            if str(existing.get("id") or self._component_phrase(existing)) != identity
+        ]
+        self._save_input_draft()
+        self._render(self.current_model)
+
+    def show_component_pool_menu(self):
+        menu = self.tk.Menu(self.root, tearoff=False)
+        for item in self._current_component_pool():
+            menu.add_command(
+                label=self._component_phrase(item)[:80],
+                command=lambda value=item: self.insert_component_target(value),
+            )
+        menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+
+    def insert_component_target(self, item):
+        phrase = self._component_phrase(item)
+        if not phrase:
+            return
+        self.prompt_component_name = str(item.get("name") or "").strip()
+        self.prompt_component_location = str(
+            item.get("location") or item.get("area") or item.get("page") or ""
+        ).strip()
+        self.prompt_component_ref = {
+            key: value for key, value in dict(item).items()
+            if key not in {"name", "location"}
+        }
+        current = self._input_text()
+        if phrase not in current:
+            self._set_input_text(f"{phrase}{current}" if current else phrase)
+        self.input_box.focus_set()
+        self.input_box.mark_set("insert", "end-1c")
+        self._schedule_input_draft_save()
+
+    def handle_prompt_action(self):
+        text = self._input_text()
+        if not text:
+            self._set_status("请先输入任务内容", "#b42318", 1800)
+            return
+        if getattr(self, "prompt_component_name", ""):
+            self.compose_smart_prompt()
+            return
+
+        def suggested(result):
+            candidates = result.get("candidates") or []
+            if not candidates:
+                self._set_status("项目地图中没有匹配的组件，可手动添加目标", "#b42318", 2200)
+                return
+            menu = self.tk.Menu(self.root, tearoff=False)
+            for item in candidates[:5]:
+                label = self._component_phrase(item)
+                menu.add_command(
+                    label=label[:72],
+                    command=lambda value=item: (
+                        self._add_component_target(value),
+                        self.insert_component_target(value),
+                        self._render(self.current_model),
+                    ),
+                )
+            menu.add_separator()
+            menu.add_command(label="直接优化当前表达", command=self.compose_smart_prompt)
+            menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+
+        self._run_api(
+            "/api/project-map/suggest-components",
+            method="POST",
+            payload={"text": text, "limit": 5},
+            on_success=suggested,
+            busy_text="正在从项目地图匹配目标…",
+        )
+
     def compose_smart_prompt(self):
         self._sync_prompt_builder_fields()
         text = self._input_text()
@@ -3449,6 +3526,9 @@ class FloatingWindowApp:
                 self._render(optimistic_model)
             self._set_input_text("")
             self.prompt_candidates = []
+            self.prompt_component_name = ""
+            self.prompt_component_location = ""
+            self.prompt_component_ref = {}
             self._set_status("任务已创建", "#239957", 1800)
             self.refresh()
 
@@ -3895,6 +3975,7 @@ class FloatingWindowApp:
             prompt_component_name=getattr(self, "prompt_component_name", ""),
             prompt_component_location=getattr(self, "prompt_component_location", ""),
             prompt_component_ref=getattr(self, "prompt_component_ref", {}),
+            component_pools=getattr(self, "component_pools", {}),
         )
 
     def _restore_input_draft(self):
@@ -3911,6 +3992,7 @@ class FloatingWindowApp:
             state.get("prompt_component_location") or ""
         ).strip()
         self.prompt_component_ref = dict(state.get("prompt_component_ref") or {})
+        self.component_pools = dict(state.get("component_pools") or {})
         if draft:
             self._set_input_text(draft)
             self.input_box.mark_set("insert", "end-1c")

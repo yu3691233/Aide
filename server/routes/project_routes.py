@@ -476,6 +476,132 @@ def api_project_map_interfaces():
     })
 
 
+@project_bp.route("/api/project-map/suggest-components", methods=["POST"])
+def api_project_map_suggest_components():
+    """根据短任务描述，从项目地图中推荐少量可确认的目标组件。"""
+    import re
+    import project_scanner
+
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("text") or "").strip()
+    limit = max(1, min(int(data.get("limit") or 5), 8))
+    if not text:
+        return jsonify({"success": False, "message": "任务内容不能为空"}), 400
+    cache = project_scanner.load_cached() or project_scanner.scan_and_save()
+    category_surfaces = {
+        "android_app": "android",
+        "web_manager_ui": "web",
+        "windows_ui": "windows",
+    }
+    candidates = []
+
+    def tokens(value):
+        normalized = re.sub(r"\s+", "", str(value or "").lower())
+        words = set(re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", normalized))
+        chinese = "".join(re.findall(r"[\u4e00-\u9fff]", normalized))
+        words.update(chinese[index:index + 2] for index in range(max(0, len(chinese) - 1)))
+        return {item for item in words if item}
+
+    query_tokens = tokens(text)
+    for category in cache.get("categories") or []:
+        surface = category_surfaces.get(category.get("id"))
+        if not surface:
+            continue
+        for page in category.get("children") or []:
+            page_name = str(page.get("name") or "")
+
+            def walk(node, path):
+                children = node.get("children") or []
+                if children:
+                    for child in children:
+                        walk(child, path + [str(node.get("name") or "")])
+                    return
+                if surface != "web" and node.get("category") not in {"交互", "展示"}:
+                    return
+                name = str(node.get("name") or "")
+                area = " / ".join(item for item in path if item and item != page_name)
+                haystack = " ".join([
+                    page_name, area, name, str(node.get("description") or ""),
+                    str(node.get("file") or ""),
+                ])
+                overlap = len(query_tokens & tokens(haystack))
+                interactive_bonus = 1.2 if node.get("category") == "交互" else 0
+                exact_bonus = 3 if any(
+                    term and term in haystack.lower()
+                    for term in re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9_]{3,}", text.lower())
+                ) else 0
+                candidates.append({
+                    "id": node.get("id", ""),
+                    "surface": surface,
+                    "page": page_name,
+                    "area": area,
+                    "name": name,
+                    "location": " / ".join(part for part in (page_name, area) if part),
+                    "file": node.get("file", ""),
+                    "line_start": node.get("line_start", 0),
+                    "line_end": node.get("line_end", 0),
+                    "source": node.get("source", "static_scan"),
+                    "confidence": node.get("confidence", 0.7),
+                    "_score": overlap * 4 + exact_bonus + interactive_bonus,
+                })
+
+            walk(page, [])
+
+    candidates.sort(key=lambda item: (item["_score"], item.get("confidence", 0)), reverse=True)
+    shortlist = candidates[:40]
+    selected = shortlist[:limit]
+    ai_used = False
+
+    api_key = os.environ.get("MINIMAX_API_KEY", "")
+    api_base = "https://api.minimax.chat/v1"
+    model = "MiniMax-Text-01"
+    if not api_key:
+        try:
+            from manager_utils import CONFIG_FILE
+            config = json.loads(CONFIG_FILE.read_text(encoding="utf-8")) if CONFIG_FILE.exists() else {}
+            api_key = config.get("minimax_api_key", "")
+            api_base = config.get("minimax_api_base", api_base)
+            model = config.get("xiaomengling_model", model)
+        except Exception:
+            pass
+    if api_key and shortlist:
+        try:
+            import requests as _req
+            prompt = (
+                "根据用户问题，从候选项目界面组件中选出最可能涉及的最多"
+                f"{limit}项。只能返回候选 id，按可能性排序，JSON格式："
+                '{"ids":["id1","id2"]}。\n用户问题：'
+                f"{text}\n候选：{json.dumps(shortlist, ensure_ascii=False)[:14000]}"
+            )
+            response = _req.post(
+                f"{api_base}/text/chatcompletion_v2",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+                timeout=35,
+            )
+            match = re.search(
+                r"\{[\s\S]*\}",
+                response.json().get("choices", [{}])[0].get("message", {}).get("content", ""),
+            ) if response.status_code == 200 else None
+            ids = json.loads(match.group()).get("ids", []) if match else []
+            by_id = {item["id"]: item for item in shortlist}
+            ai_selected = [by_id[item_id] for item_id in ids if item_id in by_id][:limit]
+            if ai_selected:
+                selected = ai_selected
+                ai_used = True
+        except Exception as exc:
+            logging.warning("Component suggestion AI fallback: %s", exc)
+
+    return jsonify({
+        "success": True,
+        "ai_used": ai_used,
+        "candidates": [
+            {key: value for key, value in item.items() if key != "_score"}
+            for item in selected
+        ],
+    })
+
+
 @project_bp.route("/api/project-map/learn-component", methods=["POST"])
 def api_project_map_learn_component():
     """把截图或运行态识别结果沉淀为当前项目可复用的界面节点。"""
