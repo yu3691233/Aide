@@ -1952,7 +1952,7 @@ def _extract_components(section_html, page_id):
     return unique
 
 
-def scan_project():
+def scan_project(include_runtime=False):
     """
     扫描整个 AideLink 项目，返回项目地图字典。
     """
@@ -1960,6 +1960,32 @@ def scan_project():
     # 扫描，避免对不存在的 app/src/main/java/... 路径调用 listdir。
     project_root = _current_root()
     screen_cats = _scan_android_interfaces(project_root) + _scan_android_xml_interfaces(project_root)
+    runtime_status = {}
+    if include_runtime:
+        try:
+            from runtime_interface_scanner import scan_android_runtime
+            runtime_android, android_status = scan_android_runtime()
+            try:
+                from android_project import inspect_android_project
+                expected_packages = {
+                    item.get("application_id")
+                    for item in inspect_android_project(project_root).get("modules") or []
+                    if item.get("application_id")
+                }
+            except Exception:
+                expected_packages = set()
+            active_package = android_status.get("package", "")
+            if expected_packages and active_package and active_package not in expected_packages:
+                runtime_android = []
+                android_status.update({
+                    "available": False,
+                    "message": f"手机前台应用 {active_package} 不属于当前项目",
+                    "expected_packages": sorted(expected_packages),
+                })
+            screen_cats = runtime_android + screen_cats
+            runtime_status["android"] = android_status
+        except Exception as exc:
+            runtime_status["android"] = {"available": False, "message": str(exc)}
 
     android_category = {
         "id": "android_app",
@@ -1995,26 +2021,35 @@ def scan_project():
         web_manager_ui["children"].extend(generic_web_pages)
     web_manager_ui["children"].extend(_learned_pages("web"))
 
+    runtime_windows = []
+    if include_runtime:
+        try:
+            from runtime_interface_scanner import scan_windows_runtime
+            runtime_windows, windows_status = scan_windows_runtime(project_root)
+            runtime_status["windows"] = windows_status
+        except Exception as exc:
+            runtime_status["windows"] = {"available": False, "message": str(exc)}
     windows_category = {
         "id": "windows_ui",
         "name": "🪟 Windows 桌面界面",
         "icon": "desktop_windows",
-        "children": _scan_python_desktop_interfaces(project_root) + _learned_pages("windows"),
+        "children": runtime_windows + _scan_python_desktop_interfaces(project_root) + _learned_pages("windows"),
     }
 
     project_map = {
         "version": 2,
         "scan_time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "project_root": project_root.replace("\\", "/"),
+        "runtime_status": runtime_status,
         "categories": [android_category, server_category, web_manager_ui, windows_category],
     }
 
     return project_map
 
 
-def scan_and_save():
+def scan_and_save(include_runtime=False):
     """扫描当前项目并保存到按项目隔离的缓存。"""
-    result = scan_project()
+    result = scan_project(include_runtime=include_runtime)
     try:
         save_map(result)
         print(f"[OK] 项目地图已保存到 {_cache_file(result.get('project_root'))}")

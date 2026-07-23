@@ -186,13 +186,13 @@ def _start_file_watcher():
         logging.warning(f"Failed to start file watcher: {e}")
 
 
-def _ai_scan_project():
+def _ai_scan_project(include_runtime=False):
     """调用 Aide AI 接口，分析源码结构优化项目地图"""
     import project_scanner
     import requests as _req
 
     # 先做基础扫描
-    raw_map = project_scanner.scan_and_save()
+    raw_map = project_scanner.scan_and_save(include_runtime=include_runtime)
 
     # 获取 API 配置
     api_key = os.environ.get("MINIMAX_API_KEY", "")
@@ -367,12 +367,13 @@ def api_project_map_scan():
     """扫描并更新项目地图，支持 AI 增强"""
     data = request.json or {}
     use_ai = data.get("ai", False)
+    include_runtime = data.get("runtime", True) is not False
     try:
         if use_ai:
-            cache = _ai_scan_project()
+            cache = _ai_scan_project(include_runtime=include_runtime)
         else:
             import project_scanner
-            cache = project_scanner.scan_and_save()
+            cache = project_scanner.scan_and_save(include_runtime=include_runtime)
         _broadcast_sse({"type": "map_updated", "message": "项目地图已更新"})
         return _project_map_response(cache, ai_enhanced=use_ai)
     except Exception as e:
@@ -434,6 +435,12 @@ def api_project_map_interfaces():
                 "description": node.get("description", ""),
                 "source": node.get("source", "static_scan"),
                 "confidence": node.get("confidence", 0.7),
+                "bounds": node.get("bounds"),
+                "resource_id": node.get("resource_id", ""),
+                "class_name": node.get("class_name", ""),
+                "hwnd": node.get("hwnd"),
+                "automation_id": node.get("automation_id", ""),
+                "control_type": node.get("control_type", ""),
             })
 
         walk(page, [])
@@ -464,6 +471,7 @@ def api_project_map_interfaces():
         "success": True,
         "project_root": cache.get("project_root", ""),
         "scan_time": cache.get("scan_time", ""),
+        "runtime_status": cache.get("runtime_status", {}),
         "interfaces": selected,
     })
 

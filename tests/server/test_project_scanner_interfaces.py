@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
 import project_scanner
+import runtime_interface_scanner
 
 
 class ProjectScannerInterfaceTests(unittest.TestCase):
@@ -154,6 +156,38 @@ fun Header() {
         self.assertEqual(["[EditText] 账号", "[Button] 登录"], [
             item["name"] for item in pages[0]["children"]
         ])
+
+    def test_android_runtime_scanner_uses_uiautomator_attributes(self):
+        fake_locator = types.SimpleNamespace(
+            ADB_PATH="adb",
+            get_interactive_elements=lambda: {
+                "ok": True,
+                "device": "device-1",
+                "elements": [{
+                    "text": "保存",
+                    "resource_id": "demo:id/save",
+                    "content_desc": "",
+                    "class_name": "android.widget.Button",
+                    "clickable": True,
+                    "focusable": True,
+                    "scrollable": False,
+                    "bounds": [10, 20, 110, 70],
+                }],
+            },
+            _run=lambda *_args, **_kwargs: types.SimpleNamespace(
+                stdout="mCurrentFocus=Window{1 u0 demo/.MainActivity}"
+            ),
+        )
+        with patch.dict(sys.modules, {"ui_locator": fake_locator}):
+            pages, status = runtime_interface_scanner.scan_android_runtime()
+
+        self.assertTrue(status["available"])
+        self.assertEqual("demo", status["package"])
+        self.assertEqual("📡 当前运行界面 · MainActivity", pages[0]["name"])
+        component = pages[0]["children"][0]
+        self.assertEqual("[Button] 保存", component["name"])
+        self.assertEqual([10, 20, 110, 70], component["bounds"])
+        self.assertEqual("android_uiautomator", component["source"])
 
     def test_screenshot_learned_component_survives_map_regeneration(self):
         with patch.object(project_scanner, "PROJECT_MAP_CACHE_DIR", str(self.cache_dir)):

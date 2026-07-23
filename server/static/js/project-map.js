@@ -42,7 +42,7 @@ async function scanProjectMap(useAi = false) {
 
   const label = useAi ? 'Aide 补全未识别项' : '重新扫描';
 
-  treeEl.innerHTML = `<p style="color:var(--text-muted)">正在${label}项目源码，这可能需要几秒钟时间...</p>`;
+  treeEl.innerHTML = `<p style="color:var(--text-muted)">正在采集运行界面并扫描项目源码，这可能需要几秒钟时间...</p>`;
 
   showToast(`开始${label}...`, 'info');
 
@@ -66,9 +66,14 @@ async function scanProjectMap(useAi = false) {
 
     renderProjectMapData(res.project_map);
 
-    const suffix = res.ai_enhanced ? `（Aide 补全 ${res.project_map?.ai_updates || 0} 项）` : '';
+    const runtime = res.project_map.runtime_status || {};
+    const liveCount = ['android', 'windows'].filter(key => runtime[key]?.available).length;
+    const suffix = [
+      liveCount ? `运行态 ${liveCount} 端` : '运行态暂不可用，已使用源码地图',
+      res.ai_enhanced ? `Aide 补全 ${res.project_map?.ai_updates || 0} 项` : '',
+    ].filter(Boolean).join('，');
 
-    showToast(`项目扫描完成${suffix}！`, 'success');
+    showToast(`项目扫描完成（${suffix}）`, 'success');
 
   } else {
 
@@ -90,7 +95,16 @@ function renderProjectMapData(mapData) {
 
   const scanTime = mapData.scan_time ? mapData.scan_time.replace('T', ' ') : '未知';
 
-  statsEl.innerHTML = `<strong>扫描时间:</strong> ${scanTime} | <strong>项目根目录:</strong> <span style="font-family:monospace;font-size:12px;">${mapData.project_root}</span>`;
+  const runtime = mapData.runtime_status || {};
+  const runtimeLabels = [
+    ['Android', runtime.android],
+    ['Windows', runtime.windows],
+  ].filter(([, status]) => status).map(([label, status]) => (
+    `<span title="${status.message || ''}" style="color:${status.available ? 'var(--accent-green)' : 'var(--text-muted)'}">`
+    + `${status.available ? '●' : '○'} ${label} ${status.available ? '运行态' : '源码'}</span>`
+  )).join(' · ');
+  statsEl.innerHTML = `<strong>扫描时间:</strong> ${scanTime} | <strong>项目根目录:</strong> <span style="font-family:monospace;font-size:12px;">${mapData.project_root}</span>`
+    + (runtimeLabels ? ` | <strong>采集:</strong> ${runtimeLabels}` : '');
 
   
 

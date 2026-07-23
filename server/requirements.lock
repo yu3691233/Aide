@@ -6,6 +6,7 @@ pyperclip==1.11.0
 PyGetWindow==0.0.9
 PyAutoGUI==0.9.54
 pywebview==6.2.1
+comtypes==1.4.16
 zeroconf==0.149.16
 paramiko==5.0.0
 watchdog==6.0.0
