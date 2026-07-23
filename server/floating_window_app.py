@@ -434,6 +434,7 @@ class FloatingWindowApp:
         self.prompt_task_type = "unspecified"
         self.prompt_component_name = ""
         self.prompt_component_location = ""
+        self.prompt_component_ref = {}
         self.prompt_candidates = []
         self.expanded_task_id = None
         self.test_selection_mode = False
@@ -1905,14 +1906,159 @@ class FloatingWindowApp:
         surface = self._active_tool_surface(
             getattr(self, "current_model", {}).get("capabilities") or []
         )
+        if not surface:
+            self._set_status("请先在标题栏选择 Android、Web 或 Windows", "#b42318", 2200)
+            return
+        self._run_api(
+            f"/api/project-map/interfaces?surface={surface}",
+            on_success=lambda result, selected_surface=surface: self._show_component_map_picker(
+                selected_surface, result
+            ),
+            busy_text="正在读取项目界面地图…",
+        )
+
+    def _fallback_component_locator(self, surface):
         if surface == "web":
             self.open_web_component_locator()
         elif surface == "windows":
             self.windows_component_locator()
         elif surface == "android":
             self.android_screenshot_feedback()
+
+    def _show_component_map_picker(self, surface, result):
+        interfaces = result.get("interfaces") or []
+        pages = interfaces[0].get("pages") if interfaces else []
+        pages = pages or []
+        dialog = self.tk.Toplevel(self.root)
+        dialog.title("从项目界面地图选择组件")
+        dialog.geometry("620x430")
+        dialog.minsize(540, 360)
+        dialog.configure(bg="#ffffff")
+        dialog.transient(self.root)
+
+        header = self.tk.Frame(dialog, bg="#f6f8fc")
+        header.pack(fill="x")
+        self.tk.Label(
+            header,
+            text="从项目界面地图选择",
+            bg="#f6f8fc",
+            fg="#182230",
+            font=("Microsoft YaHei UI", 11, "bold"),
+        ).pack(anchor="w", padx=14, pady=(12, 2))
+        self.tk.Label(
+            header,
+            text="选择后会自动带入界面、组件、源码位置；地图没有时再使用截图定位。",
+            bg="#f6f8fc",
+            fg="#667085",
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w", padx=14, pady=(0, 10))
+
+        search_var = self.tk.StringVar()
+        search = self.tk.Entry(
+            dialog, textvariable=search_var, relief="solid", bd=1,
+            font=("Microsoft YaHei UI", 9),
+        )
+        search.pack(fill="x", padx=14, pady=(12, 8), ipady=5)
+
+        content = self.tk.Frame(dialog, bg="#ffffff")
+        content.pack(fill="both", expand=True, padx=14)
+        page_list = self.tk.Listbox(
+            content, width=24, exportselection=False, relief="solid", bd=1,
+            font=("Microsoft YaHei UI", 9),
+        )
+        page_list.pack(side="left", fill="y", padx=(0, 8))
+        component_list = self.tk.Listbox(
+            content, exportselection=False, relief="solid", bd=1,
+            font=("Microsoft YaHei UI", 9),
+        )
+        component_list.pack(side="left", fill="both", expand=True)
+
+        visible_components = []
+
+        def clean_name(value):
+            return re.sub(r"^\[[^\]]+\]\s*", "", str(value or "")).strip()
+
+        def selected_page():
+            selection = page_list.curselection()
+            return pages[selection[0]] if selection and selection[0] < len(pages) else None
+
+        def render_components(_event=None):
+            nonlocal visible_components
+            page = selected_page()
+            query = search_var.get().strip().lower()
+            candidates = list((page or {}).get("components") or [])
+            if query:
+                candidates = [
+                    item for item in candidates
+                    if query in " ".join([
+                        str(item.get("name") or ""),
+                        str(item.get("area") or ""),
+                        str(item.get("file") or ""),
+                    ]).lower()
+                ]
+            visible_components = candidates
+            component_list.delete(0, "end")
+            for item in candidates:
+                area = str(item.get("area") or "").split(" / ")[-1]
+                label = clean_name(item.get("name"))
+                component_list.insert("end", f"{label}  ·  {area}" if area else label)
+
+        def apply_selection(_event=None):
+            page = selected_page()
+            selection = component_list.curselection()
+            if not page or not selection or selection[0] >= len(visible_components):
+                self._set_status("请选择一个界面组件", "#b42318", 1600)
+                return
+            item = visible_components[selection[0]]
+            page_name = re.sub(r"^[^\w\u4e00-\u9fff]+", "", str(page.get("name") or "")).strip()
+            area = str(item.get("area") or "").strip()
+            location_parts = [part for part in (page_name, area) if part]
+            self.prompt_component_name = clean_name(item.get("name"))
+            self.prompt_component_location = " / ".join(location_parts)
+            self.prompt_component_ref = {
+                "id": item.get("id", ""),
+                "surface": surface,
+                "page": page_name,
+                "area": area,
+                "file": item.get("file", ""),
+                "line_start": item.get("line_start", 0),
+                "line_end": item.get("line_end", 0),
+                "source": item.get("source", ""),
+                "confidence": item.get("confidence", 0),
+            }
+            dialog.destroy()
+            self.active_tab = "create"
+            self._render(self.current_model)
+            self._save_input_draft()
+            self._set_status("已从项目地图选择组件", "#239957", 1800)
+
+        for page in pages:
+            page_list.insert("end", page.get("name") or "未命名界面")
+        if pages:
+            page_list.selection_set(0)
+            render_components()
         else:
-            self._set_status("请先在标题栏选择 Android、Web 或 Windows", "#b42318", 2200)
+            component_list.insert("end", "当前项目地图中没有可选组件")
+        page_list.bind("<<ListboxSelect>>", render_components)
+        component_list.bind("<Double-Button-1>", apply_selection)
+        search_var.trace_add("write", lambda *_args: render_components())
+
+        footer = self.tk.Frame(dialog, bg="#ffffff")
+        footer.pack(fill="x", padx=14, pady=12)
+        self.tk.Button(
+            footer,
+            text="地图中没有，使用截图定位",
+            command=lambda: (dialog.destroy(), self._fallback_component_locator(surface)),
+            relief="flat", bg="#f2f4f7", fg="#344054", padx=10, pady=6,
+        ).pack(side="left")
+        self.tk.Button(
+            footer, text="取消", command=dialog.destroy, relief="flat",
+            bg="#ffffff", fg="#475467", padx=10, pady=6,
+        ).pack(side="right", padx=(8, 0))
+        self.tk.Button(
+            footer, text="选择组件", command=apply_selection, relief="flat",
+            bg="#0867f2", fg="#ffffff", padx=12, pady=6,
+        ).pack(side="right")
 
     def windows_screenshot_feedback(self):
         """自由框选屏幕任意区域 → 标注 → 上传到剪贴板 → 粘贴到 IDE → 发送提示词"""
@@ -2242,8 +2388,8 @@ class FloatingWindowApp:
                 )
                 return
             self._post_ui(
-                lambda data=result, hint=selection_hint: self._apply_windows_component_result(
-                    data, hint
+                lambda data=result, hint=selection_hint, ref=image_ref: self._apply_windows_component_result(
+                    data, hint, ref
                 )
             )
 
@@ -2253,7 +2399,7 @@ class FloatingWindowApp:
             name="AideLinkWindowsComponentLocator",
         ).start()
 
-    def _apply_windows_component_result(self, result, selection_hint=None):
+    def _apply_windows_component_result(self, result, selection_hint=None, image_ref=None):
         image_used = bool(result.get("image_used"))
         recognized_name = str(result.get("component_name") or "").strip()
         recognized_location = str(result.get("component_location") or "").strip()
@@ -2266,6 +2412,34 @@ class FloatingWindowApp:
             self.prompt_component_location = recognized_location
         else:
             self.prompt_component_location = self._selection_location_hint(selection_hint)
+        if image_used and self.prompt_component_name:
+            learned_component = {
+                "name": self.prompt_component_name,
+                "page": self.prompt_component_location or "截图识别组件",
+                "area": self.prompt_component_location,
+                "description": "由 Aide 结合截图识别并沉淀",
+                "source": "screenshot",
+                "confidence": 0.68,
+                "bounds": selection_hint,
+                "image_ref": image_ref or "",
+            }
+            self.prompt_component_ref = {
+                "surface": "windows",
+                "page": learned_component["page"],
+                "area": learned_component["area"],
+                "source": "screenshot",
+                "confidence": learned_component["confidence"],
+            }
+            threading.Thread(
+                target=lambda: api_request(
+                    "/api/project-map/learn-component",
+                    method="POST",
+                    payload={"surface": "windows", "component": learned_component},
+                    timeout=30,
+                ),
+                daemon=True,
+                name="AideLinkLearnWindowsComponent",
+            ).start()
         self._schedule_input_draft_save()
         self._render(self.current_model)
         if image_used:
@@ -3116,6 +3290,7 @@ class FloatingWindowApp:
                     "platform": platform_label,
                     "name": getattr(self, "prompt_component_name", "") or "所选组件",
                     "location": getattr(self, "prompt_component_location", ""),
+                    **dict(getattr(self, "prompt_component_ref", {}) or {}),
                 },
             },
             on_success=composed,
@@ -3228,6 +3403,15 @@ class FloatingWindowApp:
             "source": "user",
         }
         payload["classification"] = classification
+        component_ref = dict(getattr(self, "prompt_component_ref", {}) or {})
+        component_name = str(getattr(self, "prompt_component_name", "") or "")
+        component_location = str(getattr(self, "prompt_component_location", "") or "")
+        if component_name or component_location or component_ref:
+            payload["component"] = {
+                **component_ref,
+                "name": component_name,
+                "location": component_location,
+            }
         if classification_type:
             payload["task_type"] = classification_type
 
@@ -3710,6 +3894,7 @@ class FloatingWindowApp:
             prompt_task_type=getattr(self, "prompt_task_type", "unspecified"),
             prompt_component_name=getattr(self, "prompt_component_name", ""),
             prompt_component_location=getattr(self, "prompt_component_location", ""),
+            prompt_component_ref=getattr(self, "prompt_component_ref", {}),
         )
 
     def _restore_input_draft(self):
@@ -3725,6 +3910,7 @@ class FloatingWindowApp:
         self.prompt_component_location = str(
             state.get("prompt_component_location") or ""
         ).strip()
+        self.prompt_component_ref = dict(state.get("prompt_component_ref") or {})
         if draft:
             self._set_input_text(draft)
             self.input_box.mark_set("insert", "end-1c")

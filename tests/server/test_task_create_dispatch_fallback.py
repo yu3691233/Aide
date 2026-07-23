@@ -117,6 +117,30 @@ class TaskCreateDispatchFallbackTests(unittest.TestCase):
             self.runtime.tasks[0]["metadata"]["created_from"],
         )
 
+    def test_selected_interface_component_is_persisted_in_task_metadata(self):
+        component = {
+            "id": "windows_create_generate",
+            "surface": "windows",
+            "page": "创建任务",
+            "area": "智能提示词",
+            "name": "生成智能提示词",
+            "file": "desktop_app.py",
+        }
+        with patch("shared_runtime.runtime", self.runtime):
+            response = self.client.post(
+                "/api/tasks/create",
+                json={
+                    "text": "优化生成按钮",
+                    "target_ide": "auto",
+                    "auto_dispatch": False,
+                    "surface": "windows",
+                    "component": component,
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(component, self.runtime.tasks[0]["metadata"]["component"])
+
     def test_unknown_task_source_falls_back_to_app(self):
         with patch("shared_runtime.runtime", self.runtime):
             response = self.client.post(

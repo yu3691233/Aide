@@ -15,6 +15,7 @@ import os
 import re
 import json
 import hashlib
+import ast
 from datetime import datetime
 from json_utils import safe_read_json, safe_write_json
 
@@ -37,6 +38,65 @@ def _cache_file(project_root=None):
     root = _normalized_root(project_root or _current_root())
     digest = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
     return os.path.join(PROJECT_MAP_CACHE_DIR, f"project_map_{digest}.json")
+
+
+def _learned_file(project_root=None):
+    root = _normalized_root(project_root or _current_root())
+    digest = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(PROJECT_MAP_CACHE_DIR, f"learned_components_{digest}.json")
+
+
+def add_learned_component(surface, component):
+    """保存截图/运行态识别出的组件，使后续扫描仍可复用。"""
+    if surface not in {"android", "web", "windows"}:
+        raise ValueError(f"unsupported surface: {surface}")
+    os.makedirs(PROJECT_MAP_CACHE_DIR, exist_ok=True)
+    data = safe_read_json(_learned_file(), {"components": []}) or {"components": []}
+    components = list(data.get("components") or [])
+    item = dict(component or {})
+    stable_source = "|".join([
+        surface,
+        str(item.get("page") or ""),
+        str(item.get("area") or ""),
+        str(item.get("name") or ""),
+    ])
+    item["id"] = item.get("id") or f"learned_{hashlib.sha256(stable_source.encode('utf-8')).hexdigest()[:16]}"
+    item["surface"] = surface
+    item["source"] = item.get("source") or "screenshot"
+    item["confidence"] = float(item.get("confidence") or 0.65)
+    item["category"] = item.get("category") or "交互"
+    components = [existing for existing in components if existing.get("id") != item["id"]]
+    components.append(item)
+    safe_write_json(_learned_file(), {"components": components})
+    return item
+
+
+def _learned_pages(surface):
+    data = safe_read_json(_learned_file(), {"components": []}) or {"components": []}
+    groups = {}
+    for item in data.get("components") or []:
+        if item.get("surface") != surface:
+            continue
+        page_name = str(item.get("page") or "截图识别组件").strip()
+        page = groups.setdefault(page_name, {
+            "id": f"{surface}_learned_{_make_id(page_name)}",
+            "name": f"✨ {page_name}",
+            "description": "通过截图或运行态采集补充的界面",
+            "children": [],
+        })
+        page["children"].append({
+            "id": item.get("id", ""),
+            "name": f"[组件] {item.get('name') or '未命名组件'}",
+            "description": item.get("description") or item.get("area") or "截图识别组件",
+            "category": item.get("category", "交互"),
+            "file": item.get("file", ""),
+            "line_start": item.get("line_start", 0),
+            "line_end": item.get("line_end", 0),
+            "source": item.get("source", "screenshot"),
+            "confidence": item.get("confidence", 0.65),
+            "bounds": item.get("bounds"),
+        })
+    return list(groups.values())
 
 
 def _get_app_name():
@@ -1342,6 +1402,147 @@ def _scan_generic_web_interfaces(project_root, excluded_files=None):
     return pages
 
 
+def _scan_python_desktop_interfaces(project_root):
+    """从任意 Python Tkinter/CustomTkinter 项目发现桌面界面和可交互控件。"""
+    ignored_dirs = {
+        ".git", ".venv", "venv", "__pycache__", "site-packages",
+        "build", "dist", "node_modules",
+    }
+    widget_types = {
+        "Button": ("按钮", "交互"),
+        "Entry": ("输入框", "交互"),
+        "Text": ("文本域", "交互"),
+        "Checkbutton": ("复选框", "交互"),
+        "Radiobutton": ("单选按钮", "交互"),
+        "Combobox": ("下拉框", "交互"),
+        "Listbox": ("列表", "交互"),
+        "Menu": ("菜单", "交互"),
+        "Notebook": ("标签页", "交互"),
+        "Label": ("文本", "展示"),
+        "Canvas": ("画布", "展示"),
+        "Frame": ("区域", "布局"),
+        "Toplevel": ("弹窗", "交互"),
+    }
+    page_labels = {
+        "create": "创建任务",
+        "manage": "任务管理",
+        "tools": "工具",
+        "settings": "设置",
+        "login": "登录",
+        "main": "主界面",
+    }
+
+    def call_name(node):
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return ""
+
+    def literal_keyword(call, keyword):
+        for item in call.keywords:
+            if item.arg == keyword and isinstance(item.value, ast.Constant):
+                return str(item.value.value or "").strip()
+        return ""
+
+    pages = {}
+    file_count = 0
+    for root, dirs, files in os.walk(project_root):
+        dirs[:] = [d for d in dirs if d not in ignored_dirs]
+        for filename in files:
+            if not filename.endswith(".py"):
+                continue
+            filepath = os.path.join(root, filename)
+            try:
+                if os.path.getsize(filepath) > 2 * 1024 * 1024:
+                    continue
+                with open(filepath, "r", encoding="utf-8", errors="replace") as source:
+                    content = source.read()
+                if not any(marker in content for marker in ("tkinter", "customtkinter", "tk.", "ttk.")):
+                    continue
+                tree = ast.parse(content, filename=filepath)
+            except (OSError, SyntaxError):
+                continue
+            rel_path = os.path.relpath(filepath, project_root).replace("\\", "/")
+            file_count += 1
+            for owner in ast.walk(tree):
+                if not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                owner_lower = owner.name.lower()
+                if "prompt" in owner_lower:
+                    page_key = "create"
+                elif "task_tab" in owner_lower:
+                    page_key = "manage"
+                else:
+                    page_key = next((key for key in page_labels if key in owner_lower), None)
+                if page_key:
+                    page_name = page_labels[page_key]
+                elif owner_lower in {"build_ui", "_build_ui", "create_ui", "_create_ui"}:
+                    page_name = "主界面"
+                elif "dialog" in owner_lower or "popup" in owner_lower:
+                    page_name = owner.name.strip("_").replace("_", " ")
+                else:
+                    continue
+                page = pages.setdefault(page_name, {
+                    "id": f"windows_page_{_make_id(page_name)}",
+                    "name": f"🪟 {page_name}",
+                    "description": f"Python 桌面界面: {page_name}",
+                    "file": rel_path,
+                    "children": [],
+                })
+                seen = {child["id"] for child in page["children"]}
+                for node in ast.walk(owner):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    raw_type = call_name(node.func)
+                    widget_type = next(
+                        (name for name in widget_types if raw_type == name or raw_type.endswith(name)),
+                        None,
+                    )
+                    if not widget_type and raw_type.lower().endswith("button"):
+                        widget_type = "Button"
+                    if not widget_type:
+                        continue
+                    kind, category = widget_types[widget_type]
+                    positional_label = ""
+                    if raw_type.lower().endswith("button"):
+                        positional_label = next(
+                            (
+                                str(arg.value).strip()
+                                for arg in node.args[1:3]
+                                if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                            ),
+                            "",
+                        )
+                    label = (
+                        literal_keyword(node, "text")
+                        or literal_keyword(node, "placeholder_text")
+                        or literal_keyword(node, "name")
+                        or positional_label
+                        or widget_type
+                    )
+                    node_id = f"windows_{_make_id(rel_path)}_{_make_id(owner.name)}_{node.lineno}_{widget_type.lower()}"
+                    if node_id in seen:
+                        continue
+                    seen.add(node_id)
+                    page["children"].append({
+                        "id": node_id,
+                        "name": f"[{kind}] {label}",
+                        "file": rel_path,
+                        "line_start": node.lineno,
+                        "line_end": getattr(node, "end_lineno", node.lineno),
+                        "description": f"{page_name}中的{kind}",
+                        "category": category,
+                        "source": "static_scan",
+                        "confidence": 0.78 if label != widget_type else 0.55,
+                    })
+            if file_count >= 200:
+                break
+        if file_count >= 200:
+            break
+    return [page for page in pages.values() if page["children"]]
+
+
 def _split_by_cards(page_html, page_id):
     """按 <div class="card"> 切分页面为多个 section"""
     import re
@@ -1492,7 +1693,7 @@ def scan_project():
         "id": "android_app",
         "name": "📱 Android 客户端",
         "icon": "phone_android",
-        "children": screen_cats + other_cats,
+        "children": screen_cats + other_cats + _learned_pages("android"),
     }
 
     # PC 服务端
@@ -1520,12 +1721,20 @@ def scan_project():
     )
     if generic_web_pages:
         web_manager_ui["children"].extend(generic_web_pages)
+    web_manager_ui["children"].extend(_learned_pages("web"))
+
+    windows_category = {
+        "id": "windows_ui",
+        "name": "🪟 Windows 桌面界面",
+        "icon": "desktop_windows",
+        "children": _scan_python_desktop_interfaces(project_root) + _learned_pages("windows"),
+    }
 
     project_map = {
         "version": 2,
         "scan_time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "project_root": project_root.replace("\\", "/"),
-        "categories": [android_category, server_category, web_manager_ui],
+        "categories": [android_category, server_category, web_manager_ui, windows_category],
     }
 
     return project_map
@@ -1580,7 +1789,11 @@ def generate_component_map(project_map=None):
     if project_map is None:
         project_map = load_cached()
     if not project_map:
-        return {"android": {"component_types": [], "total": 0}, "web": {"component_types": [], "total": 0}}
+        return {
+            "android": {"component_types": [], "total": 0},
+            "web": {"component_types": [], "total": 0},
+            "windows": {"component_types": [], "total": 0},
+        }
     
     VISIBLE_CATEGORIES = {"交互", "展示"}
     
@@ -1599,7 +1812,7 @@ def generate_component_map(project_map=None):
                 name = node.get("name", "")
                 
                 # Android 组件：必须有 category
-                if platform_name == "Android":
+                if platform_name in {"Android", "Windows"}:
                     if category not in VISIBLE_CATEGORIES:
                         return
                     if name.startswith("[") and "]" in name:
@@ -1692,13 +1905,16 @@ def generate_component_map(project_map=None):
     # 分别构建 Android 和 Web 的组件地图
     android_cats = [c for c in project_map.get("categories", []) if c.get("id") == "android_app"]
     web_cats = [c for c in project_map.get("categories", []) if c.get("id") == "web_manager_ui"]
+    windows_cats = [c for c in project_map.get("categories", []) if c.get("id") == "windows_ui"]
     
     android_map = build_platform_map(android_cats, "Android")
     web_map = build_platform_map(web_cats, "Web")
+    windows_map = build_platform_map(windows_cats, "Windows")
     
     return {
         "android": android_map,
         "web": web_map,
+        "windows": windows_map,
         "scan_time": project_map.get("scan_time", ""),
     }
 

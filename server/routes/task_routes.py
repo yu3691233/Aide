@@ -360,6 +360,7 @@ def api_tasks_create():
     if surface and not classification_input.get("surface"):
         classification_input["surface"] = surface
     classification = normalize_classification(classification_input)
+    component_context = data.get("component") if isinstance(data.get("component"), dict) else {}
     task_type = str(data.get("task_type") or "").strip().lower()
     if task_type and not classification["task_type"]:
         classification["task_type"] = normalize_classification(
@@ -407,6 +408,7 @@ def api_tasks_create():
                 else {}
             ),
             **({"surface": surface} if surface else {}),
+            **({"component": component_context} if component_context else {}),
             "classification": classification,
         },
         parent_task_id=str(data.get("parent_task_id") or "").strip() or None,

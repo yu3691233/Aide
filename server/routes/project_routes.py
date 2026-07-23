@@ -219,18 +219,43 @@ def _ai_scan_project():
     if not api_key:
         return raw_map
 
-    # 构造 prompt：让 AI 分析源码目录结构，生成更准确的地图
-    map_json = json.dumps(raw_map, ensure_ascii=False, indent=2)[:16000]
-    prompt = f"""你是项目结构分析专家。当前自动扫描的项目地图如下：
-{map_json}
+    # Aide 只补全低置信度节点，绝不重写确定性扫描得到的地图结构。
+    candidates = []
 
-请分析这个项目的实际结构，返回优化后的 JSON 地图。
-规则：
-1. 保持 categories 数组结构（必须包含 Android 客户端、PC 服务端、Web 管理端三个分类）
-2. 每个 category 有 id, name, children
-3. 每个 child 有 id, name, file（如有）, children（子组件）
-4. 按功能模块分组，不要平铺
-5. 只返回纯 JSON，不要 markdown 代码块"""
+    def collect(nodes, path=None):
+        path = path or []
+        for node in nodes or []:
+            children = node.get("children") or []
+            if children:
+                collect(children, path + [node.get("name", "")])
+                continue
+            name = str(node.get("name") or "")
+            description = str(node.get("description") or "")
+            confidence = float(node.get("confidence") or 0.7)
+            if confidence >= 0.8 and description and not name.endswith(("Button", "Entry", "Text", "Canvas")):
+                continue
+            candidates.append({
+                "id": node.get("id", ""),
+                "name": name,
+                "description": description,
+                "file": node.get("file", ""),
+                "path": " / ".join(item for item in path if item),
+            })
+
+    collect(raw_map.get("categories") or [])
+    candidates = candidates[:100]
+    if not candidates:
+        raw_map["ai_enhanced"] = True
+        raw_map["ai_updates"] = 0
+        project_scanner.save_map(raw_map)
+        return raw_map
+
+    prompt = f"""你是项目界面地图的语义补全助手。以下节点来自确定性源码或运行态扫描：
+{json.dumps(candidates, ensure_ascii=False, indent=2)[:16000]}
+
+只补充用户能理解的组件名称和用途，不得新增、删除、移动节点，不得修改 id/file。
+返回纯 JSON：{{"updates":[{{"id":"原id","name":"更清晰的名称","description":"用途"}}]}}。
+无法判断的节点不要返回。"""
 
     try:
         resp = _req.post(
@@ -249,9 +274,29 @@ def _ai_scan_project():
             json_match = re.search(r'\{[\s\S]*\}', ai_text)
             if json_match:
                 ai_map = json.loads(json_match.group())
-                if "categories" in ai_map:
-                    raw_map["categories"] = ai_map["categories"]
+                updates = {
+                    str(item.get("id") or ""): item
+                    for item in (ai_map.get("updates") or [])
+                    if isinstance(item, dict) and item.get("id")
+                }
+                update_count = 0
+
+                def apply_updates(nodes):
+                    nonlocal update_count
+                    for node in nodes or []:
+                        update = updates.get(str(node.get("id") or ""))
+                        if update:
+                            if str(update.get("name") or "").strip():
+                                node["name"] = str(update["name"]).strip()
+                            if str(update.get("description") or "").strip():
+                                node["description"] = str(update["description"]).strip()
+                            node["ai_enriched"] = True
+                            update_count += 1
+                        apply_updates(node.get("children") or [])
+
+                apply_updates(raw_map.get("categories") or [])
                 raw_map["ai_enhanced"] = True
+                raw_map["ai_updates"] = update_count
                 project_scanner.save_map(raw_map)
     except Exception as e:
         logging.warning(f"AI scan failed: {e}")
@@ -348,6 +393,104 @@ def api_component_map():
         return jsonify({"success": True, "component_map": component_map})
     except Exception as e:
         return jsonify({"success": False, "message": f"生成组件地图失败: {e}"})
+
+
+@project_bp.route("/api/project-map/interfaces")
+def api_project_map_interfaces():
+    """返回适合浮窗选择器消费的界面→组件轻量目录。"""
+    surface = request.args.get("surface", "").strip().lower()
+    category_ids = {
+        "android": "android_app",
+        "web": "web_manager_ui",
+        "windows": "windows_ui",
+    }
+    if surface and surface not in category_ids:
+        return jsonify({"success": False, "message": f"不支持的界面类型: {surface}"}), 400
+    try:
+        import project_scanner
+        cache = project_scanner.load_cached() or project_scanner.scan_and_save()
+    except Exception as e:
+        return jsonify({"success": False, "message": f"加载界面地图失败: {e}"}), 500
+
+    def flatten_page(page):
+        components = []
+
+        def walk(node, path):
+            children = node.get("children") or []
+            if children:
+                next_path = path + ([node.get("name", "")] if node is not page else [])
+                for child in children:
+                    walk(child, next_path)
+                return
+            if node.get("category") not in {"交互", "展示"}:
+                return
+            components.append({
+                "id": node.get("id", ""),
+                "name": node.get("name", ""),
+                "area": " / ".join(item for item in path if item),
+                "file": node.get("file", ""),
+                "line_start": node.get("line_start", 0),
+                "line_end": node.get("line_end", 0),
+                "description": node.get("description", ""),
+                "source": node.get("source", "static_scan"),
+                "confidence": node.get("confidence", 0.7),
+            })
+
+        walk(page, [])
+        return {
+            "id": page.get("id", ""),
+            "name": page.get("name", ""),
+            "file": page.get("file", ""),
+            "components": components,
+        }
+
+    categories = cache.get("categories") or []
+    selected = []
+    for surface_name, category_id in category_ids.items():
+        if surface and surface_name != surface:
+            continue
+        category = next((item for item in categories if item.get("id") == category_id), None)
+        if not category:
+            continue
+        pages = [flatten_page(page) for page in (category.get("children") or [])]
+        pages = [page for page in pages if page["components"]]
+        selected.append({
+            "surface": surface_name,
+            "name": category.get("name", surface_name),
+            "pages": pages,
+            "component_count": sum(len(page["components"]) for page in pages),
+        })
+    return jsonify({
+        "success": True,
+        "project_root": cache.get("project_root", ""),
+        "scan_time": cache.get("scan_time", ""),
+        "interfaces": selected,
+    })
+
+
+@project_bp.route("/api/project-map/learn-component", methods=["POST"])
+def api_project_map_learn_component():
+    """把截图或运行态识别结果沉淀为当前项目可复用的界面节点。"""
+    data = request.get_json(silent=True) or {}
+    surface = str(data.get("surface") or "").strip().lower()
+    component = data.get("component") if isinstance(data.get("component"), dict) else {}
+    name = str(component.get("name") or "").strip()
+    if surface not in {"android", "web", "windows"}:
+        return jsonify({"success": False, "message": "surface 必须是 android、web 或 windows"}), 400
+    if not name:
+        return jsonify({"success": False, "message": "组件名称不能为空"}), 400
+    try:
+        import project_scanner
+        learned = project_scanner.add_learned_component(surface, component)
+        cache = project_scanner.scan_and_save()
+        _broadcast_sse({"type": "map_updated", "message": "已将识别组件加入项目地图"})
+        return jsonify({
+            "success": True,
+            "component": learned,
+            "project_root": cache.get("project_root", ""),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": f"保存识别组件失败: {e}"}), 500
 
 
 @project_bp.route("/api/project-map/collapsed-states", methods=["GET"])

@@ -470,16 +470,22 @@ class FloatingWindowAppModelTests(unittest.TestCase):
             payload["classification"]["ui_location"],
         )
 
-    def test_windows_component_locator_uses_region_capture_not_ide_calibration(self):
+    def test_windows_component_locator_prefers_project_map_before_region_capture(self):
         app = object.__new__(fwa.FloatingWindowApp)
         app.current_model = {"capabilities": ["windows"]}
         app.selected_surface = None
         app.windows_component_locator = Mock()
         app.locate_windows_target = Mock()
+        app._run_api = Mock()
 
         app.open_prompt_component_locator()
 
-        app.windows_component_locator.assert_called_once_with()
+        app._run_api.assert_called_once()
+        self.assertEqual(
+            "/api/project-map/interfaces?surface=windows",
+            app._run_api.call_args.args[0],
+        )
+        app.windows_component_locator.assert_not_called()
         app.locate_windows_target.assert_not_called()
 
     def test_windows_component_locator_starts_component_capture_mode(self):

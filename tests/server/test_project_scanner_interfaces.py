@@ -72,6 +72,50 @@ class ProjectScannerInterfaceTests(unittest.TestCase):
         self.assertTrue(groups[0]["children"])
         self.assertEqual("HomeScreen", groups[0]["children"][0]["composable"])
 
+    def test_python_desktop_scanner_discovers_tkinter_pages_and_controls(self):
+        app_file = self.root / "desktop_app.py"
+        app_file.write_text(
+            """import tkinter as tk
+class App:
+    def _render_create_tab(self):
+        panel = tk.Frame(self.root)
+        tk.Label(panel, text="智能提示词")
+        tk.Entry(panel)
+        tk.Button(panel, text="生成提示词", command=self.generate)
+    def _render_tools_tab(self):
+        self._rounded_button(self.root, "组件定位", self.locate)
+""",
+            encoding="utf-8",
+        )
+
+        pages = project_scanner._scan_python_desktop_interfaces(str(self.root))
+
+        self.assertEqual(2, len(pages))
+        create_page = next(page for page in pages if "创建任务" in page["name"])
+        tools_page = next(page for page in pages if "工具" in page["name"])
+        names = [item["name"] for item in create_page["children"]]
+        self.assertIn("[按钮] 生成提示词", names)
+        self.assertIn("[输入框] Entry", names)
+        self.assertIn("[按钮] 组件定位", [item["name"] for item in tools_page["children"]])
+
+    def test_screenshot_learned_component_survives_map_regeneration(self):
+        with patch.object(project_scanner, "PROJECT_MAP_CACHE_DIR", str(self.cache_dir)):
+            with patch.object(project_scanner, "get_project_root", return_value=self.root):
+                learned = project_scanner.add_learned_component(
+                    "windows",
+                    {
+                        "name": "保存按钮",
+                        "page": "编辑器",
+                        "area": "底部操作区",
+                        "bounds": {"selected_box": [10, 20, 30, 40]},
+                    },
+                )
+                pages = project_scanner._learned_pages("windows")
+
+        self.assertTrue(learned["id"].startswith("learned_"))
+        self.assertEqual("✨ 编辑器", pages[0]["name"])
+        self.assertEqual("[组件] 保存按钮", pages[0]["children"][0]["name"])
+
 
 if __name__ == "__main__":
     unittest.main()

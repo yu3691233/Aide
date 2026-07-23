@@ -40,7 +40,7 @@ async function scanProjectMap(useAi = false) {
 
   const treeEl = document.getElementById('project-map-tree');
 
-  const label = useAi ? 'AI 增强扫描' : '重新扫描';
+  const label = useAi ? 'Aide 补全未识别项' : '重新扫描';
 
   treeEl.innerHTML = `<p style="color:var(--text-muted)">正在${label}项目源码，这可能需要几秒钟时间...</p>`;
 
@@ -66,7 +66,7 @@ async function scanProjectMap(useAi = false) {
 
     renderProjectMapData(res.project_map);
 
-    const suffix = res.ai_enhanced ? '（AI 增强）' : '';
+    const suffix = res.ai_enhanced ? `（Aide 补全 ${res.project_map?.ai_updates || 0} 项）` : '';
 
     showToast(`项目扫描完成${suffix}！`, 'success');
 
@@ -180,19 +180,25 @@ function renderComponentMap(data) {
 
   
 
-  const platformData = data[currentComponentPlatform];
+  let platformData = data[currentComponentPlatform];
 
   if (!platformData || !platformData.component_types || platformData.component_types.length === 0) {
-
-    compEl.innerHTML = `<p style="color:var(--text-muted)">${currentComponentPlatform === 'android' ? '📱 Android' : '🌐 Web'} 端暂无组件数据</p>`;
-
-    return;
+    const fallbackPlatform = ['android', 'web', 'windows'].find(key => (
+      data[key] && data[key].component_types && data[key].component_types.length > 0
+    ));
+    if (fallbackPlatform) {
+      currentComponentPlatform = fallbackPlatform;
+      platformData = data[fallbackPlatform];
+    } else {
+      compEl.innerHTML = '<p style="color:var(--text-muted)">当前项目暂无可见组件，请先采集实际界面或重新扫描项目</p>';
+      return;
+    }
 
   }
 
   
 
-  const platformLabel = currentComponentPlatform === 'android' ? '📱 Android 客户端' : '🌐 Web 管理端';
+  const platformLabel = currentComponentPlatform === 'android' ? '📱 Android 客户端' : (currentComponentPlatform === 'windows' ? '🪟 Windows 桌面端' : '🌐 Web 管理端');
 
   
 
@@ -203,6 +209,8 @@ function renderComponentMap(data) {
       <button class="btn btn-sm btn-outline active-tab" id="btn-comp-android" onclick="switchComponentPlatform('android')">📱 Android</button>
 
       <button class="btn btn-sm btn-outline" id="btn-comp-web" onclick="switchComponentPlatform('web')">🌐 Web</button>
+
+      <button class="btn btn-sm btn-outline" id="btn-comp-windows" onclick="switchComponentPlatform('windows')">🪟 Windows</button>
 
     </div>
 
@@ -303,6 +311,7 @@ function renderSelectedMap() {
   const server = currentMapData.categories.find(c => c.id === 'server');
 
   const webManager = currentMapData.categories.find(c => c.id === 'web_manager_ui');
+  const windowsUi = currentMapData.categories.find(c => c.id === 'windows_ui');
 
   
 
@@ -404,6 +413,9 @@ function renderSelectedMap() {
 
       uiNodes.push(webManager);
 
+    }
+    if (windowsUi && windowsUi.children && windowsUi.children.length > 0) {
+      uiNodes.push(windowsUi);
     }
 
     nodesToRender = uiNodes;
@@ -735,6 +747,8 @@ function switchComponentPlatform(platform) {
   document.getElementById('btn-comp-android').classList.toggle('active-tab', platform === 'android');
 
   document.getElementById('btn-comp-web').classList.toggle('active-tab', platform === 'web');
+
+  document.getElementById('btn-comp-windows').classList.toggle('active-tab', platform === 'windows');
 
   renderComponentMap(currentComponentMap);
 
