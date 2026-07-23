@@ -1591,6 +1591,7 @@ class FloatingWindowApp:
         self._run_api(
             "/api/adb/connect", method="POST", payload=payload,
             on_success=on_success, busy_text=f"正在连接 {alias}…",
+            timeout=75,
         )
 
     def _install_apk_to_device(self, device, force_adb_only=False):
@@ -3243,12 +3244,12 @@ class FloatingWindowApp:
                 return
         self.root.after(25, self._drain_ui_callbacks)
 
-    def _run_api(self, path, method="GET", payload=None, on_success=None, busy_text="处理中…"):
+    def _run_api(self, path, method="GET", payload=None, on_success=None, busy_text="处理中…", timeout=15):
         self._set_status(busy_text)
 
         def worker():
             try:
-                result = api_request(path, method=method, payload=payload)
+                result = api_request(path, method=method, payload=payload, timeout=timeout)
             except Exception as exc:
                 message = str(exc)
                 self._post_ui(lambda value=message: self._set_status(f"操作失败：{value}", "#b42318"))

@@ -8,6 +8,7 @@ from flask import Blueprint, request, jsonify
 import subprocess
 import re
 import os
+import socket
 import uuid
 
 from paths import BRIDGE_DIR, APK_PATH
@@ -110,6 +111,16 @@ def _connect_adb(ip, port, timeout=5):
         return None, output
     except Exception as e:
         return None, str(e)
+
+
+def _tcp_port_open(ip, port, timeout=0.8):
+    if not ip or not port:
+        return False
+    try:
+        with socket.create_connection((ip, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def _remember_alias_connection(alias, device_id, ip, port):
@@ -280,9 +291,16 @@ def _ensure_adb_device(alias=None, ip=None, port=None, auto_enable=True, timeout
                         }
                     _time.sleep(1)
                 # connect 重试 5 次仍失败，返回错误
+                if _tcp_port_open(result_ip, result_port):
+                    error = (
+                        f"平板端口 {result_ip}:{result_port} 可达，但 ADB 握手失败。"
+                        "请在开发者选项 → 无线调试中使用配对码重新配对这台电脑"
+                    )
+                else:
+                    error = f"App 已开启无线调试(ip={result_ip}, port={result_port})，但 adb connect 失败"
                 return {
                     "ok": False,
-                    "error": f"App 已开启无线调试(ip={result_ip}, port={result_port})，但 adb connect 失败",
+                    "error": error,
                     "method": pending.get("method") or "app_command",
                     "request_id": request_id,
                     "tried": tried[-5:],

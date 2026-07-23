@@ -3,7 +3,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
@@ -66,6 +66,17 @@ class AdbConnectionValidationTests(unittest.TestCase):
             connected, _ = device_routes._connect_adb("192.168.3.52", 39371)
 
         self.assertEqual("192.168.3.52:39371", connected)
+
+    def test_tcp_probe_distinguishes_reachable_adb_listener(self):
+        fake_socket = MagicMock()
+        with patch.object(
+            device_routes.socket,
+            "create_connection",
+            return_value=fake_socket,
+        ) as connect:
+            self.assertTrue(device_routes._tcp_port_open("192.168.3.52", 40117))
+
+        connect.assert_called_once_with(("192.168.3.52", 40117), timeout=0.8)
 
 
 if __name__ == "__main__":
