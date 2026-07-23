@@ -1,8 +1,13 @@
+let taskManagerTypeFilter = '';
+let taskManagerSurfaceFilter = '';
+
 function switchTasksTab(tab) {
 
   currentTasksTab = tab;
 
   document.getElementById('btn-tab-tasks-pending').classList.toggle('active-tab', tab === 'pending');
+
+  document.getElementById('btn-tab-tasks-testing').classList.toggle('active-tab', tab === 'testing');
 
   document.getElementById('btn-tab-tasks-completed').classList.toggle('active-tab', tab === 'completed');
 
@@ -24,6 +29,12 @@ function switchTasksTab(tab) {
 
     dispatchToolbar.style.display = tab === 'pending' ? 'flex' : 'none';
 
+  }
+
+  const completedSearch = document.getElementById('task-completed-search');
+  if (completedSearch) {
+    completedSearch.style.display = tab === 'completed' ? 'block' : 'none';
+    if (tab !== 'completed') completedSearch.value = '';
   }
 
   
@@ -79,8 +90,18 @@ function renderComponentView(tasks) {
   const filteredTasks = tasks.filter(t => {
 
     const isCompleted = t.status === 'done' || t.status === 'failed';
-
-    if (currentTasksTab === 'pending' ? isCompleted : !isCompleted) return false;
+    const isPendingTest = t.status === 'pending_test';
+    if (currentTasksTab === 'pending' && (isCompleted || isPendingTest)) return false;
+    if (currentTasksTab === 'testing' && !isPendingTest) return false;
+    if (currentTasksTab === 'completed' && !isCompleted) return false;
+    const classification = t.classification || {};
+    if (taskManagerSurfaceFilter && classification.surface !== taskManagerSurfaceFilter) return false;
+    if (taskManagerTypeFilter === 'unclassified' && classification.state !== 'unclassified') return false;
+    if (taskManagerTypeFilter === 'other') {
+      if (['feature', 'optimization', 'bug_fix'].includes(classification.task_type)) return false;
+    } else if (taskManagerTypeFilter && taskManagerTypeFilter !== 'unclassified' && classification.task_type !== taskManagerTypeFilter) {
+      return false;
+    }
 
     
 
@@ -382,11 +403,31 @@ function renderTasksData(tasks) {
 
   // Filter by tab
 
+  const searchValue = currentTasksTab === 'completed'
+    ? (document.getElementById('task-completed-search')?.value || '').trim().toLowerCase()
+    : '';
   const filteredTasks = tasks.filter(t => {
 
     const isCompleted = t.status === 'done' || t.status === 'failed';
-
-    return currentTasksTab === 'pending' ? !isCompleted : isCompleted;
+    const isPendingTest = t.status === 'pending_test';
+    if (currentTasksTab === 'pending' && (isCompleted || isPendingTest)) return false;
+    if (currentTasksTab === 'testing' && !isPendingTest) return false;
+    if (currentTasksTab === 'completed' && !isCompleted) return false;
+    const classification = t.classification || {};
+    if (taskManagerSurfaceFilter && classification.surface !== taskManagerSurfaceFilter) return false;
+    if (taskManagerTypeFilter === 'unclassified' && classification.state !== 'unclassified') return false;
+    if (taskManagerTypeFilter === 'other') {
+      if (['feature', 'optimization', 'bug_fix'].includes(classification.task_type)) return false;
+    } else if (taskManagerTypeFilter && taskManagerTypeFilter !== 'unclassified' && classification.task_type !== taskManagerTypeFilter) {
+      return false;
+    }
+    if (searchValue) {
+      const searchable = [
+        t.title, taskOriginalRequirement(t),
+      ].join(' ').toLowerCase();
+      if (!searchable.includes(searchValue)) return false;
+    }
+    return true;
 
   });
 
@@ -408,7 +449,10 @@ function renderTasksData(tasks) {
 
   if (!filteredTasks || filteredTasks.length === 0) {
 
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted)">暂无${currentTasksTab === 'pending' ? '待处理' : '已完成'}任务</td></tr>`;
+    const emptyLabel = currentTasksTab === 'pending'
+      ? '待处理'
+      : (currentTasksTab === 'testing' ? '待测试' : '已完成');
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted)">暂无${emptyLabel}任务</td></tr>`;
 
     return;
 
@@ -561,6 +605,7 @@ function renderTasksData(tasks) {
       : '';
 
     const deleteBtnHtml = `<button class="btn btn-sm btn-outline" onclick="deleteTask('${escapeHtml(t.task_id)}', this)" title="删除任务" style="color:var(--accent-red);border-color:rgba(248,81,73,0.3);">🗑️ 删除</button>`;
+    const classifyBtnHtml = `<button class="btn btn-sm btn-outline" onclick="openTaskClassification(['${escapeHtml(t.task_id)}'])" title="整理或纠正任务分类">🏷️ 分类</button>`;
 
 
 
@@ -576,15 +621,7 @@ function renderTasksData(tasks) {
 
     // Extract "内容"
 
-    let displayMessage = t.message || '—';
-
-    const reqMatch = displayMessage.match(/(?:【内容】|【修改需求说明】)\n?([\s\S]+?)(?:\n\n【代码修改与优化任务】|\n\n以下是待合并|\Z)/);
-
-    if (reqMatch) {
-
-      displayMessage = reqMatch[1].trim();
-
-    }
+    const displayMessage = taskOriginalRequirement(t);
 
 
 
@@ -666,11 +703,22 @@ function renderTasksData(tasks) {
 
     const hasComponent = component && component !== '—' && file && file !== '—';
 
-    const compDisplayHtml = hasComponent
+    const classification = t.classification || {};
+    const classificationState = classification.state || 'unclassified';
+    const classificationStateLabel = classificationState === 'confirmed'
+      ? '已确认'
+      : (classificationState === 'suggested' ? 'AI 建议' : '未分类');
+    const classificationHtml = `
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px;">
+        <span class="badge" style="font-size:10px;background:${classificationState === 'confirmed' ? 'rgba(63,185,80,.15)' : 'rgba(240,160,64,.15)'};color:${classificationState === 'confirmed' ? 'var(--accent-green)' : 'var(--accent-yellow)'};">${classificationStateLabel}</span>
+        ${classification.surface ? `<span class="badge" style="font-size:10px;">${escapeHtml(classification.surface.toUpperCase())}</span>` : ''}
+        ${(classification.functional_areas || []).slice(0, 1).map(area => `<span class="badge badge-success" style="font-size:10px;">${escapeHtml(area)}</span>`).join('')}
+      </div>`;
+    const compDisplayHtml = (hasComponent
 
       ? `<div style="font-weight:600;font-size:12px;">[${platform}] ${escapeHtml(component)}</div><div style="font-size:10px;color:var(--text-muted);margin-top:2px;font-family:monospace;" title="${escapeHtml(file)}">${escapeHtml(file)}</div>`
 
-      : `<div style="font-size:11px;color:var(--text-muted);">${escapeHtml(t.target_ide && t.target_ide !== '—' ? '📱 来自 ' + t.target_ide.toUpperCase() : '📝 无关联组件')}</div>`;
+      : `<div style="font-size:11px;color:var(--text-muted);">${escapeHtml(t.target_ide && t.target_ide !== '—' ? '📱 来自 ' + t.target_ide.toUpperCase() : '📝 无关联组件')}</div>`) + classificationHtml;
 
 
 
@@ -697,6 +745,12 @@ function renderTasksData(tasks) {
     const statusAndPreviewHtml = `
 
       <div style="margin-bottom:4px;">${statusHtml}</div>
+
+      ${t.test_result ? `<div style="font-size:10px;margin-bottom:3px;color:${t.test_result === 'failed' ? 'var(--accent-red)' : (t.test_result === 'queued' ? 'var(--accent-yellow)' : 'var(--accent-green)')};">🧪 ${
+        t.test_result === 'passed' ? '测试通过' :
+        t.test_result === 'failed' ? '测试未通过' :
+        t.test_result === 'queued' ? '测试排队中' : '已派发测试'
+      }</div>` : ''}
 
       <div style="font-size:11px;color:var(--text-secondary);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(t.response_preview || '')}">${escapeHtml(t.response_preview || '—')}</div>
 
@@ -748,11 +802,11 @@ function renderTasksData(tasks) {
 
       <td>${compDisplayHtml}</td>
 
-      <td style="max-height:200px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.4;" title="${escapeHtml(t.message || '')}">${escapeHtml(displayMessage)}${fbBadge}${allFeedbacksHtml}</td>
+      <td title="${escapeHtml(displayMessage)}"><div style="display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.45;">${escapeHtml(displayMessage)}</div>${fbBadge}</td>
 
       <td>${statusAndPreviewHtml}</td>
 
-      <td style="text-align:center;">${copyBtnHtml}${editBtnHtml}${testBtnHtml}${feedbackBtnHtml}${deleteBtnHtml}${actionBtnHtml}</td>
+      <td style="text-align:center;">${copyBtnHtml}${editBtnHtml}${classifyBtnHtml}${testBtnHtml}${feedbackBtnHtml}${deleteBtnHtml}${actionBtnHtml}</td>
 
     `;
 
@@ -762,11 +816,43 @@ function renderTasksData(tasks) {
 
 }
 
+function taskOriginalRequirement(task) {
+  const metadata = task.metadata || {};
+  let text = String(
+    metadata.original_message || task.original_text || task.message || task.text || task.title || '—'
+  ).trim();
+  const originalSection = text.match(/###?\s*原始需求\s*\n+([\s\S]+?)(?=\n###?\s|\n---|$)/i);
+  if (originalSection) text = originalSection[1].trim();
+  const contentSection = text.match(/(?:【内容】|【修改需求说明】)\s*\n?([\s\S]+?)(?=\n\n【代码修改与优化任务】|\n\n以下是待合并|$)/);
+  if (contentSection) text = contentSection[1].trim();
+  const feedbackMarker = text.indexOf('\n\n---\n测试反馈：');
+  if (feedbackMarker >= 0) text = text.slice(0, feedbackMarker).trim();
+  return text || '—';
+}
+
+function setTaskTypeFilter(value) {
+  taskManagerTypeFilter = value;
+  document.querySelectorAll('[data-task-type]').forEach(button => {
+    button.classList.toggle('active-tab', button.dataset.taskType === value);
+  });
+  renderTasksData(allTasksData);
+  if (currentTasksView === 'component') renderComponentView(allTasksData);
+}
+
+function setTaskSurfaceFilter(value) {
+  taskManagerSurfaceFilter = value;
+  document.querySelectorAll('[data-task-surface]').forEach(button => {
+    button.classList.toggle('active-tab', button.dataset.taskSurface === value);
+  });
+  renderTasksData(allTasksData);
+  if (currentTasksView === 'component') renderComponentView(allTasksData);
+}
+
 async function loadTasksList() {
 
   const tbody = document.getElementById('tasks-table');
 
-  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted)">正在读取任务列表...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted)">正在读取任务...</td></tr>';
 
   
 
@@ -816,7 +902,7 @@ function toggleTasksCollapse(event) {
 
     btn.textContent = '▼';
 
-    btn.title = '展开任务列表';
+    btn.title = '展开任务管理';
 
   } else {
 
@@ -824,7 +910,7 @@ function toggleTasksCollapse(event) {
 
     btn.textContent = '▲';
 
-    btn.title = '折叠任务列表';
+    btn.title = '折叠任务管理';
 
   }
 
@@ -851,9 +937,118 @@ function updateBatchToolbar() {
   document.getElementById('selected-task-count').textContent = `已选 ${count} 项`;
 
   document.getElementById('btn-batch-complete').style.display = count > 0 ? 'inline-block' : 'none';
+  document.getElementById('btn-batch-classify').style.display = count > 0 ? 'inline-block' : 'none';
+  document.getElementById('btn-batch-smart-classify').style.display = count > 0 ? 'inline-block' : 'none';
 
   document.getElementById('btn-batch-delete').style.display = count > 0 ? 'inline-block' : 'none';
 
+}
+
+const taskCompletedSearch = document.getElementById('task-completed-search');
+if (taskCompletedSearch) {
+  taskCompletedSearch.addEventListener('input', () => {
+    clearTimeout(window._taskManagerSearchTimer);
+    window._taskManagerSearchTimer = setTimeout(() => renderTasksData(allTasksData), 180);
+  });
+}
+
+function selectedTaskIds() {
+  return Array.from(document.querySelectorAll('.task-row-checkbox:checked')).map(cb => cb.dataset.id);
+}
+
+function openTaskClassification(explicitIds) {
+  const taskIds = explicitIds || selectedTaskIds();
+  if (!taskIds.length) {
+    showToast('请先选择任务', 'error');
+    return;
+  }
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.68);z-index:1200;display:flex;align-items:center;justify-content:center;';
+  overlay.dataset.taskIds = JSON.stringify(taskIds);
+  overlay.innerHTML = `
+    <div style="background:var(--panel);border:1px solid var(--border-color);border-radius:12px;padding:20px;width:92%;max-width:680px;max-height:90vh;overflow:auto;">
+      <h3 style="margin-bottom:6px;">🏷️ 整理任务分类</h3>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">已选择 ${taskIds.length} 个任务。这里由用户直接确认分类。</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <label style="font-size:12px;">项目端<select id="classification-surface" class="table-input" style="width:100%;margin-top:4px;"><option value="">未分类</option><option value="general">通用</option><option value="web">Web</option><option value="android">Android</option><option value="windows">Windows</option></select></label>
+        <label style="font-size:12px;">任务类型<select id="classification-type" class="table-input" style="width:100%;margin-top:4px;"><option value="">未分类</option><option value="feature">新功能</option><option value="optimization">功能优化</option><option value="bug_fix">Bug 修复</option><option value="other">其他</option></select></label>
+      </div>
+      <label style="display:block;font-size:12px;margin-top:12px;">界面位置<input id="classification-location" class="table-input" style="width:100%;margin-top:4px;" placeholder="可选，例如：详情页顶部"></label>
+      <label style="display:block;font-size:12px;margin-top:12px;">功能区域（可填多个）<input id="classification-areas-input" class="table-input" style="width:100%;margin-top:4px;" placeholder="用逗号分隔，例如：订单、支付"></label>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+        <button class="btn btn-sm btn-outline" onclick="this.closest('div[style*=fixed]').remove()">取消</button>
+        <button class="btn btn-sm btn-primary" onclick="saveTaskClassification(this)">确认分类</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', event => { if (event.target === overlay) overlay.remove(); });
+}
+
+async function smartClassifySelectedTasks() {
+  const taskIds = selectedTaskIds();
+  if (!taskIds.length) {
+    showToast('请先选择任务', 'error');
+    return;
+  }
+  if (!confirm(`智能整理所选 ${taskIds.length} 个任务？结果会标记为“AI 建议待确认”。`)) return;
+  showToast(`正在智能整理 0/${taskIds.length}…`, 'info');
+  let successCount = 0;
+  let failedCount = 0;
+  for (let index = 0; index < taskIds.length; index++) {
+    const taskId = taskIds[index];
+    const suggested = await apiCall('/api/tasks/classification/suggest', 'POST', {task_id: taskId});
+    if (!suggested || !suggested.success) {
+      failedCount++;
+      continue;
+    }
+    const classification = {
+      ...(suggested.suggestion || {}),
+      state: 'suggested',
+      source: suggested.suggestion?.source || 'ai',
+    };
+    const saved = await apiCall('/api/tasks/classification', 'POST', {
+      task_ids: [taskId],
+      classification,
+    });
+    if (saved && saved.success) successCount++; else failedCount++;
+    showToast(`正在智能整理 ${index + 1}/${taskIds.length}…`, 'info');
+  }
+  showToast(
+    `智能整理完成：${successCount} 个待确认${failedCount ? `，${failedCount} 个失败` : ''}`,
+    successCount ? 'success' : 'error',
+  );
+  loadTasksList();
+}
+
+async function saveTaskClassification(button) {
+  const overlay = button.closest('div[style*="fixed"]');
+  const taskIds = JSON.parse(overlay.dataset.taskIds || '[]');
+  const classification = {
+    surface: overlay.querySelector('#classification-surface').value,
+    task_type: overlay.querySelector('#classification-type').value,
+    ui_location: overlay.querySelector('#classification-location').value.trim(),
+    functional_areas: splitTaskClassificationAreas(
+      overlay.querySelector('#classification-areas-input').value
+    ),
+    state: 'confirmed',
+    source: 'user',
+  };
+  const result = await apiCall('/api/tasks/classification', 'POST', {task_ids: taskIds, classification});
+  if (result && result.success) {
+    overlay.remove();
+    showToast(`已确认 ${result.updated_task_ids.length} 个任务的分类`, 'success');
+    loadTasksList();
+  } else {
+    showToast(result ? result.message : '分类保存失败', 'error');
+  }
+}
+
+function splitTaskClassificationAreas(value) {
+  return String(value || '')
+    .split(/[,，、]/)
+    .map(item => item.trim())
+    .filter((item, index, all) => item && all.indexOf(item) === index)
+    .slice(0, 8);
 }
 
 async function batchCompleteTasks() {

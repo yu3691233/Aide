@@ -3,6 +3,7 @@ function openGlobalPromptPanel(source) {
   globalPromptSource = source || 'task';
 
   globalPromptCategory = 'unspecified';
+  window._globalPromptSurface = 'general';
 
   isGlobalPromptPreviewManuallyEdited = false;
 
@@ -24,7 +25,7 @@ function openGlobalPromptPanel(source) {
 
   if (globalPromptSource === 'task') {
 
-    sourceEl.innerHTML = '📋 来源：任务列表';
+    sourceEl.innerHTML = '📋 来源：任务管理';
 
   } else {
 
@@ -69,6 +70,10 @@ function openGlobalPromptPanel(source) {
   document.getElementById('global-btn-prompt-type-optimize').classList.remove('active-tab');
 
   document.getElementById('global-btn-prompt-type-bug').classList.remove('active-tab');
+  document.getElementById('global-btn-prompt-type-other').classList.remove('active-tab');
+  selectGlobalPromptSurface('general');
+  document.getElementById('global-prompt-functional-areas').value = '';
+  document.getElementById('global-prompt-ui-location').value = '';
 
   
 
@@ -211,11 +216,65 @@ function selectGlobalPromptCategory(cat) {
   document.getElementById('global-btn-prompt-type-optimize').classList.toggle('active-tab', cat === 'optimize');
 
   document.getElementById('global-btn-prompt-type-bug').classList.toggle('active-tab', cat === 'bug');
+  document.getElementById('global-btn-prompt-type-other').classList.toggle('active-tab', cat === 'other');
 
   isGlobalPromptPreviewManuallyEdited = false;
 
   updateGlobalPromptPreview();
 
+}
+
+function selectGlobalPromptSurface(surface) {
+  window._globalPromptSurface = surface;
+  document.querySelectorAll('#global-prompt-surface-buttons [data-surface]').forEach(button => {
+    button.classList.toggle('active-tab', button.dataset.surface === surface);
+  });
+}
+
+function getGlobalPromptClassification() {
+  const typeMap = {
+    feature: 'feature',
+    optimize: 'optimization',
+    bug: 'bug_fix',
+    other: 'other'
+  };
+  return {
+    surface: window._globalPromptSurface || 'general',
+    task_type: typeMap[globalPromptCategory] || '',
+    functional_areas: splitTaskClassificationAreas(
+      document.getElementById('global-prompt-functional-areas').value
+    ),
+    ui_location: document.getElementById('global-prompt-ui-location').value.trim(),
+    state: 'confirmed',
+    source: 'user'
+  };
+}
+
+async function suggestGlobalPromptClassification() {
+  const userReq = document.getElementById('global-prompt-user-req').value.trim();
+  if (!userReq) {
+    showToast('请先输入任务需求', 'error');
+    return;
+  }
+  showToast('正在生成分类建议...', 'info');
+  const res = await apiCall('/api/tasks/classification/suggest', 'POST', { text: userReq });
+  if (!res || !res.success || !res.suggestion) {
+    showToast(res ? res.message : '分类建议生成失败', 'error');
+    return;
+  }
+  const suggestion = res.suggestion;
+  const categoryMap = {
+    feature: 'feature',
+    optimization: 'optimize',
+    bug_fix: 'bug',
+    other: 'other'
+  };
+  selectGlobalPromptCategory(categoryMap[suggestion.task_type] || 'unspecified');
+  selectGlobalPromptSurface(suggestion.surface || 'general');
+  document.getElementById('global-prompt-functional-areas').value =
+    (suggestion.functional_areas || []).join('，');
+  document.getElementById('global-prompt-ui-location').value = suggestion.ui_location || '';
+  showToast(res.fallback ? 'AI 暂不可用，已填写基础规则建议，请确认' : '已填写 AI 建议，请确认或修改', 'success');
 }
 
 async function analyzeGlobalRequirements() {
@@ -253,6 +312,8 @@ async function analyzeGlobalRequirements() {
   else if (globalPromptCategory === 'optimize') userIntent = '功能优化';
 
   else if (globalPromptCategory === 'feature') userIntent = '新增功能';
+
+  else if (globalPromptCategory === 'other') userIntent = '其他任务';
 
   
 
@@ -722,11 +783,15 @@ function updateGlobalPromptPreview() {
 
   
 
-  let typeCN = '新增功能';
+  let typeCN = '未指定';
 
-  if (globalPromptCategory === 'optimize') typeCN = '功能优化';
+  if (globalPromptCategory === 'feature') typeCN = '新增功能';
+
+  else if (globalPromptCategory === 'optimize') typeCN = '功能优化';
 
   else if (globalPromptCategory === 'bug') typeCN = '修复bug';
+
+  else if (globalPromptCategory === 'other') typeCN = '其他任务';
 
   
 
@@ -1003,6 +1068,7 @@ function applyGlobalPredictedCandidate(idx) {
 async function saveGlobalPromptAsTask() {
 
   const promptText = document.getElementById('global-prompt-preview').value;
+  const originalText = document.getElementById('global-prompt-user-req').value.trim();
 
   if (!promptText.trim()) {
 
@@ -1018,9 +1084,12 @@ async function saveGlobalPromptAsTask() {
 
   const body = {
 
-    message: promptText,
-
-    task_type: globalPromptCategory === 'bug' ? 'bug_fix' : 'code'
+    text: promptText,
+    original_text: originalText,
+    title: originalText.substring(0, 60),
+    source: 'web',
+    auto_dispatch: false,
+    classification: getGlobalPromptClassification()
 
   };
 
@@ -1030,13 +1099,13 @@ async function saveGlobalPromptAsTask() {
 
   }
 
-  const res = await apiCall('/api/tasks/create_draft', 'POST', body);
+  const res = await apiCall('/api/tasks/create', 'POST', body);
 
   
 
-  if (res && res.success) {
+  if (res && res.ok) {
 
-    showToast(res.message, 'success');
+    showToast('成功加入任务列表！', 'success');
 
     closeGlobalPromptPanel();
 

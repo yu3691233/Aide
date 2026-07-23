@@ -12,6 +12,14 @@ TYPE_LABELS = {
     "test_plan": "测试与计划",
 }
 
+CATEGORY_LABELS = {
+    "unspecified": "未指定",
+    "feature": "新增功能",
+    "optimize": "功能优化",
+    "bug": "修复bug",
+    "other": "其他",
+}
+
 DIFFICULTY_LABELS = {
     "simple": "简单",
     "medium": "中等",
@@ -69,7 +77,7 @@ def _context_label(component):
     return " · ".join(out)
 
 
-def build_fallback(component, user_text, task_type, difficulty):
+def build_fallback(component, user_text, task_type, difficulty, category=""):
     type_label = TYPE_LABELS[task_type]
     context = _context_label(component)
     if "【用户未描述具体需求】" in user_text:
@@ -90,8 +98,14 @@ def build_fallback(component, user_text, task_type, difficulty):
         if task_type == "test_plan"
         else "保留现有相关行为，不改无关内容。"
     )
+    category_line = (
+        f"类型：{CATEGORY_LABELS[category]}\n"
+        if category in CATEGORY_LABELS and category != "unspecified"
+        else ""
+    )
     prompt = (
-        f"目标：{user_text or '确认并处理用户反馈'}\n"
+        category_line
+        + f"目标：{user_text or '确认并处理用户反馈'}\n"
         f"定位：{context}\n"
         f"边界：{constraint_text}"
     )
@@ -141,17 +155,26 @@ def _recover_partial_json(text):
     }
 
 
-def _ai_messages(component, user_text, task_type, difficulty, image_data_url=None):
+def _ai_messages(
+    component,
+    user_text,
+    task_type,
+    difficulty,
+    image_data_url=None,
+    category="",
+):
     payload = {
         "component": component,
         "user_text": user_text,
         "selected_type": task_type,
+        "selected_category": category,
         "initial_difficulty": difficulty,
     }
     system = (
         "你是低上下文、低额度消耗的开发任务提示词助手。提示词的作用是让开发IDE准确理解目标和边界，"
         "不是教开发IDE如何写代码。用户已经定位了界面组件，你不需要猜代码文件。"
         "根据组件上下文和短描述生成最多3个可能意图，候选之间是具体理解差异，不要强行对应不同任务类型。"
+        "若selected_category不是空值或unspecified，必须保持该任务类型语义，不要改判为其他类型。"
         "若提供截图，请结合截图识别用户所指的页面、组件类型、可见文字和位置，不要猜源码文件。"
         "每个prompt尽量控制在300个汉字以内，只保留：明确目标、已知定位、必须保留的边界、可验证结果。"
         "禁止输出实现教程、逐步操作、技术方案、示例代码、通用开发规范或背景铺陈；"
@@ -182,15 +205,27 @@ def compose_prompt(data, model_caller=None, image_data_url=None):
     user_text = _clean(data.get("user_text"), 1200)
     requested_type = _clean(data.get("task_type"), 30)
     task_type = requested_type if requested_type in TYPE_LABELS else infer_task_type(user_text)
+    category = _clean(data.get("category"), 30)
+    if category not in CATEGORY_LABELS:
+        category = ""
     difficulty = infer_difficulty(user_text)
-    fallback = build_fallback(component, user_text, task_type, difficulty)
+    fallback = build_fallback(component, user_text, task_type, difficulty, category)
     candidates = [fallback]
     used_ai = False
     message = None
 
     if model_caller is not None and user_text:
         try:
-            result = model_caller(_ai_messages(component, user_text, task_type, difficulty, image_data_url))
+            result = model_caller(
+                _ai_messages(
+                    component,
+                    user_text,
+                    task_type,
+                    difficulty,
+                    image_data_url,
+                    category,
+                )
+            )
             if result.get("ok"):
                 parsed = _extract_json(result.get("content")) or _recover_partial_json(result.get("content")) or {}
                 parsed_difficulty = parsed.get("difficulty")
@@ -228,6 +263,8 @@ def compose_prompt(data, model_caller=None, image_data_url=None):
         "used_ai": used_ai,
         "task_type": task_type,
         "task_type_label": TYPE_LABELS[task_type],
+        "category": category,
+        "category_label": CATEGORY_LABELS.get(category, ""),
         "difficulty": difficulty,
         "difficulty_label": DIFFICULTY_LABELS[difficulty],
         "component": component,

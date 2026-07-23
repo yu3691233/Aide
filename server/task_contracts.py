@@ -44,6 +44,12 @@ def is_inspiration(task):
     return metadata.get("content_kind") == "inspiration"
 
 
+def is_internal_test_task(task):
+    """A test dispatch attempt is an execution record, not a user task."""
+    metadata = task.get("metadata") or {}
+    return bool(metadata.get("is_test"))
+
+
 def task_matches_project(task, project_path, strict_project=True):
     if not project_path:
         return True
@@ -66,6 +72,8 @@ def summarize_tasks_for_project(tasks, project_path="", strict_project=True, lim
         if not isinstance(task, dict):
             continue
         if is_inspiration(task):
+            continue
+        if is_internal_test_task(task):
             continue
         if project_path and strict_project and not task.get("project"):
             skipped_legacy_without_project += 1

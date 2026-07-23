@@ -78,6 +78,27 @@ VISIBLE_TASK_ACTIONS = ("copy", "view", "more")
 DEFAULT_QUICK_REPLIES = ("继续", "安装到手机", "升级版本号并提交git")
 DEFAULT_COLLAPSED_GROUPS = frozenset({"待测试", "已完成"})
 TEST_FEEDBACK_MARKER = "\n\n---\n测试反馈："
+INPUT_HINT = "描述任务目标，或粘贴生成后的提示词…"
+PROMPT_TASK_TYPES = (
+    ("unspecified", "未指定"),
+    ("feature", "新增功能"),
+    ("optimize", "功能优化"),
+    ("bug", "修复bug"),
+    ("other", "其他"),
+)
+PROMPT_CATEGORY_TO_COMPOSE_TYPE = {
+    "unspecified": "auto",
+    "feature": "feature_change",
+    "optimize": "feature_change",
+    "bug": "bug_fix",
+    "other": "auto",
+}
+PROMPT_CATEGORY_TO_CLASSIFICATION_TYPE = {
+    "feature": "feature",
+    "optimize": "optimization",
+    "bug": "bug_fix",
+    "other": "other",
+}
 QUICK_REPLIES_FILE = Path(__file__).resolve().parent / "state" / "floating_quick_replies.json"
 WINDOW_STATE_FILE = Path(__file__).resolve().parent / "state" / "floating_window_state.json"
 # 记录浮窗启动时获取 Codex 额度的时间戳，10 分钟内重启不重复获取。
@@ -409,7 +430,11 @@ class FloatingWindowApp:
         self.selected_ide_key = None
         self.selected_surface = None
         self.surface_project_key = None
-        self.active_tab = "tasks"
+        self.active_tab = "create"
+        self.prompt_task_type = "unspecified"
+        self.prompt_component_name = ""
+        self.prompt_component_location = ""
+        self.prompt_candidates = []
         self.expanded_task_id = None
         self.test_selection_mode = False
         self.selected_test_task_ids = set()
@@ -527,7 +552,7 @@ class FloatingWindowApp:
         self.input_shell = input_shell
         self.input_box = tk.Text(input_shell, height=1, wrap="word", relief="flat", bd=0, bg=card, fg=text, insertbackground=text, font=("Microsoft YaHei UI", 9), undo=True, autoseparators=True, maxundo=-1)
         input_window = input_shell.create_window(12, 9, anchor="nw", window=self.input_box)
-        self.input_box.insert("1.0", "随心输入…")
+        self.input_box.insert("1.0", INPUT_HINT)
         self.input_box.edit_reset()
         self.input_box.config(fg="#8a94a6")
         self.input_box.bind("<FocusIn>", self._clear_input_hint)
@@ -578,7 +603,7 @@ class FloatingWindowApp:
         tabs.pack(fill="x", pady=(0, 3))
         self.tab_buttons = {}
         self.tab_lines = {}
-        for key, label in (("tasks", "任务"), ("notes", "随记"), ("tools", "工具")):
+        for key, label in (("create", "创建任务"), ("manage", "任务管理"), ("tools", "工具")):
             cell = tk.Frame(tabs, bg=bg)
             cell.pack(side="left", fill="x", expand=True)
             button = tk.Button(
@@ -841,7 +866,8 @@ class FloatingWindowApp:
             actions.append(("pending_test", "待测试"))
         if _task_group_name(task) == "待测试":
             test_result = _task_test_result(task)
-            actions.append(("test_feedback", "测试反馈"))
+            if test_result != "passed":
+                actions.append(("test_feedback", "测试反馈"))
             if test_result == "failed":
                 actions.append(("send_test_feedback", "反馈开发 IDE"))
             if test_result in {"dispatched", "passed"}:
@@ -857,20 +883,22 @@ class FloatingWindowApp:
         actions.append(("delete", "删除"))
         return tuple(actions)
 
-    def _render_task_tab(self, tasks, summary_styles):
+    def _render_task_tab(self, tasks, summary_styles, group_names=None):
         tk = self.tk
         type_labels = {
             "android": ("Android", "#effaf3", "#24864b", "smartphone"),
             "web": ("Web", "#eff6ff", "#0867f2", "globe"),
             "general": ("通用", "#f4f1ff", "#7657d9", "bot"),
         }
-        groups = (
+        all_groups = (
             ("待派发", [task for task in tasks if _task_group_name(task) == "待派发"]),
             ("进行中", [task for task in tasks if _task_group_name(task) == "进行中"]),
             ("待测试", [task for task in tasks if _task_group_name(task) == "待测试"]),
             ("已完成", [task for task in tasks if _task_group_name(task) == "已完成"]),
         )
-        running_tasks = next(items for name, items in groups if name == "进行中")
+        visible_names = set(group_names or (name for name, _items in all_groups))
+        groups = tuple((name, items) for name, items in all_groups if name in visible_names)
+        running_tasks = next((items for name, items in groups if name == "进行中"), [])
         latest_running_id = _latest_task_id(running_tasks)
         for group_name, group_tasks in groups:
             if not group_tasks:
@@ -966,24 +994,207 @@ class FloatingWindowApp:
                 more.pack(fill="x", pady=(0, 4))
                 more.bind("<Button-1>", lambda _event: self.show_more_completed())
 
-    def _render_notes_tab(self, notes):
-        if not notes:
-            self.tk.Label(self.task_frame, text="暂无随记", bg="#ffffff", fg="#8a94a6", anchor="w").pack(fill="x", padx=4, pady=10)
-            return
-        for note in notes:
-            row = self.tk.Frame(self.task_frame, bg="#ffffff", highlightbackground="#e1e6ed", highlightthickness=1)
-            row.pack(fill="x", pady=(0, 5), ipady=6)
-            text = note["title"] if len(note["title"]) <= 34 else note["title"][:33] + "…"
-            self.tk.Label(row, text=text, bg="#ffffff", fg="#263246", anchor="w", font=("Microsoft YaHei UI", 9)).pack(side="left", fill="x", expand=True, padx=10)
-            button = self._icon_button(row, "copy", lambda item=note: self.copy_task(item), size=14)
-            button.config(padx=4, pady=3)
-            button.pack(side="right", padx=4)
+    def _render_create_tab(self, tasks, summary_styles):
+        pending = [task for task in tasks if _task_group_name(task) == "待派发"]
+        if pending:
+            self._render_task_tab(pending, summary_styles, group_names=("待派发",))
+        else:
+            self.tk.Label(
+                self.task_frame,
+                text="暂无待派发任务",
+                bg="#ffffff",
+                fg="#8a94a6",
+                anchor="w",
+                font=("Microsoft YaHei UI", 8),
+            ).pack(fill="x", padx=3, pady=(3, 8))
+        self._render_prompt_builder()
+
+    def _render_prompt_builder(self):
+        tk = self.tk
+        panel = tk.Frame(
+            self.task_frame,
+            bg="#f8faff",
+            highlightbackground="#d8e3f5",
+            highlightthickness=1,
+        )
+        panel.pack(fill="x", pady=(2, 6), ipady=7)
+
+        heading = tk.Frame(panel, bg="#f8faff")
+        heading.pack(fill="x", padx=9, pady=(1, 6))
+        tk.Label(
+            heading,
+            text="智能提示词",
+            bg="#f8faff",
+            fg="#263246",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            heading,
+            text="生成后可编辑，Enter 加入待派发",
+            bg="#f8faff",
+            fg="#7a8496",
+            font=("Microsoft YaHei UI", 7),
+        ).pack(side="right")
+
+        tk.Label(
+            panel,
+            text="任务类型",
+            bg="#f8faff",
+            fg="#657084",
+            anchor="w",
+            font=("Microsoft YaHei UI", 7),
+        ).pack(fill="x", padx=9)
+        type_row = tk.Frame(panel, bg="#f8faff")
+        type_row.pack(fill="x", padx=8, pady=(2, 6))
+        selected_type = getattr(self, "prompt_task_type", "unspecified")
+        for index, (key, label) in enumerate(PROMPT_TASK_TYPES):
+            active = key == selected_type
+            type_row.columnconfigure(index, weight=1)
+            tk.Button(
+                type_row,
+                text=label,
+                command=lambda value=key: self.select_prompt_task_type(value),
+                relief="flat",
+                bd=0,
+                bg="#0867f2" if active else "#edf2fa",
+                fg="#ffffff" if active else "#526078",
+                activebackground="#0757cd" if active else "#e3eaf5",
+                activeforeground="#ffffff" if active else "#263246",
+                font=("Microsoft YaHei UI", 7, "bold" if active else "normal"),
+                padx=2,
+                pady=3,
+                cursor="hand2",
+            ).grid(row=0, column=index, sticky="ew", padx=2)
+
+        fields = tk.Frame(panel, bg="#f8faff")
+        fields.pack(fill="x", padx=9)
+        component_col = tk.Frame(fields, bg="#f8faff")
+        component_col.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        tk.Label(
+            component_col,
+            text="组件 / 页面",
+            bg="#f8faff",
+            fg="#657084",
+            anchor="w",
+            font=("Microsoft YaHei UI", 7),
+        ).pack(fill="x")
+        component_entry = tk.Entry(
+            component_col,
+            relief="solid",
+            bd=1,
+            fg="#263246",
+            font=("Microsoft YaHei UI", 8),
+        )
+        component_entry.pack(fill="x", ipady=4, pady=(2, 0))
+        component_entry.insert(0, getattr(self, "prompt_component_name", ""))
+        self.prompt_component_name_entry = component_entry
+        component_entry.bind(
+            "<KeyRelease>",
+            lambda _event, field=component_entry: setattr(
+                self, "prompt_component_name", field.get().strip()
+            ),
+        )
+        component_entry.bind(
+            "<FocusOut>",
+            lambda _event, field=component_entry: setattr(
+                self, "prompt_component_name", field.get().strip()
+            ),
+        )
+
+        location_col = tk.Frame(fields, bg="#f8faff")
+        location_col.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        tk.Label(
+            location_col,
+            text="所在位置",
+            bg="#f8faff",
+            fg="#657084",
+            anchor="w",
+            font=("Microsoft YaHei UI", 7),
+        ).pack(fill="x")
+        location_entry = tk.Entry(
+            location_col,
+            relief="solid",
+            bd=1,
+            fg="#263246",
+            font=("Microsoft YaHei UI", 8),
+        )
+        location_entry.pack(fill="x", ipady=4, pady=(2, 0))
+        location_entry.insert(0, getattr(self, "prompt_component_location", ""))
+        self.prompt_component_location_entry = location_entry
+        location_entry.bind(
+            "<KeyRelease>",
+            lambda _event, field=location_entry: setattr(
+                self, "prompt_component_location", field.get().strip()
+            ),
+        )
+        location_entry.bind(
+            "<FocusOut>",
+            lambda _event, field=location_entry: setattr(
+                self, "prompt_component_location", field.get().strip()
+            ),
+        )
+
+        action_row = tk.Frame(panel, bg="#f8faff")
+        action_row.pack(fill="x", padx=9, pady=(7, 1))
+        tk.Button(
+            action_row,
+            text="组件定位",
+            command=self.open_prompt_component_locator,
+            relief="flat",
+            bg="#edf2fa",
+            fg="#526078",
+            activebackground="#e3eaf5",
+            font=("Microsoft YaHei UI", 7),
+            padx=8,
+            pady=3,
+            cursor="hand2",
+        ).pack(side="left")
+        tk.Button(
+            action_row,
+            text="生成智能提示词",
+            command=self.compose_smart_prompt,
+            relief="flat",
+            bg="#7757e8",
+            fg="#ffffff",
+            activebackground="#6444d5",
+            activeforeground="#ffffff",
+            font=("Microsoft YaHei UI", 7, "bold"),
+            padx=10,
+            pady=3,
+            cursor="hand2",
+        ).pack(side="right")
+
+        candidates = getattr(self, "prompt_candidates", []) or []
+        if candidates:
+            tk.Frame(panel, bg="#dbe3ef", height=1).pack(fill="x", padx=9, pady=(7, 4))
+            for index, candidate in enumerate(candidates[:3]):
+                title = str(candidate.get("title") or f"候选 {index + 1}").strip()
+                understanding = str(candidate.get("understanding") or "").strip()
+                label = title if not understanding else f"{title} · {understanding}"
+                button = tk.Button(
+                    panel,
+                    text=label,
+                    command=lambda value=index: self.select_prompt_candidate(value),
+                    relief="flat",
+                    bd=0,
+                    bg="#ffffff",
+                    fg="#3f4d63",
+                    activebackground="#edf4ff",
+                    activeforeground="#0867f2",
+                    anchor="w",
+                    justify="left",
+                    wraplength=max(220, self.window_width - 48),
+                    font=("Microsoft YaHei UI", 7),
+                    padx=8,
+                    pady=4,
+                    cursor="hand2",
+                )
+                button.pack(fill="x", padx=9, pady=(0, 3))
 
     def _render_tools_tab(self):
         tools = (
             ("快捷回复", "more", self.show_quick_reply_menu),
-            ("智能提示", "bot", self.compose_smart_prompt),
-            ("保存随记", "list", self.save_inspiration),
+            ("组件定位", "globe", self.open_prompt_component_locator),
             ("设置", "settings", self.open_settings),
         )
         for label, icon, command in tools:
@@ -1020,10 +1231,19 @@ class FloatingWindowApp:
             if _task_group_name(task) == "待测试" and task.get("task_id")
         }
         self.selected_test_task_ids.intersection_update(pending_ids)
-        note_count = sum(1 for task in model["tasks"] if task.get("content_kind") == "inspiration")
-        if self.active_tab == "tasks":
+        if self.active_tab == "create":
+            pending = [
+                task for task in visible_tasks
+                if _task_group_name(task) == "待派发"
+            ]
+            content_height = (
+                sum(self._task_card_height(task) + 4 for task in pending)
+                + (24 if pending else 28)
+                + 185
+                + min(3, len(getattr(self, "prompt_candidates", []) or [])) * 38
+            )
+        elif self.active_tab == "manage":
             grouped = (
-                ("待派发", [task for task in visible_tasks if _task_group_name(task) == "待派发"]),
                 ("进行中", [task for task in visible_tasks if _task_group_name(task) == "进行中"]),
                 ("待测试", [task for task in visible_tasks if _task_group_name(task) == "待测试"]),
                 ("已完成", [task for task in visible_tasks if _task_group_name(task) == "已完成"]),
@@ -1044,8 +1264,6 @@ class FloatingWindowApp:
                 + group_count * 24
                 + (24 if has_more_completed else 0)
             )
-        elif self.active_tab == "notes":
-            content_height = note_count * 42
         else:
             content_height = 42
         compact_height = max(self.min_window_height, min(self.max_window_height, 260 + content_height))
@@ -1089,19 +1307,38 @@ class FloatingWindowApp:
             )
             self.tab_lines[key].config(bg="#0867f2" if active else "#dbe2ea")
         self._clear_rows(self.task_frame)
-        notes = [task for task in model["tasks"] if task.get("content_kind") == "inspiration"]
         tasks = [task for task in model["tasks"] if task.get("content_kind") != "inspiration"]
-        if self.active_tab == "notes":
-            self._render_notes_tab(notes)
+        if self.active_tab == "create":
+            self._render_create_tab(tasks, summary_styles)
         elif self.active_tab == "tools":
             self._render_tools_tab()
-        elif tasks:
-            self._render_task_tab(tasks, summary_styles)
+        elif any(_task_group_name(task) != "待派发" for task in tasks):
+            self._render_task_tab(
+                tasks,
+                summary_styles,
+                group_names=("进行中", "待测试", "已完成"),
+            )
         else:
-            tk.Label(self.task_frame, text="当前没有任务", bg="#ffffff", fg="#777f8f", anchor="w").pack(fill="x", pady=10)
+            tk.Label(
+                self.task_frame,
+                text="暂无进行中、待测试或已完成任务",
+                bg="#ffffff",
+                fg="#777f8f",
+                anchor="w",
+            ).pack(fill="x", pady=10)
 
         selected_ide = next((ide for ide in model["ides"] if ide["key"] == self.selected_ide_key), None)
-        if selected_ide:
+        if self.active_tab == "create":
+            self.send_btn.itemconfigure(
+                self.send_btn._text_item,
+                image=self.icons.get("send", 20, "#0867f2"),
+            )
+            self.send_btn.tag_bind(
+                "send-action",
+                "<Button-1>",
+                lambda _event: self.create_task(),
+            )
+        elif selected_ide:
             self.send_btn.itemconfigure(self.send_btn._text_item, image=self.icons.get("send", 20, "#0867f2"))
             self.send_btn.tag_bind("send-action", "<Button-1>", lambda _event: self._send_input())
         else:
@@ -1151,7 +1388,8 @@ class FloatingWindowApp:
         platforms = _project_platforms(capabilities)
         if len(platforms) == 1:
             return platforms[0]
-        return self.selected_surface if self.selected_surface in platforms else None
+        selected_surface = getattr(self, "selected_surface", None)
+        return selected_surface if selected_surface in platforms else None
 
     def _ensure_context_tools_visible(self):
         """安全地让 context_tools_frame 可见，避免索引越界崩溃。"""
@@ -1663,14 +1901,38 @@ class FloatingWindowApp:
         webbrowser.open(f"{BRIDGE_URL.rstrip('/')}/?debug=1")
         self._set_status("已打开 Web 组件定位模式", "#239957", 1800)
 
+    def open_prompt_component_locator(self):
+        surface = self._active_tool_surface(
+            getattr(self, "current_model", {}).get("capabilities") or []
+        )
+        if surface == "web":
+            self.open_web_component_locator()
+        elif surface == "windows":
+            self.windows_component_locator()
+        elif surface == "android":
+            self.android_screenshot_feedback()
+        else:
+            self._set_status("请先在标题栏选择 Android、Web 或 Windows", "#b42318", 2200)
+
     def windows_screenshot_feedback(self):
         """自由框选屏幕任意区域 → 标注 → 上传到剪贴板 → 粘贴到 IDE → 发送提示词"""
         if not self._ensure_ide_for_feedback("windows"):
             return
-        self._start_region_capture()
+        self._start_region_capture(mode="feedback")
 
-    def _start_region_capture(self):
-        self._set_status("正在截取屏幕…")
+    def windows_component_locator(self):
+        """框选 Windows 组件，用截图模型识别组件名称和界面位置并回填创建页。"""
+        self.active_tab = "create"
+        self.region_capture_mode = "component"
+        self._start_region_capture(mode="component")
+
+    def _start_region_capture(self, mode="feedback"):
+        self.region_capture_mode = mode if mode in {"feedback", "component"} else "feedback"
+        self._set_status(
+            "请框选要识别的 Windows 组件…"
+            if self.region_capture_mode == "component"
+            else "正在截取屏幕…"
+        )
         # 先隐藏浮窗，避免它自身出现在截图中
         self.root.withdraw()
         self.root.update_idletasks()
@@ -1748,7 +2010,12 @@ class FloatingWindowApp:
             cv.create_rectangle(rx, ry, rx + rw_ - 1, ry + rh_ - 1,
                                 outline="#2da9ff", width=1, dash=(4, 3))
 
-        cv.create_text(12, 12, text="拖拽选择区域 · 松手即截取 · Esc 取消",
+        instruction = (
+            "拖拽框选目标组件 · 松手后自动识别 · Esc 取消"
+            if getattr(self, "region_capture_mode", "feedback") == "component"
+            else "拖拽选择区域 · 松手即截取 · Esc 取消"
+        )
+        cv.create_text(12, 12, text=instruction,
                        fill="#2da9ff", font=("Microsoft YaHei UI", 11), anchor="nw")
 
         sel = {"x0": None, "y0": None, "x1": None, "y1": None}
@@ -1868,8 +2135,148 @@ class FloatingWindowApp:
             self.root.deiconify()
             self._set_status("选区过小，已取消", "#b42318", 2000)
             return
+        if getattr(self, "region_capture_mode", "feedback") == "component":
+            component_image = self._prepare_windows_component_image(
+                screen, (bx0, by0, bx1, by1)
+            )
+            self.root.deiconify()
+            self._recognize_windows_component(
+                component_image,
+                selection_hint={
+                    "selected_box": [bx0, by0, bx1, by1],
+                    "screen_size": [iw, ih],
+                },
+            )
+            return
         cropped = screen.crop((bx0, by0, bx1, by1)).convert("RGB")
         self._open_annotate_editor(cropped, (0, 0, cropped.width, cropped.height))
+
+    @staticmethod
+    def _prepare_windows_component_image(screen, box):
+        """保留组件周边上下文，并用红框明确用户实际选择的目标。"""
+        bx0, by0, bx1, by1 = box
+        selected_width = max(1, bx1 - bx0)
+        selected_height = max(1, by1 - by0)
+        pad_x = max(80, int(selected_width * 0.55))
+        pad_y = max(60, int(selected_height * 0.8))
+        cx0 = max(0, bx0 - pad_x)
+        cy0 = max(0, by0 - pad_y)
+        cx1 = min(screen.width, bx1 + pad_x)
+        cy1 = min(screen.height, by1 + pad_y)
+        context = screen.crop((cx0, cy0, cx1, cy1)).convert("RGB")
+        draw = ImageDraw.Draw(context)
+        outline_width = max(3, min(8, round(min(context.size) / 120)))
+        draw.rectangle(
+            (bx0 - cx0, by0 - cy0, bx1 - cx0, by1 - cy0),
+            outline="#ff2d2d",
+            width=outline_width,
+        )
+        return context
+
+    @staticmethod
+    def _selection_location_hint(selection_hint):
+        selected = (selection_hint or {}).get("selected_box") or []
+        screen_size = (selection_hint or {}).get("screen_size") or []
+        if len(selected) != 4 or len(screen_size) != 2:
+            return "Windows 界面中的已框选位置"
+        width, height = screen_size
+        if not width or not height:
+            return "Windows 界面中的已框选位置"
+        center_x = (selected[0] + selected[2]) / 2 / width
+        center_y = (selected[1] + selected[3]) / 2 / height
+        horizontal = "左侧" if center_x < 0.34 else "右侧" if center_x > 0.66 else "中部"
+        vertical = "顶部" if center_y < 0.34 else "底部" if center_y > 0.66 else "中部"
+        return f"Windows 界面{vertical}{horizontal}"
+
+    def _component_prompt_payload(self, image_ref, selection_hint=None):
+        category = getattr(self, "prompt_task_type", "unspecified")
+        compose_type = PROMPT_CATEGORY_TO_COMPOSE_TYPE.get(category, "auto")
+        return {
+            "user_text": "【用户未描述具体需求】",
+            "task_type": compose_type,
+            "category": category,
+            "image": image_ref,
+            "component": {
+                "platform": "Windows",
+                "name": "红框内目标组件",
+                "location": self._selection_location_hint(selection_hint),
+                "technical": selection_hint or {},
+            },
+        }
+
+    def _recognize_windows_component(self, component_image, selection_hint=None):
+        output = io.BytesIO()
+        component_image.save(output, "PNG")
+        png_bytes = output.getvalue()
+        self._set_status("正在识别框选组件和界面位置…")
+
+        def worker():
+            try:
+                uploaded = http_post_multipart(
+                    f"{BRIDGE_URL.rstrip('/')}/upload",
+                    fields={"to_clipboard": "false"},
+                    files={
+                        "file": (
+                            f"component_locator_{int(time.time())}.png",
+                            png_bytes,
+                            "image/png",
+                        )
+                    },
+                )
+                if not uploaded.get("ok"):
+                    raise RuntimeError(uploaded.get("raw") or "组件截图上传失败")
+                image_ref = uploaded.get("url") or uploaded.get("path")
+                result = api_request(
+                    "/api/prompt/compose",
+                    method="POST",
+                    payload=self._component_prompt_payload(image_ref, selection_hint),
+                    timeout=60,
+                )
+                if not result.get("ok"):
+                    raise RuntimeError(result.get("message") or "组件识别失败")
+            except Exception as exc:
+                self._post_ui(
+                    lambda message=str(exc): self._set_status(
+                        f"组件识别失败：{message}", "#b42318", 4000
+                    )
+                )
+                return
+            self._post_ui(
+                lambda data=result, hint=selection_hint: self._apply_windows_component_result(
+                    data, hint
+                )
+            )
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="AideLinkWindowsComponentLocator",
+        ).start()
+
+    def _apply_windows_component_result(self, result, selection_hint=None):
+        image_used = bool(result.get("image_used"))
+        recognized_name = str(result.get("component_name") or "").strip()
+        recognized_location = str(result.get("component_location") or "").strip()
+        generic_names = {"所选组件", "红框内目标组件"}
+        if image_used and recognized_name not in generic_names:
+            self.prompt_component_name = recognized_name
+        elif not getattr(self, "prompt_component_name", ""):
+            self.prompt_component_name = "已框选组件"
+        if image_used and recognized_location:
+            self.prompt_component_location = recognized_location
+        else:
+            self.prompt_component_location = self._selection_location_hint(selection_hint)
+        self._schedule_input_draft_save()
+        self._render(self.current_model)
+        if image_used:
+            self._set_status("已识别组件并回填名称与界面位置", "#239957", 2600)
+        else:
+            self._set_status(
+                "截图模型暂不可用，已回填框选位置，请补充组件名称",
+                "#b06b00",
+                3200,
+            )
+
     def _open_annotate_editor(self, source_img, bbox):
         """标注编辑器：在框选区域内绘制矩形/箭头/画笔/文字，完成后烧录并发送。"""
         cropped = source_img.crop(bbox).convert("RGB")
@@ -2306,17 +2713,33 @@ class FloatingWindowApp:
         threading.Thread(target=worker, daemon=True, name="AideLinkQuotaStartup").start()
 
     def select_ide(self, key):
-        should_send = bool(self._input_text())
         self.selected_ide_key = key
         self._render(self.current_model)
-        if should_send:
-            self._send_input()
 
     def select_tab(self, tab):
-        if tab not in {"tasks", "notes", "tools"}:
+        if tab not in {"create", "manage", "tools"}:
             return
         self.active_tab = tab
         self._render(self.current_model)
+
+    def select_prompt_task_type(self, task_type):
+        if task_type not in {key for key, _label in PROMPT_TASK_TYPES}:
+            return
+        self.prompt_task_type = task_type
+        self.prompt_candidates = []
+        self._schedule_input_draft_save()
+        self._render(self.current_model)
+
+    def select_prompt_candidate(self, index):
+        candidates = getattr(self, "prompt_candidates", []) or []
+        if not 0 <= index < len(candidates):
+            return
+        prompt = str(candidates[index].get("prompt") or "").strip()
+        if not prompt:
+            return
+        self._set_input_text(prompt)
+        self._set_status("已选择智能提示词，可继续编辑", "#239957", 1800)
+        self.input_box.focus_set()
 
     def toggle_task_more(self, task_id):
         self.expanded_task_id = None if self.expanded_task_id == task_id else task_id
@@ -2408,16 +2831,13 @@ class FloatingWindowApp:
     def _handle_input_return(self, event):
         if event.state & 0x0004:
             return self._insert_input_newline()
-        if self.active_tab == "notes":
-            self.save_inspiration()
-            return "break"
-        if self.active_tab == "tasks":
+        if self.active_tab == "create":
             self.create_task()
             return "break"
         return None
 
     def _handle_input_ctrl_return(self, _event):
-        if self.active_tab not in {"tasks", "notes"}:
+        if self.active_tab != "create":
             return None
         return self._insert_input_newline()
 
@@ -2448,7 +2868,7 @@ class FloatingWindowApp:
 
     def _input_text(self):
         value = self.input_box.get("1.0", "end-1c").strip()
-        return "" if value == "随心输入…" else value
+        return "" if value == INPUT_HINT else value
 
     def _set_input_text(self, value):
         try:
@@ -2634,7 +3054,20 @@ class FloatingWindowApp:
         reload_list()
         entry.focus_set()
 
+    def _sync_prompt_builder_fields(self):
+        for widget_name, state_name in (
+            ("prompt_component_name_entry", "prompt_component_name"),
+            ("prompt_component_location_entry", "prompt_component_location"),
+        ):
+            widget = getattr(self, widget_name, None)
+            try:
+                if widget is not None and widget.winfo_exists():
+                    setattr(self, state_name, widget.get().strip())
+            except (AttributeError, self.tk.TclError):
+                pass
+
     def compose_smart_prompt(self):
+        self._sync_prompt_builder_fields()
         text = self._input_text()
         if not text:
             self._set_status("请先输入需求描述", "#b42318", 1800)
@@ -2642,51 +3075,84 @@ class FloatingWindowApp:
 
         def composed(result):
             candidates = result.get("candidates") or []
-            if candidates:
-                menu = self.tk.Menu(self.root, tearoff=False)
-                for candidate in candidates:
-                    prompt = candidate.get("prompt") or ""
-                    if prompt:
-                        menu.add_command(
-                            label=candidate.get("title") or "提示词候选",
-                            command=lambda value=prompt: (
-                                self._set_input_text(value),
-                                self._set_status("已选择智能提示词", "#239957", 1800),
-                            ),
-                        )
-                if menu.index("end") is not None:
-                    self._set_status("请选择提示词候选", "#239957")
-                    menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
-                    return
+            self.prompt_candidates = [
+                candidate for candidate in candidates
+                if str(candidate.get("prompt") or "").strip()
+            ][:3]
+            recognized_name = str(result.get("component_name") or "").strip()
+            recognized_location = str(result.get("component_location") or "").strip()
+            if recognized_name and recognized_name != "所选组件":
+                self.prompt_component_name = recognized_name
+            if recognized_location:
+                self.prompt_component_location = recognized_location
             prompt = result.get("prompt")
             if not prompt:
                 self._set_status("未生成可用提示词", "#b42318")
                 return
             self._set_input_text(prompt)
-            self._set_status("已生成智能提示词", "#239957", 1800)
+            self._schedule_input_draft_save()
+            self._render(self.current_model)
+            self._set_status(
+                f"已生成 {len(self.prompt_candidates) or 1} 个候选，可在创建页切换",
+                "#239957",
+                2200,
+            )
 
+        capabilities = getattr(self, "current_model", {}).get("capabilities") or []
+        active_surface = self._active_tool_surface(capabilities)
+        platform_label = next(
+            (label for key, _icon, _color, label in PLATFORM_SPECS if key == active_surface),
+            "Desktop",
+        )
+        category = getattr(self, "prompt_task_type", "unspecified")
         self._run_api(
             "/api/prompt/compose",
             method="POST",
             payload={
                 "user_text": text,
-                "task_type": "auto",
-                "component": {"platform": "Desktop", "name": "AideLink 浮窗输入"},
+                "task_type": PROMPT_CATEGORY_TO_COMPOSE_TYPE.get(category, "auto"),
+                "category": category,
+                "component": {
+                    "platform": platform_label,
+                    "name": getattr(self, "prompt_component_name", "") or "所选组件",
+                    "location": getattr(self, "prompt_component_location", ""),
+                },
             },
             on_success=composed,
             busy_text="正在生成智能提示词…",
         )
 
     def compose_task_smart_prompt(self, task):
+        self.active_tab = "create"
         self._set_input_text(task.get("text") or task.get("title") or "")
         self.input_box.focus_set()
         self.compose_smart_prompt()
 
+    def _task_text_with_component(self, text):
+        component = str(getattr(self, "prompt_component_name", "") or "").strip()
+        location = str(getattr(self, "prompt_component_location", "") or "").strip()
+        if not component and not location:
+            return text
+        if re.search(r"(?m)^(?:定位|组件/类/函数|【界面定位】)\s*[：:]", text):
+            return text
+        capabilities = getattr(self, "current_model", {}).get("capabilities") or []
+        active_surface = self._active_tool_surface(capabilities)
+        platform_label = next(
+            (label for key, _icon, _color, label in PLATFORM_SPECS if key == active_surface),
+            "",
+        )
+        context = " · ".join(
+            part for part in (platform_label, location, component) if part
+        )
+        return f"目标：{text}\n定位：{context}"
+
     def create_task(self):
-        text = self._input_text()
-        if not text:
+        self._sync_prompt_builder_fields()
+        original_text = self._input_text()
+        if not original_text:
             self._set_status("请先输入任务内容", "#b42318", 1800)
             return
+        text = original_text
         if getattr(self, "test_feedback_task_id", None):
             feedback = text
             if TEST_FEEDBACK_MARKER in feedback:
@@ -2733,10 +3199,12 @@ class FloatingWindowApp:
                 busy_text="正在保存任务…",
             )
             return
+        text = self._task_text_with_component(original_text)
         # 创建任务只进入“待派发”；当前选中的 IDE 仅用于下一步点击派发时
         # 作为默认目标，不能在创建阶段把任务写成 queued/进行中。
         payload = {
             "text": text,
+            "original_text": original_text,
             "target_ide": "auto",
             "auto_dispatch": False,
             "source": "floating_window",
@@ -2745,6 +3213,23 @@ class FloatingWindowApp:
         selected_surface = getattr(self, "selected_surface", None)
         if len(_project_platforms(current_model.get("capabilities"))) > 1 and selected_surface:
             payload["surface"] = selected_surface
+        prompt_type = getattr(self, "prompt_task_type", "unspecified")
+        classification_type = PROMPT_CATEGORY_TO_CLASSIFICATION_TYPE.get(
+            prompt_type, ""
+        )
+        classification = {
+            "surface": selected_surface or self._active_tool_surface(
+                current_model.get("capabilities") or []
+            ) or "general",
+            "task_type": classification_type,
+            "ui_location": getattr(self, "prompt_component_location", ""),
+            "functional_areas": [],
+            "state": "confirmed" if classification_type else "unclassified",
+            "source": "user",
+        }
+        payload["classification"] = classification
+        if classification_type:
+            payload["task_type"] = classification_type
 
         def created(result):
             task_id = result.get("task_id") or ""
@@ -2779,23 +3264,11 @@ class FloatingWindowApp:
                 }
                 self._render(optimistic_model)
             self._set_input_text("")
+            self.prompt_candidates = []
             self._set_status("任务已创建", "#239957", 1800)
             self.refresh()
 
         self._run_api("/api/tasks/create", method="POST", payload=payload, on_success=created, busy_text="正在创建任务…")
-
-    def save_inspiration(self):
-        text = self._input_text()
-        if not text:
-            self._set_status("请先输入随记内容", "#b42318", 1800)
-            return
-
-        def saved(_result):
-            self._set_input_text("")
-            self._set_status("随记已保存", "#239957", 1800)
-            self.refresh()
-
-        self._run_api("/api/tasks/inspiration", method="POST", payload={"text": text}, on_success=saved, busy_text="正在保存随记…")
 
     def copy_task(self, task):
         content = task_copy_text(task)
@@ -2862,6 +3335,8 @@ class FloatingWindowApp:
             self.test_feedback_context = ""
             self.input_draft_before_task_edit = self._input_text()
             self.editing_task_id = task_id
+            self.active_tab = "create"
+            self._render(self.current_model)
             self._set_input_text(task.get("text") or task.get("title") or "")
             self.input_box.focus_set()
             self._set_status("正在编辑任务，按 Enter 保存", "#0867f2")
@@ -2873,6 +3348,8 @@ class FloatingWindowApp:
             self.input_draft_before_test_feedback = self._input_text()
             self.test_feedback_task_id = task_id
             self.test_feedback_context = f"原任务上下文：\n{body}{TEST_FEEDBACK_MARKER}"
+            self.active_tab = "create"
+            self._render(self.current_model)
             self._set_input_text(self.test_feedback_context)
             self.input_box.focus_set()
             self.input_box.mark_set("insert", "end-1c")
@@ -3041,7 +3518,7 @@ class FloatingWindowApp:
         self.tk.Label(self.task_frame, text="连接恢复后将自动显示任务", bg="#ffffff", fg="#8a94a6", anchor="w").pack(fill="x", pady=8)
 
     def _clear_input_hint(self, _event):
-        if self.input_box.get("1.0", "end-1c") == "随心输入…":
+        if self.input_box.get("1.0", "end-1c") == INPUT_HINT:
             self.input_box.delete("1.0", "end")
             self.input_box.config(fg="#172033")
 
@@ -3082,7 +3559,7 @@ class FloatingWindowApp:
                 self.connection_failed = False
                 self.last_render_signature = signature
                 self._render(result.model)
-            if not self._startup_quota_done:
+            if hasattr(self, "root") and not getattr(self, "_startup_quota_done", False):
                 self._startup_quota_done = True
                 self._maybe_fetch_quota_on_startup()
         else:
@@ -3227,10 +3704,27 @@ class FloatingWindowApp:
         self.input_draft_after_id = None
         if not hasattr(self, "input_box"):
             return
-        self._update_window_state(input_draft=self._input_text())
+        self._update_window_state(
+            input_draft=self._input_text(),
+            active_tab=getattr(self, "active_tab", "create"),
+            prompt_task_type=getattr(self, "prompt_task_type", "unspecified"),
+            prompt_component_name=getattr(self, "prompt_component_name", ""),
+            prompt_component_location=getattr(self, "prompt_component_location", ""),
+        )
 
     def _restore_input_draft(self):
-        draft = str(self._read_window_state().get("input_draft") or "")
+        state = self._read_window_state()
+        draft = str(state.get("input_draft") or "")
+        restored_tab = str(state.get("active_tab") or "")
+        if restored_tab in {"create", "manage", "tools"}:
+            self.active_tab = restored_tab
+        restored_type = str(state.get("prompt_task_type") or "")
+        if restored_type in {key for key, _label in PROMPT_TASK_TYPES}:
+            self.prompt_task_type = restored_type
+        self.prompt_component_name = str(state.get("prompt_component_name") or "").strip()
+        self.prompt_component_location = str(
+            state.get("prompt_component_location") or ""
+        ).strip()
         if draft:
             self._set_input_text(draft)
             self.input_box.mark_set("insert", "end-1c")

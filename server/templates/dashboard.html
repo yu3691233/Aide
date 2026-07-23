@@ -49,7 +49,7 @@
 
       <div class="nav-item" onclick="switchPage('tasks')">
 
-        <span class="nav-icon">📋</span><span>任务列表</span>
+        <span class="nav-icon">📋</span><span>任务管理</span>
 
       </div>
 
@@ -846,11 +846,11 @@
 
           <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;" onclick="toggleTasksCollapse(event)">
 
-            <span>📋 历史任务与委派列表</span>
+            <span>📋 任务管理</span>
 
             <div style="display:flex; align-items:center; gap:8px;" onclick="event.stopPropagation()">
 
-              <button class="btn btn-sm btn-outline" id="btn-toggle-tasks" onclick="toggleTasksCollapse()" style="padding:4px 8px;font-size:12px;" title="折叠任务列表">▲</button>
+              <button class="btn btn-sm btn-outline" id="btn-toggle-tasks" onclick="toggleTasksCollapse()" style="padding:4px 8px;font-size:12px;" title="折叠任务管理">▲</button>
 
               <button class="btn btn-sm btn-primary" onclick="openGlobalPromptPanel('task')" style="background:rgba(88,166,255,0.15); color:var(--accent-blue); border:1px solid rgba(88,166,255,0.3);">➕ 添加任务</button>
 
@@ -870,6 +870,8 @@
 
             <button class="btn btn-sm btn-outline active-tab" id="btn-tab-tasks-pending" onclick="switchTasksTab('pending')">⏳ 待处理</button>
 
+            <button class="btn btn-sm btn-outline" id="btn-tab-tasks-testing" onclick="switchTasksTab('testing')">🧪 待测试</button>
+
             <button class="btn btn-sm btn-outline" id="btn-tab-tasks-completed" onclick="switchTasksTab('completed')">✅ 已完成</button>
 
             
@@ -884,7 +886,16 @@
 
             </div>
 
-            <button class="btn btn-sm btn-warning" id="btn-merge-tasks" onclick="mergeSameTargetTasks()" style="margin-left:auto;">⛓️ 一键合并同目标任务</button>
+            <div id="task-surface-filters" style="display:flex;gap:4px;margin-left:12px;padding-left:12px;border-left:1px solid var(--border-color);">
+              <button class="btn btn-sm btn-outline active-tab" data-task-surface="" onclick="setTaskSurfaceFilter('')">全部端</button>
+              <button class="btn btn-sm btn-outline" data-task-surface="web" onclick="setTaskSurfaceFilter('web')">Web</button>
+              <button class="btn btn-sm btn-outline" data-task-surface="android" onclick="setTaskSurfaceFilter('android')">Android</button>
+              <button class="btn btn-sm btn-outline" data-task-surface="windows" onclick="setTaskSurfaceFilter('windows')">Windows</button>
+            </div>
+
+            <input id="task-completed-search" class="table-input" style="display:none;margin-left:auto;width:220px;" placeholder="搜索已完成任务">
+
+            <button class="btn btn-sm btn-warning" id="btn-merge-tasks" onclick="mergeSameTargetTasks()">⛓️ 一键合并同目标任务</button>
 
           </div>
 
@@ -919,11 +930,26 @@
           </div>
 
 
+          <div style="display:flex;align-items:flex-start;gap:12px;">
+          <aside style="width:132px;flex:0 0 132px;display:flex;flex-direction:column;gap:5px;padding-top:8px;">
+            <div style="font-size:11px;color:var(--text-muted);padding:2px 6px;">任务类型</div>
+            <button class="btn btn-sm btn-outline active-tab" data-task-type="" onclick="setTaskTypeFilter('')">全部任务</button>
+            <button class="btn btn-sm btn-outline" data-task-type="unclassified" onclick="setTaskTypeFilter('unclassified')">待整理</button>
+            <button class="btn btn-sm btn-outline" data-task-type="feature" onclick="setTaskTypeFilter('feature')">新功能</button>
+            <button class="btn btn-sm btn-outline" data-task-type="optimization" onclick="setTaskTypeFilter('optimization')">功能优化</button>
+            <button class="btn btn-sm btn-outline" data-task-type="bug_fix" onclick="setTaskTypeFilter('bug_fix')">Bug 修复</button>
+            <button class="btn btn-sm btn-outline" data-task-type="other" onclick="setTaskTypeFilter('other')">其他</button>
+          </aside>
+          <div style="flex:1;min-width:0;">
           <div class="table-wrapper">
 
             <div id="batch-task-toolbar" style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--border-color);margin-bottom:8px;">
 
               <span id="selected-task-count" style="font-size:12px;color:var(--text-muted);">已选 0 项</span>
+
+              <button class="btn btn-sm btn-outline" id="btn-batch-classify" onclick="openTaskClassification()" style="display:none;">🏷️ 手动整理</button>
+
+              <button class="btn btn-sm btn-primary" id="btn-batch-smart-classify" onclick="smartClassifySelectedTasks()" style="display:none;">✨ 智能整理</button>
 
               <button class="btn btn-sm btn-success" id="btn-batch-complete" onclick="batchCompleteTasks()" style="display:none;">✅ 批量完成</button>
 
@@ -955,7 +981,7 @@
 
               <tbody id="tasks-table">
 
-                <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted)">正在加载任务列表...</td></tr>
+                <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted)">正在加载任务...</td></tr>
 
               </tbody>
 
@@ -972,8 +998,6 @@
 
               <span style="font-size:13px; color:var(--text-secondary);">按组件分组显示任务</span>
 
-              <input type="text" id="component-search-input" class="table-input" style="width:200px; padding:6px 10px; font-size:12px;" placeholder="🔍 搜索组件..." oninput="filterComponentView(this.value)">
-
             </div>
 
             <div id="component-groups-container" style="display:flex; flex-direction:column; gap:12px;">
@@ -982,6 +1006,8 @@
 
             </div>
 
+          </div>
+          </div>
           </div>
 
         </div> <!-- /tasks-collapse-body -->
@@ -1213,7 +1239,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       <div id="global-prompt-source" style="font-size:12px; color:var(--text-muted); padding:6px 10px; background:var(--bg-tertiary); border-radius:6px;">
 
-        📋 来源：任务列表
+        📋 来源：任务管理
 
       </div>
 
@@ -1255,7 +1281,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         <label class="form-label">修改类型</label>
 
-        <div style="display:flex; gap:8px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
 
           <button class="btn btn-sm btn-outline active-tab" id="global-btn-prompt-type-unspecified" onclick="selectGlobalPromptCategory('unspecified')">— 未指定</button>
 
@@ -1265,6 +1291,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
           <button class="btn btn-sm btn-outline" id="global-btn-prompt-type-bug" onclick="selectGlobalPromptCategory('bug')">🐛 修复bug</button>
 
+          <button class="btn btn-sm btn-outline" id="global-btn-prompt-type-other" onclick="selectGlobalPromptCategory('other')">📌 其他</button>
+
+        </div>
+
+      </div>
+
+      <div>
+
+        <label class="form-label">任务分类 <span style="color:var(--text-muted); font-weight:400;">（可选，AI 只填写建议）</span></label>
+
+        <div id="global-prompt-surface-buttons" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">
+          <button class="btn btn-sm btn-outline active-tab" data-surface="general" onclick="selectGlobalPromptSurface('general')">通用</button>
+          <button class="btn btn-sm btn-outline" data-surface="web" onclick="selectGlobalPromptSurface('web')">Web</button>
+          <button class="btn btn-sm btn-outline" data-surface="android" onclick="selectGlobalPromptSurface('android')">Android</button>
+          <button class="btn btn-sm btn-outline" data-surface="windows" onclick="selectGlobalPromptSurface('windows')">Windows</button>
+        </div>
+
+        <input type="text" id="global-prompt-functional-areas" class="form-input" style="width:100%;font-size:12px;margin-bottom:8px;" placeholder="功能区域（可填多个，用逗号分隔，例如：订单、支付）">
+
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="global-prompt-ui-location" class="form-input" style="flex:1; font-size:12px;" placeholder="界面位置（可留空）">
+          <button class="btn btn-sm btn-outline" onclick="suggestGlobalPromptClassification()">🧚 智能建议</button>
         </div>
 
       </div>
@@ -1376,64 +1424,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </div>
 
-
-<script>
-
-let qrCodeInstance = null;
-
-
-function showQRModal(ip) {
-
-  if (!ip || ip === '—') {
-
-    showToast('暂无有效局域网IP', 'error');
-
-    return;
-
-  }
-
-  const url = `http://${ip}:5000`;
-
-  document.getElementById('qr-url-text').textContent = url;
-
-  document.getElementById('qr-modal').style.display = 'flex';
-
-  
-
-  // 清空以前的二维码
-
-  document.getElementById('qrcode-canvas').innerHTML = '';
-
-  
-
-  // 渲染二维码
-
-  qrCodeInstance = new QRCode(document.getElementById('qrcode-canvas'), {
-
-    text: url,
-
-    width: 200,
-
-    height: 200,
-
-    colorDark : "#000000",
-
-    colorLight : "#ffffff",
-
-    correctLevel : QRCode.CorrectLevel.H
-
-  });
-
-}
-
-
-function closeQRModal() {
-
-  document.getElementById('qr-modal').style.display = 'none';
-
-}
-
-</script>
 
 </body>
 

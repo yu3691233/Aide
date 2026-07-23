@@ -91,6 +91,25 @@ class PromptComposerTests(unittest.TestCase):
         self.assertIn("定位：", result["prompt"])
         self.assertNotIn("实现步骤", result["prompt"])
 
+    def test_web_category_is_preserved_in_fallback_and_ai_payload(self):
+        captured = {}
+
+        def fake_model(messages):
+            captured["payload"] = messages[-1]["content"]
+            return {"ok": False, "error": "offline"}
+
+        result = compose_prompt({
+            "component": {"platform": "Windows", "name": "任务按钮"},
+            "user_text": "调整点击后的任务创建流程",
+            "task_type": "feature_change",
+            "category": "optimize",
+        }, model_caller=fake_model)
+
+        self.assertEqual("optimize", result["category"])
+        self.assertEqual("功能优化", result["category_label"])
+        self.assertIn("类型：功能优化", result["prompt"])
+        self.assertIn('"selected_category": "optimize"', captured["payload"])
+
     def test_ai_instruction_prioritizes_scope_over_implementation_steps(self):
         messages = _ai_messages(
             {"platform": "Desktop", "name": "浮窗", "page": "", "location": "", "type": "", "technical": {}},

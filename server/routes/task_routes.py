@@ -69,7 +69,13 @@ from routes.task_routes_scanner import (
 )
 
 from routes.task_routes_prompt import build_prompt_candidates, read_prompt_history
-from task_contracts import task_allowed_actions
+from task_classification import (
+    classification_for_task,
+    heuristic_classification,
+    normalize_classification,
+    parse_classification_response,
+)
+from task_contracts import is_internal_test_task, task_allowed_actions
 
 
 
@@ -108,6 +114,12 @@ def map_task_for_client(t):
         t["task_type"] = _task_type_for_list(t)
     t["version"] = t.get("app_version") or t.get("version") or ""
     metadata = t.get("metadata") or {}
+    classification = classification_for_task(t)
+    t["classification"] = classification
+    t["surface"] = classification["surface"]
+    t["ui_location"] = classification["ui_location"]
+    t["functional_areas"] = classification["functional_areas"]
+    t["classification_state"] = classification["state"]
     if "feedbacks" not in t and "feedbacks" in metadata:
         t["feedbacks"] = metadata["feedbacks"]
     t["device_label"] = metadata.get("device_label", "")
@@ -335,7 +347,7 @@ def api_tasks_create():
 
     title = data.get("title", "").strip() if data.get("title") else ""
 
-    target_ide = data.get("target_ide", "auto").strip()
+    target_ide = str(data.get("target_ide") or "auto").strip()
 
     auto_dispatch = data.get("auto_dispatch", True)
     surface = str(data.get("surface") or "").strip().lower()
@@ -344,6 +356,15 @@ def api_tasks_create():
     source = str(data.get("source") or "app").strip().lower()
     if source not in {"app", "floating_window", "web"}:
         source = "app"
+    classification_input = dict(data.get("classification") or {})
+    if surface and not classification_input.get("surface"):
+        classification_input["surface"] = surface
+    classification = normalize_classification(classification_input)
+    task_type = str(data.get("task_type") or "").strip().lower()
+    if task_type and not classification["task_type"]:
+        classification["task_type"] = normalize_classification(
+            {"task_type": task_type},
+        )["task_type"]
 
 
 
@@ -370,16 +391,25 @@ def api_tasks_create():
         source=source,
 
         target_ide=assigned_target_ide,
+        owned_paths=data.get("owned_paths") or [],
+        priority=str(data.get("priority") or "medium").strip().lower(),
 
         metadata={
             "created_from": source,
+            **(
+                {"original_message": str(data.get("original_text") or "").strip()}
+                if str(data.get("original_text") or "").strip()
+                else {}
+            ),
             **(
                 {"preferred_target_ide": target_ide}
                 if not auto_dispatch and target_ide != "auto"
                 else {}
             ),
             **({"surface": surface} if surface else {}),
+            "classification": classification,
         },
+        parent_task_id=str(data.get("parent_task_id") or "").strip() or None,
 
     )
 
@@ -586,6 +616,9 @@ def api_tasks():
     # 直接从 runtime tasks 读取（统一状态机）
 
     tasks_list = runtime.read_tasks()
+    include_test_tasks = request.args.get("include_test_tasks", "0") == "1"
+    if not include_test_tasks:
+        tasks_list = [task for task in tasks_list if not is_internal_test_task(task)]
 
 
 
@@ -658,16 +691,142 @@ def api_tasks():
             if not t.get("project") or _norm_project_path(t.get("project")) == normalized_filter
         ]
 
+    surface_filter = request.args.get("surface", "").strip().lower()
+    task_type_filter = request.args.get("task_type", "").strip().lower()
+    classification_state_filter = request.args.get("classification_state", "").strip().lower()
+    functional_area_filter = request.args.get("functional_area", "").strip().lower()
+
 
 
     # 字段映射：兼容前端期望的字段名
 
     tasks_list = [map_task_for_client(t) for t in tasks_list]
     tasks_list = [t for t in tasks_list if (t.get("task_type") or "").lower() != "chat"]
+    if surface_filter:
+        tasks_list = [t for t in tasks_list if t["classification"]["surface"] == surface_filter]
+    if task_type_filter:
+        tasks_list = [t for t in tasks_list if t["classification"]["task_type"] == task_type_filter]
+    if classification_state_filter:
+        tasks_list = [
+            t for t in tasks_list
+            if t["classification"]["state"] == classification_state_filter
+        ]
+    if functional_area_filter:
+        tasks_list = [
+            t for t in tasks_list
+            if any(
+                functional_area_filter in area.lower()
+                for area in t["classification"]["functional_areas"]
+            )
+        ]
 
     tasks_list.sort(key=lambda x: x.get("created_at", x.get("time", "")), reverse=True)
 
     return jsonify({"success": True, "tasks": tasks_list})
+
+
+@task_bp.route("/api/tasks/classification", methods=["POST"])
+def api_tasks_classification():
+    """Apply optional classification choices without changing task content or lifecycle."""
+    data = request.get_json(silent=True) or {}
+    task_ids = data.get("task_ids") or []
+    if data.get("task_id"):
+        task_ids = [data["task_id"], *task_ids]
+    task_ids = list(dict.fromkeys(
+        str(item).strip() for item in task_ids if str(item).strip()
+    ))
+    if not task_ids:
+        return jsonify({"success": False, "message": "缺少任务 ID"}), 400
+
+    classification = normalize_classification(data.get("classification"), default_state="confirmed")
+    if classification["state"] == "suggested" and classification["source"] == "user":
+        classification["source"] = "ai"
+
+    from shared_runtime import runtime
+
+    updated_ids = []
+    missing_ids = []
+    for task_id in task_ids:
+        task = runtime.get_task(task_id)
+        if not task:
+            missing_ids.append(task_id)
+            continue
+        metadata = dict(task.get("metadata") or {})
+        metadata["classification"] = classification
+        runtime.update_task(task_id, metadata=metadata)
+        updated_ids.append(task_id)
+
+    status_code = 200 if updated_ids else 404
+    return jsonify({
+        "success": bool(updated_ids),
+        "updated_task_ids": updated_ids,
+        "missing_task_ids": missing_ids,
+        "classification": classification,
+    }), status_code
+
+
+@task_bp.route("/api/tasks/classification/suggest", methods=["POST"])
+def api_tasks_classification_suggest():
+    """Generate a non-persistent suggestion for an existing task or new-task text."""
+    data = request.get_json(silent=True) or {}
+    task_id = str(data.get("task_id") or "").strip()
+    if task_id:
+        from shared_runtime import runtime
+        task = runtime.get_task(task_id)
+        if not task:
+            return jsonify({"success": False, "message": f"任务 {task_id} 不存在"}), 404
+        title = str(task.get("title") or "")
+        text = str(task.get("text") or "")
+    else:
+        title = str(data.get("title") or "")
+        text = str(data.get("text") or "")
+        if not title.strip() and not text.strip():
+            return jsonify({"success": False, "message": "缺少任务内容"}), 400
+
+    prompt = (
+        "你是任务分类助手，只返回 JSON，不执行任务。"
+        "surface 只能是 general/web/android/windows/空字符串；"
+        "task_type 只能是 feature/optimization/bug_fix/other/空字符串；"
+        "functional_areas 是当前产品自身的用户功能区域名称，返回 0 到 3 个简短候选；"
+        "不要使用 AideLink、任务管理、IDE 管理等预设模块名，除非描述中明确出现；"
+        "ui_location 不确定时返回空字符串。格式："
+        '{"surface":"","task_type":"","functional_areas":[],"ui_location":""}\n'
+        f"标题：{title[:300]}\n"
+        f"描述：{text[:3000]}"
+    )
+    fallback = False
+    try:
+        from model_registry import call_model, get_default_model
+
+        result = call_model(
+            get_default_model(),
+            [{"role": "user", "content": prompt}],
+            max_tokens=300,
+            timeout=30,
+        )
+        if not result.get("ok"):
+            raise ValueError(result.get("error") or "模型调用失败")
+        parsed = parse_classification_response(result.get("content"))
+        suggestion = normalize_classification({
+            **parsed,
+            "state": "suggested",
+            "source": "ai",
+        }, default_state="suggested")
+        if suggestion["task_type"] == "testing":
+            suggestion["task_type"] = "other"
+        suggestion["functional_areas"] = suggestion["functional_areas"][:3]
+    except Exception as exc:
+        logger.warning("Task classification suggestion failed for %s: %s", task_id, exc)
+        suggestion = heuristic_classification(title, text)
+        fallback = True
+
+    return jsonify({
+        "success": True,
+        "task_id": task_id or None,
+        "suggestion": suggestion,
+        "persisted": False,
+        "fallback": fallback,
+    })
 
 
 

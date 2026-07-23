@@ -268,14 +268,38 @@ class FloatingWindowAppModelTests(unittest.TestCase):
 
     def test_select_tab_rejects_unknown_values(self):
         app = object.__new__(fwa.FloatingWindowApp)
-        app.active_tab = "tasks"
+        app.active_tab = "create"
         app.current_model = {}
         app._render = Mock()
 
         app.select_tab("unknown")
 
-        self.assertEqual("tasks", app.active_tab)
+        self.assertEqual("create", app.active_tab)
         app._render.assert_not_called()
+
+    def test_tabs_only_expose_create_manage_and_tools(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.active_tab = "create"
+        app.current_model = {}
+        app._render = Mock()
+
+        for tab in ("create", "manage", "tools"):
+            app.select_tab(tab)
+            self.assertEqual(tab, app.active_tab)
+        app.select_tab("notes")
+        self.assertEqual("tools", app.active_tab)
+
+    def test_prompt_task_types_match_web_generator(self):
+        self.assertEqual(
+            (
+                ("unspecified", "未指定"),
+                ("feature", "新增功能"),
+                ("optimize", "功能优化"),
+                ("bug", "修复bug"),
+                ("other", "其他"),
+            ),
+            fwa.PROMPT_TASK_TYPES,
+        )
 
     def test_task_card_height_grows_for_full_wrapped_title(self):
         app = object.__new__(fwa.FloatingWindowApp)
@@ -332,7 +356,7 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app._render.assert_called_once_with({})
         app._send_input.assert_not_called()
 
-    def test_select_ide_with_input_switches_then_sends(self):
+    def test_select_ide_with_input_only_switches_dispatch_target(self):
         app = object.__new__(fwa.FloatingWindowApp)
         app.selected_ide_key = "codex"
         app.current_model = {}
@@ -343,25 +367,25 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app.select_ide("trae")
 
         self.assertEqual("trae", app.selected_ide_key)
-        app._send_input.assert_called_once_with()
+        app._send_input.assert_not_called()
 
-    def test_return_saves_note_and_ctrl_return_inserts_newline(self):
+    def test_return_does_nothing_on_manage_tab(self):
         app = object.__new__(fwa.FloatingWindowApp)
-        app.active_tab = "notes"
-        app.save_inspiration = Mock()
+        app.active_tab = "manage"
+        app.create_task = Mock()
         app._insert_input_newline = Mock(return_value="break")
 
         plain_event = type("Event", (), {"state": 0})()
         ctrl_event = type("Event", (), {"state": 0x0004})()
 
-        self.assertEqual("break", app._handle_input_return(plain_event))
-        app.save_inspiration.assert_called_once_with()
+        self.assertIsNone(app._handle_input_return(plain_event))
+        app.create_task.assert_not_called()
         self.assertEqual("break", app._handle_input_return(ctrl_event))
         app._insert_input_newline.assert_called_once_with()
 
-    def test_return_creates_task_on_task_tab(self):
+    def test_return_creates_task_on_create_tab(self):
         app = object.__new__(fwa.FloatingWindowApp)
-        app.active_tab = "tasks"
+        app.active_tab = "create"
         app.create_task = Mock()
         app._insert_input_newline = Mock(return_value="break")
         plain_event = type("Event", (), {"state": 0})()
@@ -386,7 +410,7 @@ class FloatingWindowAppModelTests(unittest.TestCase):
             app._run_api.call_args.kwargs["payload"],
         )
 
-    def test_create_task_and_inspiration_use_existing_server_routes(self):
+    def test_create_task_uses_existing_draft_route(self):
         app = object.__new__(fwa.FloatingWindowApp)
         app.selected_ide_key = "codex"
         app._input_text = Mock(return_value="任务正文")
@@ -405,8 +429,117 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app.create_task()
         self.assertEqual("auto", app._run_api.call_args.kwargs["payload"]["target_ide"])
 
-        app.save_inspiration()
-        self.assertEqual("/api/tasks/inspiration", app._run_api.call_args.args[0])
+    def test_smart_prompt_uses_selected_type_and_component_location(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.prompt_task_type = "bug"
+        app.prompt_component_name = "创建任务按钮"
+        app.prompt_component_location = "浮窗创建任务页底部"
+        app.current_model = {"capabilities": ["windows"]}
+        app.selected_surface = None
+        app._input_text = Mock(return_value="点击后没有进入待派发")
+        app._run_api = Mock()
+
+        app.compose_smart_prompt()
+
+        payload = app._run_api.call_args.kwargs["payload"]
+        self.assertEqual("bug_fix", payload["task_type"])
+        self.assertEqual("bug", payload["category"])
+        self.assertEqual("Windows", payload["component"]["platform"])
+        self.assertEqual("创建任务按钮", payload["component"]["name"])
+        self.assertEqual("浮窗创建任务页底部", payload["component"]["location"])
+
+    def test_create_task_merges_component_context_and_classification(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.prompt_task_type = "bug"
+        app.prompt_component_name = "任务类型按钮组"
+        app.prompt_component_location = "创建任务页智能提示词卡片"
+        app.current_model = {"capabilities": ["windows"]}
+        app.selected_surface = None
+        app._input_text = Mock(return_value="切换类型后样式没有更新")
+        app._run_api = Mock()
+
+        app.create_task()
+
+        payload = app._run_api.call_args.kwargs["payload"]
+        self.assertIn("目标：切换类型后样式没有更新", payload["text"])
+        self.assertIn("定位：Windows · 创建任务页智能提示词卡片 · 任务类型按钮组", payload["text"])
+        self.assertEqual("bug_fix", payload["task_type"])
+        self.assertEqual("bug_fix", payload["classification"]["task_type"])
+        self.assertEqual(
+            "创建任务页智能提示词卡片",
+            payload["classification"]["ui_location"],
+        )
+
+    def test_windows_component_locator_uses_region_capture_not_ide_calibration(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.current_model = {"capabilities": ["windows"]}
+        app.selected_surface = None
+        app.windows_component_locator = Mock()
+        app.locate_windows_target = Mock()
+
+        app.open_prompt_component_locator()
+
+        app.windows_component_locator.assert_called_once_with()
+        app.locate_windows_target.assert_not_called()
+
+    def test_windows_component_locator_starts_component_capture_mode(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app._start_region_capture = Mock()
+
+        app.windows_component_locator()
+
+        self.assertEqual("create", app.active_tab)
+        app._start_region_capture.assert_called_once_with(mode="component")
+
+    def test_component_prompt_payload_uses_windows_image_and_web_category(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.prompt_task_type = "optimize"
+        hint = {"selected_box": [100, 100, 300, 200], "screen_size": [1000, 800]}
+
+        payload = app._component_prompt_payload("/uploads/component.png", hint)
+
+        self.assertEqual("/uploads/component.png", payload["image"])
+        self.assertEqual("optimize", payload["category"])
+        self.assertEqual("feature_change", payload["task_type"])
+        self.assertEqual("Windows", payload["component"]["platform"])
+        self.assertIn("顶部", payload["component"]["location"])
+
+    def test_component_capture_keeps_context_and_marks_selected_box(self):
+        image = fwa.Image.new("RGB", (800, 600), "white")
+
+        result = fwa.FloatingWindowApp._prepare_windows_component_image(
+            image, (300, 250, 500, 350)
+        )
+
+        self.assertGreater(result.width, 200)
+        self.assertGreater(result.height, 100)
+        red_pixels = sum(
+            1
+            for y in range(result.height)
+            for x in range(result.width)
+            for pixel in (result.getpixel((x, y)),)
+            if pixel[0] > 220 and pixel[1] < 80 and pixel[2] < 80
+        )
+        self.assertGreater(red_pixels, 0)
+
+    def test_component_recognition_result_refills_create_form(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.prompt_component_name = ""
+        app.prompt_component_location = ""
+        app.current_model = {}
+        app._schedule_input_draft_save = Mock()
+        app._render = Mock()
+        app._set_status = Mock()
+
+        app._apply_windows_component_result({
+            "image_used": True,
+            "component_name": "保存按钮",
+            "component_location": "设置窗口右下角",
+        })
+
+        self.assertEqual("保存按钮", app.prompt_component_name)
+        self.assertEqual("设置窗口右下角", app.prompt_component_location)
+        app._render.assert_called_once_with({})
 
     def test_multiplatform_task_create_includes_selected_surface(self):
         app = object.__new__(fwa.FloatingWindowApp)
@@ -508,10 +641,13 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app._set_input_text = Mock()
         app.input_box = Mock()
         app._set_status = Mock()
+        app.current_model = {}
+        app._render = Mock()
 
         app.execute_task_action("edit", {"task_id": "task-1", "text": "任务正文"})
 
         self.assertEqual("task-1", app.editing_task_id)
+        self.assertEqual("create", app.active_tab)
         self.assertEqual("原输入", app.input_draft_before_task_edit)
         app._set_input_text.assert_called_once_with("任务正文")
 
@@ -522,6 +658,8 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app.input_box = Mock()
         app._set_status = Mock()
         app._run_api = Mock()
+        app.current_model = {}
+        app._render = Mock()
 
         app.execute_task_action(
             "test_feedback",
