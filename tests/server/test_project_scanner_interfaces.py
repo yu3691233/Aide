@@ -327,6 +327,7 @@ fun LegacyScreen() {
         self.assertEqual("[Button] 保存", component["name"])
         self.assertEqual([10, 20, 110, 70], component["bounds"])
         self.assertEqual("android_uiautomator", component["source"])
+        self.assertTrue(pages[0]["is_foreground"])
 
     def test_windows_runtime_pages_prioritize_foreground_window(self):
         pages = [

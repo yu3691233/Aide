@@ -63,6 +63,20 @@ def scan_android_runtime():
             r"mCurrentFocus=.*?\s([\w.]+)/([\w.$]+)",
             completed.stdout or "",
         )
+        if not focus:
+            completed = ui_locator._run(
+                [ui_locator.ADB_PATH, "-s", device, "shell", "dumpsys", "activity", "activities"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=8,
+            )
+            focus = re.search(
+                r"(?:topResumedActivity|mResumedActivity)=.*?\s([\w.]+)/([\w.$]+)",
+                completed.stdout or "",
+            )
         if focus:
             package_name, activity_name = focus.groups()
     except Exception:
@@ -117,6 +131,7 @@ def scan_android_runtime():
             "activity": activity_name,
             "source": "android_uiautomator",
             "confidence": 0.98,
+            "is_foreground": True,
             "children": components,
         })
     return pages, {
