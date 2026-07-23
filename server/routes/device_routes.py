@@ -213,8 +213,6 @@ def _find_wireless_result(request_id, started_at, target_ips):
         # but do not echo request_id/target_ip.
         if not target_set and pending_ip:
             return pending
-        if pending.get("ok") and pending_ip and pending.get("method"):
-            return pending
     return None
 
 

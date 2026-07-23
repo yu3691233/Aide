@@ -1,6 +1,7 @@
 """Regression tests for exact wireless-ADB connection validation."""
 
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -77,6 +78,32 @@ class AdbConnectionValidationTests(unittest.TestCase):
             self.assertTrue(device_routes._tcp_port_open("192.168.3.52", 40117))
 
         connect.assert_called_once_with(("192.168.3.52", 40117), timeout=0.8)
+
+    def test_wireless_result_never_crosses_to_another_device(self):
+        started_at = time.time()
+        phone_result = {
+            "ok": True,
+            "ip": "192.168.3.31",
+            "port": 5555,
+            "method": "root",
+            "request_id": "phone-request",
+            "time": started_at + 0.1,
+        }
+        with (
+            patch.object(device_routes, "_wireless_result_by_request", {}),
+            patch.object(
+                device_routes,
+                "_wireless_result_pending",
+                {"192.168.3.31": phone_result},
+            ),
+        ):
+            result = device_routes._find_wireless_result(
+                "tablet-request",
+                started_at,
+                ["192.168.3.52"],
+            )
+
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":
