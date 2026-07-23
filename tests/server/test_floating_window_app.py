@@ -475,6 +475,7 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app = object.__new__(fwa.FloatingWindowApp)
         app.current_model = {"capabilities": ["windows"]}
         app.selected_surface = None
+        app.active_tab = "create"
         app.windows_component_locator = Mock()
         app.locate_windows_target = Mock()
         app._run_api = Mock()
@@ -483,7 +484,7 @@ class FloatingWindowAppModelTests(unittest.TestCase):
 
         app._run_api.assert_called_once()
         self.assertEqual(
-            "/api/project-map/interfaces?surface=windows",
+            "/api/project-map/interfaces?surface=windows&current_page=create",
             app._run_api.call_args.args[0],
         )
         app.windows_component_locator.assert_not_called()

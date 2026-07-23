@@ -215,6 +215,7 @@ def scan_windows_runtime(project_root):
         return [], {"available": False, "message": "当前项目没有运行中的桌面进程"}
 
     user32 = ctypes.windll.user32
+    foreground_hwnd = int(user32.GetForegroundWindow() or 0)
     pages = []
     enum_proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
@@ -300,16 +301,19 @@ def scan_windows_runtime(project_root):
                 "source": "windows_uia" if collector == "Windows UI Automation" else "windows_native_runtime",
                 "confidence": 0.98 if collector == "Windows UI Automation" else 0.93,
                 "hwnd": int(hwnd),
+                "is_foreground": int(hwnd) == foreground_hwnd,
                 "bounds": bounds,
                 "children": components,
             })
         return True
 
     user32.EnumWindows(visit_top, 0)
+    pages.sort(key=lambda page: (not page.get("is_foreground"), page.get("name", "")))
     return pages, {
         "available": bool(pages),
         "process_count": len(process_ids),
         "window_count": len(pages),
         "component_count": sum(len(page["children"]) for page in pages),
         "collector": pages[0].get("source") if pages else "",
+        "foreground_hwnd": foreground_hwnd,
     }

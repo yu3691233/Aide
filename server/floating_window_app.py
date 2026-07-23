@@ -1851,8 +1851,11 @@ class FloatingWindowApp:
         if not surface:
             self._set_status("请先在标题栏选择 Android、Web 或 Windows", "#b42318", 2200)
             return
+        active_tab = getattr(self, "active_tab", "")
+        current_page = active_tab if active_tab in {"create", "manage", "tools"} else ""
+        page_query = f"&current_page={current_page}" if current_page else ""
         self._run_api(
-            f"/api/project-map/interfaces?surface={surface}",
+            f"/api/project-map/interfaces?surface={surface}{page_query}",
             on_success=lambda result, selected_surface=surface: self._show_component_map_picker(
                 selected_surface, result
             ),
@@ -1870,7 +1873,10 @@ class FloatingWindowApp:
     def _show_component_map_picker(self, surface, result):
         interfaces = result.get("interfaces") or []
         pages = interfaces[0].get("pages") if interfaces else []
-        pages = pages or []
+        pages = sorted(
+            pages or [],
+            key=lambda page: (not bool(page.get("is_current")), page.get("name", "")),
+        )
         dialog = self.tk.Toplevel(self.root)
         dialog.title("从项目界面地图选择组件")
         dialog.geometry("620x430")
@@ -1889,7 +1895,11 @@ class FloatingWindowApp:
         ).pack(anchor="w", padx=14, pady=(12, 2))
         self.tk.Label(
             header,
-            text="选择后会自动带入界面、组件、源码位置；地图没有时再使用截图定位。",
+            text=(
+                "已优先展示当前打开界面的实际可见内容；静态项目地图作为补充。"
+                if any(page.get("is_current") for page in pages)
+                else "未识别到当前窗口，以下为项目地图内容；需要时可使用截图定位。"
+            ),
             bg="#f6f8fc",
             fg="#667085",
             font=("Microsoft YaHei UI", 8),
@@ -1981,7 +1991,11 @@ class FloatingWindowApp:
             self._set_status("已从项目地图选择组件", "#239957", 1800)
 
         for page in pages:
-            page_list.insert("end", page.get("name") or "未命名界面")
+            page_name = page.get("name") or "未命名界面"
+            page_list.insert(
+                "end",
+                f"● 当前打开  {page_name}" if page.get("is_current") else page_name,
+            )
         if pages:
             page_list.selection_set(0)
             render_components()

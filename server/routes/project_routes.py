@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import logging
+import re
 import threading
 from pathlib import Path
 from flask import Blueprint, request, jsonify, Response, stream_with_context
@@ -400,6 +401,13 @@ def api_component_map():
 def api_project_map_interfaces():
     """返回适合浮窗选择器消费的界面→组件轻量目录。"""
     surface = request.args.get("surface", "").strip().lower()
+    current_page = request.args.get("current_page", "").strip().lower()
+    current_page_labels = {
+        "create": "创建任务",
+        "manage": "任务管理",
+        "tools": "工具",
+    }
+    current_page_label = current_page_labels.get(current_page, "")
     category_ids = {
         "android": "android_app",
         "web": "web_manager_ui",
@@ -413,6 +421,21 @@ def api_project_map_interfaces():
     except Exception as e:
         return jsonify({"success": False, "message": f"加载界面地图失败: {e}"}), 500
 
+    runtime_pages = []
+    runtime_status = dict(cache.get("runtime_status") or {})
+    if surface == "windows":
+        try:
+            from runtime_interface_scanner import scan_windows_runtime
+            runtime_pages, windows_status = scan_windows_runtime(
+                cache.get("project_root") or project_scanner.get_project_root()
+            )
+            runtime_status["windows"] = windows_status
+        except Exception as exc:
+            runtime_status["windows"] = {
+                "available": False,
+                "message": str(exc),
+            }
+
     def flatten_page(page):
         components = []
 
@@ -424,6 +447,24 @@ def api_project_map_interfaces():
                     walk(child, next_path)
                 return
             if node.get("category") not in {"交互", "展示"}:
+                return
+            clean_label = re.sub(
+                r"^\[[^\]]+\]\s*", "", str(node.get("name") or "")
+            ).strip()
+            lowered_label = clean_label.lower()
+            technical_identifier = bool(
+                re.fullmatch(r"[a-z_][a-z0-9_]*", lowered_label)
+                and (
+                    len(lowered_label) <= 3
+                    or lowered_label in {"menu", "window", "dialog", "entry", "text", "label"}
+                    or lowered_label.endswith((
+                        "_item", "_canvas", "_shell", "_frame", "_label", "_widget",
+                    ))
+                )
+            )
+            if technical_identifier or lowered_label in {
+                "", "button", "control", "custom", "pane", "frame", "控件", "按钮",
+            }:
                 return
             components.append({
                 "id": node.get("id", ""),
@@ -444,10 +485,16 @@ def api_project_map_interfaces():
             })
 
         walk(page, [])
+        page_name = str(page.get("name") or "")
+        is_requested_page = bool(
+            current_page_label and current_page_label in page_name
+        )
         return {
             "id": page.get("id", ""),
-            "name": page.get("name", ""),
+            "name": page_name,
             "file": page.get("file", ""),
+            "is_current": bool(page.get("is_foreground")) or is_requested_page,
+            "source": page.get("source", "static_scan"),
             "components": components,
         }
 
@@ -459,8 +506,18 @@ def api_project_map_interfaces():
         category = next((item for item in categories if item.get("id") == category_id), None)
         if not category:
             continue
-        pages = [flatten_page(page) for page in (category.get("children") or [])]
+        category_pages = list(category.get("children") or [])
+        if surface_name == "windows" and runtime_pages:
+            category_pages = [
+                *runtime_pages,
+                *[
+                    page for page in category_pages
+                    if not str(page.get("source") or "").startswith("windows_")
+                ],
+            ]
+        pages = [flatten_page(page) for page in category_pages]
         pages = [page for page in pages if page["components"]]
+        pages.sort(key=lambda page: (not page["is_current"], page["name"]))
         selected.append({
             "surface": surface_name,
             "name": category.get("name", surface_name),
@@ -471,7 +528,7 @@ def api_project_map_interfaces():
         "success": True,
         "project_root": cache.get("project_root", ""),
         "scan_time": cache.get("scan_time", ""),
-        "runtime_status": cache.get("runtime_status", {}),
+        "runtime_status": runtime_status,
         "interfaces": selected,
     })
 

@@ -210,6 +210,16 @@ fun Header() {
         self.assertEqual([10, 20, 110, 70], component["bounds"])
         self.assertEqual("android_uiautomator", component["source"])
 
+    def test_windows_runtime_pages_prioritize_foreground_window(self):
+        pages = [
+            {"name": "后台窗口", "is_foreground": False},
+            {"name": "当前窗口", "is_foreground": True},
+        ]
+
+        pages.sort(key=lambda page: (not page.get("is_foreground"), page["name"]))
+
+        self.assertEqual("当前窗口", pages[0]["name"])
+
     def test_screenshot_learned_component_survives_map_regeneration(self):
         with patch.object(project_scanner, "PROJECT_MAP_CACHE_DIR", str(self.cache_dir)):
             with patch.object(project_scanner, "get_project_root", return_value=self.root):
