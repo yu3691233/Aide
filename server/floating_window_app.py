@@ -1914,16 +1914,28 @@ class FloatingWindowApp:
 
         content = self.tk.Frame(dialog, bg="#ffffff")
         content.pack(fill="both", expand=True, padx=14)
+        page_column = self.tk.Frame(content, bg="#ffffff")
+        page_column.pack(side="left", fill="y", padx=(0, 8))
+        self.tk.Label(
+            page_column, text="1  选择界面", bg="#ffffff", fg="#344054",
+            font=("Microsoft YaHei UI", 8, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
         page_list = self.tk.Listbox(
-            content, width=24, exportselection=False, relief="solid", bd=1,
+            page_column, width=24, exportselection=False, relief="solid", bd=1,
             font=("Microsoft YaHei UI", 9),
         )
-        page_list.pack(side="left", fill="y", padx=(0, 8))
+        page_list.pack(fill="y", expand=True)
+        component_column = self.tk.Frame(content, bg="#ffffff")
+        component_column.pack(side="left", fill="both", expand=True)
+        self.tk.Label(
+            component_column, text="2  选择组件（可选）", bg="#ffffff", fg="#344054",
+            font=("Microsoft YaHei UI", 8, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
         component_list = self.tk.Listbox(
-            content, exportselection=False, relief="solid", bd=1,
+            component_column, exportselection=False, relief="solid", bd=1,
             font=("Microsoft YaHei UI", 9),
         )
-        component_list.pack(side="left", fill="both", expand=True)
+        component_list.pack(fill="both", expand=True)
 
         visible_components = []
 
@@ -1955,19 +1967,48 @@ class FloatingWindowApp:
                 label = clean_name(item.get("name"))
                 component_list.insert("end", f"{label}  ·  {area}" if area else label)
 
+        def save_target(target, status):
+            self.prompt_component_name = str(target.get("name") or "")
+            self.prompt_component_location = str(target.get("location") or target.get("page") or "")
+            self.prompt_component_ref = {
+                key: value for key, value in target.items()
+                if key not in {"name", "location"}
+            }
+            self._add_component_target(target)
+            dialog.destroy()
+            self.active_tab = "create"
+            self._render(self.current_model)
+            self.insert_component_target(target)
+            self._set_status(status, "#239957", 1800)
+
+        def apply_page_selection(_event=None):
+            page = selected_page()
+            if not page:
+                self._set_status("请先选择界面", "#b42318", 1600)
+                return
+            page_name = re.sub(r"^[^\w\u4e00-\u9fff]+", "", str(page.get("name") or "")).strip()
+            save_target({
+                "id": f"page:{surface}:{page.get('id') or page_name}",
+                "surface": surface,
+                "page": page_name,
+                "name": "",
+                "location": page_name,
+                "file": page.get("file", ""),
+                "source": page.get("source", ""),
+                "target_kind": "interface",
+            }, "已选择整个界面")
+
         def apply_selection(_event=None):
             page = selected_page()
             selection = component_list.curselection()
             if not page or not selection or selection[0] >= len(visible_components):
-                self._set_status("请选择一个界面组件", "#b42318", 1600)
+                self._set_status("请选择组件，或使用“选择界面”", "#b42318", 1600)
                 return
             item = visible_components[selection[0]]
             page_name = re.sub(r"^[^\w\u4e00-\u9fff]+", "", str(page.get("name") or "")).strip()
             area = str(item.get("area") or "").strip()
             location_parts = [part for part in (page_name, area) if part]
-            self.prompt_component_name = clean_name(item.get("name"))
-            self.prompt_component_location = " / ".join(location_parts)
-            self.prompt_component_ref = {
+            target = {
                 "id": item.get("id", ""),
                 "surface": surface,
                 "page": page_name,
@@ -1977,18 +2018,10 @@ class FloatingWindowApp:
                 "line_end": item.get("line_end", 0),
                 "source": item.get("source", ""),
                 "confidence": item.get("confidence", 0),
+                "name": clean_name(item.get("name")),
+                "location": " / ".join(location_parts),
             }
-            target = {
-                **self.prompt_component_ref,
-                "name": self.prompt_component_name,
-                "location": self.prompt_component_location,
-            }
-            self._add_component_target(target)
-            dialog.destroy()
-            self.active_tab = "create"
-            self._render(self.current_model)
-            self.insert_component_target(target)
-            self._set_status("已从项目地图选择组件", "#239957", 1800)
+            save_target(target, "已从项目地图选择组件")
 
         for page in pages:
             page_name = page.get("name") or "未命名界面"
@@ -2016,6 +2049,10 @@ class FloatingWindowApp:
         self.tk.Button(
             footer, text="取消", command=dialog.destroy, relief="flat",
             bg="#ffffff", fg="#475467", padx=10, pady=6,
+        ).pack(side="right", padx=(8, 0))
+        self.tk.Button(
+            footer, text="选择界面", command=apply_page_selection, relief="flat",
+            bg="#eaf2ff", fg="#0867f2", padx=12, pady=6,
         ).pack(side="right", padx=(8, 0))
         self.tk.Button(
             footer, text="选择组件", command=apply_selection, relief="flat",

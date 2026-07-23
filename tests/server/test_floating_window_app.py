@@ -861,6 +861,20 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app.current_model = {"project_path": "F:/other"}
         self.assertEqual([], app._current_component_pool())
 
+    def test_interface_target_builds_phrase_without_forcing_component(self):
+        target = {
+            "id": "page:windows:create",
+            "surface": "windows",
+            "page": "创建任务",
+            "name": "",
+            "target_kind": "interface",
+        }
+
+        self.assertEqual(
+            "Windows端-创建任务",
+            fwa.FloatingWindowApp._component_phrase(target),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

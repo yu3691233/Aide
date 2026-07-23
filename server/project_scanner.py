@@ -78,7 +78,21 @@ def _learned_pages(surface):
     for item in data.get("components") or []:
         if item.get("surface") != surface:
             continue
-        page_name = str(item.get("page") or "截图识别组件").strip()
+        original_page_name = str(item.get("page") or "截图识别组件").strip()
+        page_name = original_page_name
+        for keyword, canonical_name in (
+            ("创建任务", "创建任务"),
+            ("任务管理", "任务管理"),
+            ("组件定位", "工具"),
+            ("设置", "设置"),
+            ("工具", "工具"),
+        ):
+            if keyword in original_page_name:
+                page_name = canonical_name
+                break
+        learned_area = str(item.get("area") or "").strip()
+        if not learned_area and page_name != original_page_name:
+            learned_area = original_page_name.replace(page_name, "").strip(" /·-_")
         page = groups.setdefault(page_name, {
             "id": f"{surface}_learned_{_make_id(page_name)}",
             "name": f"✨ {page_name}",
@@ -89,6 +103,7 @@ def _learned_pages(surface):
             "id": item.get("id", ""),
             "name": f"[组件] {item.get('name') or '未命名组件'}",
             "description": item.get("description") or item.get("area") or "截图识别组件",
+            "area": learned_area,
             "category": item.get("category", "交互"),
             "file": item.get("file", ""),
             "line_start": item.get("line_start", 0),
@@ -1687,7 +1702,7 @@ def _scan_python_desktop_interfaces(project_root):
         elif "setting" in lowered:
             page = "设置"
         elif any(key in lowered for key in ("component_map", "component_locator", "screenshot_dialog")):
-            page = "组件定位"
+            page = "工具"
         elif lowered in {"build_ui", "_build_ui", "create_ui", "_create_ui"}:
             page = "主界面"
         elif any(key in lowered for key in ("dialog", "popup", "picker")):
@@ -1826,6 +1841,51 @@ def _scan_python_desktop_interfaces(project_root):
                         "source": "static_scan",
                         "confidence": 0.78 if label != widget_type else 0.55,
                     })
+                # 工具栏常用 (显示名, 图标, 回调) 元组循环生成按钮；调用点只有
+                # 变量 label，需从常量配置中还原用户实际看到的名称。
+                if page_name == "工具":
+                    for assignment in owner.body:
+                        if not isinstance(assignment, ast.Assign):
+                            continue
+                        if not any(
+                            isinstance(target, ast.Name) and target.id == "tools"
+                            for target in assignment.targets
+                        ):
+                            continue
+                        entries = (
+                            assignment.value.elts
+                            if isinstance(assignment.value, (ast.Tuple, ast.List))
+                            else []
+                        )
+                        for entry in entries:
+                            if not isinstance(entry, (ast.Tuple, ast.List)) or not entry.elts:
+                                continue
+                            label_node = entry.elts[0]
+                            if not (
+                                isinstance(label_node, ast.Constant)
+                                and isinstance(label_node.value, str)
+                                and label_node.value.strip()
+                            ):
+                                continue
+                            label = label_node.value.strip()
+                            node_id = (
+                                f"windows_{_make_id(rel_path)}_{_make_id(owner.name)}"
+                                f"_{getattr(entry, 'lineno', owner.lineno)}_semantic_button"
+                            )
+                            if node_id in seen:
+                                continue
+                            seen.add(node_id)
+                            area["children"].append({
+                                "id": node_id,
+                                "name": f"[按钮] {label}",
+                                "file": rel_path,
+                                "line_start": getattr(entry, "lineno", owner.lineno),
+                                "line_end": getattr(entry, "end_lineno", owner.lineno),
+                                "description": f"{page_name}中的按钮",
+                                "category": "交互",
+                                "source": "tkinter_semantic",
+                                "confidence": 0.94,
+                            })
             if file_count >= 200:
                 break
         if file_count >= 200:

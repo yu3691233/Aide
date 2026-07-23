@@ -130,6 +130,51 @@ class App:
         ]
         self.assertIn("[按钮] 组件定位", tool_names)
 
+    def test_component_locator_dialog_is_grouped_under_tools(self):
+        app_file = self.root / "desktop_app.py"
+        app_file.write_text(
+            """import tkinter as tk
+class App:
+    def _show_component_map_picker(self):
+        tk.Button(self.root, text="选择组件")
+""",
+            encoding="utf-8",
+        )
+
+        pages = project_scanner._scan_python_desktop_interfaces(str(self.root))
+
+        self.assertEqual(["🪟 工具"], [page["name"] for page in pages])
+        self.assertIn(
+            "[按钮] 选择组件",
+            pages[0]["children"][0]["children"][0]["name"],
+        )
+
+    def test_tools_tuple_buttons_keep_visible_labels(self):
+        app_file = self.root / "desktop_app.py"
+        app_file.write_text(
+            """import tkinter as tk
+class App:
+    def _render_tools_tab(self):
+        tools = (
+            ("快捷回复", "more", self.reply),
+            ("组件定位", "globe", self.locate),
+            ("设置", "settings", self.settings),
+        )
+        for label, icon, command in tools:
+            self._rounded_button(self.root, label, command)
+""",
+            encoding="utf-8",
+        )
+
+        pages = project_scanner._scan_python_desktop_interfaces(str(self.root))
+        names = [
+            item["name"]
+            for area in pages[0]["children"]
+            for item in area["children"]
+        ]
+
+        self.assertIn("[按钮] 组件定位", names)
+
     def test_android_compose_scanner_builds_pages_from_call_graph(self):
         screen = self.root / "app" / "src" / "main" / "kotlin" / "demo" / "MainScreen.kt"
         screen.parent.mkdir(parents=True)
@@ -237,6 +282,18 @@ fun Header() {
         self.assertTrue(learned["id"].startswith("learned_"))
         self.assertEqual("✨ 编辑器", pages[0]["name"])
         self.assertEqual("[组件] 保存按钮", pages[0]["children"][0]["name"])
+
+    def test_learned_setting_location_is_not_exposed_as_interface_name(self):
+        with patch.object(project_scanner, "PROJECT_MAP_CACHE_DIR", str(self.cache_dir)):
+            with patch.object(project_scanner, "get_project_root", return_value=self.root):
+                project_scanner.add_learned_component(
+                    "windows",
+                    {"name": "保存按钮", "page": "设置窗口右下角"},
+                )
+                pages = project_scanner._learned_pages("windows")
+
+        self.assertEqual("✨ 设置", pages[0]["name"])
+        self.assertEqual("窗口右下角", pages[0]["children"][0]["area"])
 
 
 if __name__ == "__main__":

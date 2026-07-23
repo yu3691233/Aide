@@ -469,7 +469,8 @@ def api_project_map_interfaces():
             components.append({
                 "id": node.get("id", ""),
                 "name": node.get("name", ""),
-                "area": " / ".join(item for item in path if item),
+                "area": " / ".join(item for item in path if item)
+                or str(node.get("area") or "").strip(),
                 "file": node.get("file", ""),
                 "line_start": node.get("line_start", 0),
                 "line_end": node.get("line_end", 0),
