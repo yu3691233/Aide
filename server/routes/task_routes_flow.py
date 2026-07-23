@@ -22,16 +22,45 @@ _SURFACE_LABELS = {
     "windows": "Windows",
 }
 
+_TASK_CATEGORY_LABELS = {
+    "feature": "新增功能",
+    "optimize": "功能优化",
+    "ui": "界面优化",
+    "bug": "Bug修复",
+}
+
+_CLASSIFICATION_TYPE_LABELS = {
+    "feature": "新增功能",
+    "optimization": "功能优化",
+    "bug_fix": "Bug修复",
+}
+
 
 def _dispatch_prefix(dispatch_items):
-    prefix = (
-        "测试任务"
-        if dispatch_items and all(
-            bool((item.get("metadata") or {}).get("is_test"))
-            for item in dispatch_items
-        )
-        else "派发任务"
+    is_test = dispatch_items and all(
+        bool((item.get("metadata") or {}).get("is_test"))
+        for item in dispatch_items
     )
+    prefix = "测试任务" if is_test else "派发任务"
+    if not is_test and dispatch_items:
+        category_labels = set()
+        all_typed = True
+        for item in dispatch_items:
+            metadata = item.get("metadata") or {}
+            category = str(metadata.get("task_category") or "").strip().lower()
+            label = _TASK_CATEGORY_LABELS.get(category)
+            if not label:
+                classification = metadata.get("classification") or {}
+                classification_type = str(
+                    classification.get("task_type") or ""
+                ).strip().lower()
+                label = _CLASSIFICATION_TYPE_LABELS.get(classification_type)
+            if not label:
+                all_typed = False
+                break
+            category_labels.add(label)
+        if all_typed and len(category_labels) == 1:
+            prefix = next(iter(category_labels))
     surfaces = {
         str((item.get("metadata") or {}).get("surface") or "").strip().lower()
         for item in dispatch_items

@@ -35,6 +35,42 @@ class ManualTaskCompleteTests(unittest.TestCase):
         self.assertEqual("[测试任务-Windows]", _dispatch_prefix([test_windows]))
         self.assertEqual("[测试任务]", _dispatch_prefix([test_unspecified]))
 
+    def test_dispatch_prefix_uses_explicit_task_category(self):
+        ui_windows = {
+            "metadata": {
+                "surface": "windows",
+                "task_category": "ui",
+                "classification": {"task_type": "optimization"},
+            }
+        }
+        bug_web = {
+            "metadata": {
+                "surface": "web",
+                "classification": {"task_type": "bug_fix"},
+            }
+        }
+
+        self.assertEqual("[界面优化-Windows]", _dispatch_prefix([ui_windows]))
+        self.assertEqual("[Bug修复-Web]", _dispatch_prefix([bug_web]))
+
+    def test_dispatch_prefix_keeps_legacy_prefix_for_untyped_or_mixed_tasks(self):
+        typed = {
+            "metadata": {
+                "surface": "web",
+                "task_category": "feature",
+            }
+        }
+        untyped = {"metadata": {"surface": "web"}}
+        optimized = {
+            "metadata": {
+                "surface": "web",
+                "task_category": "optimize",
+            }
+        }
+
+        self.assertEqual("[派发任务-Web]", _dispatch_prefix([typed, untyped]))
+        self.assertEqual("[派发任务-Web]", _dispatch_prefix([typed, optimized]))
+
     def test_dispatch_preserves_task_surface_before_injection(self):
         app = Flask(__name__)
         runtime = Mock()

@@ -295,8 +295,8 @@ class FloatingWindowAppModelTests(unittest.TestCase):
                 ("unspecified", "未指定"),
                 ("feature", "新增功能"),
                 ("optimize", "功能优化"),
+                ("ui", "界面优化"),
                 ("bug", "修复bug"),
-                ("other", "其他"),
             ),
             fwa.PROMPT_TASK_TYPES,
         )
@@ -464,6 +464,7 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         self.assertIn("目标：切换类型后样式没有更新", payload["text"])
         self.assertIn("定位：Windows · 创建任务页智能提示词卡片 · 任务类型按钮组", payload["text"])
         self.assertEqual("bug_fix", payload["task_type"])
+        self.assertEqual("bug", payload["task_category"])
         self.assertEqual("bug_fix", payload["classification"]["task_type"])
         self.assertEqual(
             "创建任务页智能提示词卡片",

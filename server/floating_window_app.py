@@ -83,21 +83,21 @@ PROMPT_TASK_TYPES = (
     ("unspecified", "未指定"),
     ("feature", "新增功能"),
     ("optimize", "功能优化"),
+    ("ui", "界面优化"),
     ("bug", "修复bug"),
-    ("other", "其他"),
 )
 PROMPT_CATEGORY_TO_COMPOSE_TYPE = {
     "unspecified": "auto",
     "feature": "feature_change",
     "optimize": "feature_change",
+    "ui": "feature_change",
     "bug": "bug_fix",
-    "other": "auto",
 }
 PROMPT_CATEGORY_TO_CLASSIFICATION_TYPE = {
     "feature": "feature",
     "optimize": "optimization",
+    "ui": "optimization",
     "bug": "bug_fix",
-    "other": "other",
 }
 QUICK_REPLIES_FILE = Path(__file__).resolve().parent / "state" / "floating_quick_replies.json"
 WINDOW_STATE_FILE = Path(__file__).resolve().parent / "state" / "floating_window_state.json"
@@ -3491,6 +3491,9 @@ class FloatingWindowApp:
             }
         if classification_type:
             payload["task_type"] = classification_type
+            # classification.task_type 保持后端通用枚举；task_category 保留
+            # “功能优化/界面优化”的用户原始选择，供派发前缀准确展示。
+            payload["task_category"] = prompt_type
 
         def created(result):
             task_id = result.get("task_id") or ""
