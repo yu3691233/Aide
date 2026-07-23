@@ -7,6 +7,7 @@ import io
 import gc
 import time
 import ctypes
+import hashlib
 from ctypes import wintypes
 
 from paths import BRIDGE_DIR, STATE_DIR
@@ -39,6 +40,30 @@ class MONITORINFO(ctypes.Structure):
         ("rcWork", RECT),
         ("dwFlags", ctypes.c_ulong),
     ]
+
+
+class MONITORINFOEXW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_ulong),
+        ("rcMonitor", RECT),
+        ("rcWork", RECT),
+        ("dwFlags", ctypes.c_ulong),
+        ("szDevice", ctypes.c_wchar * 32),
+    ]
+
+
+class DISPLAY_DEVICEW(ctypes.Structure):
+    _fields_ = [
+        ("cb", ctypes.c_ulong),
+        ("DeviceName", ctypes.c_wchar * 32),
+        ("DeviceString", ctypes.c_wchar * 128),
+        ("StateFlags", ctypes.c_ulong),
+        ("DeviceID", ctypes.c_wchar * 128),
+        ("DeviceKey", ctypes.c_wchar * 128),
+    ]
+
+
+EDD_GET_DEVICE_INTERFACE_NAME = 0x00000001
 
 
 # ============================================================
@@ -134,6 +159,35 @@ def write_crops(crops):
 # 显示器枚举
 # ============================================================
 
+def _stable_monitor_config_key(device_identity, adapter_name=""):
+    """把 Windows 的物理显示器接口标识转换为可持久化、不可读出设备信息的键。"""
+    identity = str(device_identity or adapter_name or "").strip().casefold()
+    if not identity:
+        return None
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"monitor_{digest}"
+
+
+def _get_monitor_device_identity(adapter_name):
+    """获取 Windows 为每块物理显示器注册的设备接口名。"""
+    if not adapter_name:
+        return ""
+    try:
+        display_device = DISPLAY_DEVICEW()
+        display_device.cb = ctypes.sizeof(DISPLAY_DEVICEW)
+        found = ctypes.windll.user32.EnumDisplayDevicesW(
+            adapter_name,
+            0,
+            ctypes.byref(display_device),
+            EDD_GET_DEVICE_INTERFACE_NAME,
+        )
+        if found:
+            return display_device.DeviceID or display_device.DeviceName or adapter_name
+    except Exception as exc:
+        print(f"[WARN] Failed to resolve monitor device identity for {adapter_name}: {exc}", flush=True)
+    return adapter_name
+
+
 def get_all_monitors():
     """获取所有显示器信息（使用 ctypes，不依赖 pywin32）"""
     monitors = []
@@ -145,12 +199,14 @@ def get_all_monitors():
     
     def callback(hMonitor, hdcMonitor, lprcMonitor, dwData):
         try:
-            mi = MONITORINFO()
-            mi.cbSize = ctypes.sizeof(MONITORINFO)
+            mi = MONITORINFOEXW()
+            mi.cbSize = ctypes.sizeof(MONITORINFOEXW)
             if ctypes.windll.user32.GetMonitorInfoW(hMonitor, ctypes.byref(mi)):
                 rc = mi.rcMonitor
                 work = mi.rcWork
                 is_primary = mi.dwFlags == 1
+                adapter_name = mi.szDevice
+                device_identity = _get_monitor_device_identity(adapter_name)
                 if is_primary:
                     name = "primary"
                 else:
@@ -167,7 +223,9 @@ def get_all_monitors():
                     "work_top": work.top,
                     "work_right": work.right,
                     "work_bottom": work.bottom,
-                    "primary": is_primary
+                    "primary": is_primary,
+                    # name 用于当前桌面坐标/切屏；config_key 才是跨主屏切换的物理显示器身份。
+                    "config_key": _stable_monitor_config_key(device_identity, adapter_name),
                 })
         except Exception as e:
             print(f"[WARN] Monitor callback failed: {e}", flush=True)
@@ -205,10 +263,27 @@ def get_all_monitors():
             "width": 1920,
             "height": 1080,
             "primary": True,
-            "scale_factor": 1.0
+            "scale_factor": 1.0,
+            "config_key": None,
         }]
     
     return monitors
+
+
+def _resolve_monitor_storage(monitor_name, current_monitors=None):
+    """返回稳定持久化键及当前拓扑下可兼容读取的旧键。"""
+    requested = str(monitor_name or "default").strip() or "default"
+    if requested == "default" or requested.startswith("monitor_"):
+        return requested, []
+
+    monitors = current_monitors if current_monitors is not None else get_all_monitors()
+    monitor = next((item for item in monitors if item.get("name") == requested), None)
+    if not monitor:
+        return requested, []
+
+    stable_key = monitor.get("config_key") or requested
+    legacy_keys = [requested] if stable_key != requested else []
+    return stable_key, legacy_keys
 
 
 def get_monitor_for_window(hwnd):
@@ -363,22 +438,25 @@ def _derive_input_region(cfg, target, monitor_name, monitors):
 
 
 def get_crop_config(target, monitor_name=None):
-    """获取指定目标的裁剪配置，支持按显示器隔离，支持从特定显示器 fallback 到主屏 primary 或 default"""
+    """获取指定目标的裁剪配置，按物理显示器隔离并兼容旧坐标键。"""
     crops = read_crops()
     monitors = crops.get("monitors", {})
 
     if not monitor_name:
         monitor_name = "default"
 
-    monitor_crops = monitors.get(monitor_name, {})
+    storage_key, legacy_keys = _resolve_monitor_storage(monitor_name)
+    lookup_keys = [storage_key, *legacy_keys]
+    monitor_crops = {}
+    resolved_key = storage_key
+    for key in lookup_keys:
+        candidate = monitors.get(key, {})
+        if target in candidate:
+            monitor_crops = candidate
+            resolved_key = key
+            break
 
-    if target not in monitor_crops and monitor_name != "default":
-        # 1. 优先从主显示器 "primary" 继承裁剪配置
-        primary_crops = monitors.get("primary", {})
-        if target in primary_crops:
-            return dict(primary_crops[target])
-
-        # 2. 次优从默认 "default" 继承配置
+    if target not in monitor_crops and storage_key != "default":
         default_crops = monitors.get("default", {})
         if target in default_crops:
             return dict(default_crops[target])
@@ -387,7 +465,7 @@ def get_crop_config(target, monitor_name=None):
                      "dialog_position": "center", "calib_width": 0, "calib_height": 0,
                      "focus_input_enabled": False, "input_region": None}
     cfg = dict(monitor_crops.get(target, default_entry))
-    _derive_input_region(cfg, target, monitor_name, monitors)
+    _derive_input_region(cfg, target, resolved_key, monitors)
     return cfg
 
 
@@ -455,10 +533,17 @@ def set_crop_config(target, left, right, top, bottom, monitor_name=None, dialog_
     if not monitor_name:
         monitor_name = "default"
 
-    if monitor_name not in crops["monitors"]:
-        crops["monitors"][monitor_name] = {}
+    storage_key, legacy_keys = _resolve_monitor_storage(monitor_name)
+    if storage_key not in crops["monitors"]:
+        crops["monitors"][storage_key] = {}
 
-    existing = crops["monitors"][monitor_name].get(target, {})
+    existing = crops["monitors"][storage_key].get(target, {})
+    if not existing:
+        for legacy_key in legacy_keys:
+            legacy_entry = crops["monitors"].get(legacy_key, {}).get(target)
+            if legacy_entry:
+                existing = dict(legacy_entry)
+                break
 
     phys_w = 0
     phys_h = 0
@@ -521,7 +606,7 @@ def set_crop_config(target, left, right, top, bottom, monitor_name=None, dialog_
         "input_region": normalized_region,
     }
 
-    crops["monitors"][monitor_name][target] = entry
+    crops["monitors"][storage_key][target] = entry
     write_crops(crops)
     return entry
 
