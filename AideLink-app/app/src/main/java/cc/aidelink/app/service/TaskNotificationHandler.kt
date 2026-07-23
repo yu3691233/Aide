@@ -28,6 +28,10 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
+internal fun shouldHandleWirelessAdbCommand(targetIp: String, localIp: String): Boolean {
+    return targetIp.isBlank() || localIp.isBlank() || targetIp == localIp
+}
+
 /**
  * 任务通知处理器
  *
@@ -174,6 +178,11 @@ class TaskNotificationHandler @Inject constructor(
     private fun handleEnableWirelessAdb(targetIp: String, requestId: String) {
         scope.launch {
             try {
+                val localIp = WirelessAdbManager.currentDeviceIp(context)
+                if (!shouldHandleWirelessAdbCommand(targetIp, localIp)) {
+                    Log.i(TAG, "忽略其他设备的无线调试命令: target=$targetIp, local=$localIp")
+                    return@launch
+                }
                 Log.i(TAG, "收到服务器命令: 开启无线调试 (target=$targetIp)")
                 val result = WirelessAdbManager.enableWirelessAdb(context)
                 if (result.isSuccess) {

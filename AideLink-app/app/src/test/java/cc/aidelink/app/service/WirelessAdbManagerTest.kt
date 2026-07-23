@@ -20,4 +20,11 @@ class WirelessAdbManagerTest {
         assertEquals(43497, selectAdbPort(preferClassic = true, classicPort = 0, tlsPort = 43497))
         assertEquals(5555, selectAdbPort(preferClassic = false, classicPort = 5555, tlsPort = 0))
     }
+
+    @Test
+    fun wirelessCommandOnlyRunsOnTargetDevice() {
+        assertEquals(true, shouldHandleWirelessAdbCommand("192.168.3.52", "192.168.3.52"))
+        assertEquals(false, shouldHandleWirelessAdbCommand("192.168.3.52", "192.168.3.31"))
+        assertEquals(true, shouldHandleWirelessAdbCommand("", "192.168.3.31"))
+    }
 }

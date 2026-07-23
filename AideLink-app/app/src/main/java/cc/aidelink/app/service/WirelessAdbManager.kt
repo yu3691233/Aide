@@ -43,6 +43,8 @@ object WirelessAdbManager {
 
     enum class Method { ROOT, SHIZUKU, MANUAL, NONE }
 
+    fun currentDeviceIp(context: Context): String = getDeviceIp(context)
+
     suspend fun detectStatus(context: Context): AdbStatus = withContext(Dispatchers.IO) {
         val hasRoot = checkRoot()
         val hasShizuku = false

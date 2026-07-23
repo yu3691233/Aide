@@ -197,15 +197,15 @@ def _publish_wireless_request(ip, alias=None):
 
 
 def _find_wireless_result(request_id, started_at, target_ips):
-    result = _wireless_result_by_request.get(request_id)
-    if result:
-        return result
     target_set = {ip for ip in target_ips if ip}
+    result = _wireless_result_by_request.get(request_id)
+    if result and (not target_set or result.get("ip") in target_set):
+        return result
     for pending in sorted(_wireless_result_pending.values(), key=lambda item: item.get("time", 0), reverse=True):
         if pending.get("time", 0) < started_at:
             break
         pending_ip = pending.get("ip")
-        if pending.get("request_id") == request_id:
+        if pending.get("request_id") == request_id and (not target_set or pending_ip in target_set):
             return pending
         if pending_ip in target_set:
             return pending

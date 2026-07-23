@@ -90,7 +90,11 @@ class AdbConnectionValidationTests(unittest.TestCase):
             "time": started_at + 0.1,
         }
         with (
-            patch.object(device_routes, "_wireless_result_by_request", {}),
+            patch.object(
+                device_routes,
+                "_wireless_result_by_request",
+                {"tablet-request": phone_result},
+            ),
             patch.object(
                 device_routes,
                 "_wireless_result_pending",
