@@ -79,6 +79,14 @@ class AdbConnectionValidationTests(unittest.TestCase):
 
         connect.assert_called_once_with(("192.168.3.52", 40117), timeout=0.8)
 
+    def test_reachable_port_explains_pairing_requirement(self):
+        with patch.object(device_routes, "_tcp_port_open", return_value=True):
+            error = device_routes._adb_connection_error("192.168.3.52", 43959)
+
+        self.assertIn("尚未", error)
+        self.assertIn("配对码", error)
+        self.assertIn("Android 不允许 App 自动读取", error)
+
     def test_wireless_result_never_crosses_to_another_device(self):
         started_at = time.time()
         phone_result = {

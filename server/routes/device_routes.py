@@ -123,6 +123,17 @@ def _tcp_port_open(ip, port, timeout=0.8):
         return False
 
 
+def _adb_connection_error(ip, port):
+    device_id = f"{ip}:{port}"
+    if _tcp_port_open(ip, port):
+        return (
+            f"ADB 端口 {device_id} 已开启，但电脑尚未与此设备完成无线调试配对。"
+            "Android 不允许 App 自动读取配对码；请在设备上打开“开发者选项 → "
+            "无线调试 → 使用配对码配对设备”，完成一次配对后重试"
+        )
+    return f"无法连接到 {device_id}，请确认设备与电脑在同一局域网且无线调试已开启"
+
+
 def _remember_alias_connection(alias, device_id, ip, port):
     if not alias or not ip:
         return
@@ -290,10 +301,7 @@ def _ensure_adb_device(alias=None, ip=None, port=None, auto_enable=True, timeout
                     _time.sleep(1)
                 # connect 重试 5 次仍失败，返回错误
                 if _tcp_port_open(result_ip, result_port):
-                    error = (
-                        f"平板端口 {result_ip}:{result_port} 可达，但 ADB 握手失败。"
-                        "请在开发者选项 → 无线调试中使用配对码重新配对这台电脑"
-                    )
+                    error = _adb_connection_error(result_ip, result_port)
                 else:
                     error = f"App 已开启无线调试(ip={result_ip}, port={result_port})，但 adb connect 失败"
                 return {
@@ -992,21 +1000,14 @@ def api_adb_self_install():
     # 1) 先断开旧连接，再精确连接到目标设备 ip:port
     _f = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
     device_id = f"{target_ip}:{target_port}"
-    connected = False
     try:
         _run_adb(["disconnect", device_id], timeout=5)
     except Exception:
         pass
-    try:
-        res = _run_adb(["connect", device_id], timeout=10)
-        text = (res.stdout + res.stderr).lower()
-        if "connected" in text:
-            connected = True
-    except Exception:
-        pass
+    connected, _ = _connect_adb(target_ip, target_port, timeout=10)
 
     if not connected:
-        return jsonify({"ok": False, "error": f"无法连接到 {device_id}，请确认无线调试已开启"}), 500
+        return jsonify({"ok": False, "error": _adb_connection_error(target_ip, target_port), "requires_pairing": _tcp_port_open(target_ip, target_port)}), 500
 
     # 2) 确认设备在线
     try:
@@ -1080,9 +1081,14 @@ def api_adb_project_install():
         return jsonify({"ok": False, "error": "缺少 ip 参数"}), 400
     device_id = f"{target_ip}:{target_port}"
     try:
-        connect_result = _run_adb(["connect", device_id], timeout=10)
-        if "connected" not in (connect_result.stdout + connect_result.stderr).lower():
-            return jsonify({"ok": False, "error": f"无法连接到 {device_id}"}), 500
+        connected, _ = _connect_adb(target_ip, target_port, timeout=10)
+        if not connected:
+            requires_pairing = _tcp_port_open(target_ip, target_port)
+            return jsonify({
+                "ok": False,
+                "error": _adb_connection_error(target_ip, target_port),
+                "requires_pairing": requires_pairing,
+            }), 500
 
         _flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         result = subprocess.run(

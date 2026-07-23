@@ -421,7 +421,33 @@ internal fun LazyListScope.tabToolsItems(
                         }
                     }
                     state.androidInstallStatus?.let { Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall) }
-                    state.androidInstallError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    state.androidInstallError?.let { error ->
+                        Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        if (error.contains("配对")) {
+                            OutlinedButton(
+                                onClick = {
+                                    try {
+                                        val intent = android.content.Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
+                                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            putExtra(":settings:fragment_args_key", "toggle_adb_wireless")
+                                            putExtra(
+                                                ":settings:show_fragment_args",
+                                                android.os.Bundle().apply {
+                                                    putString(":settings:fragment_args_key", "toggle_adb_wireless")
+                                                },
+                                            )
+                                        }
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {
+                                        Toast.makeText(context, "请手动打开开发者选项 → 无线调试", Toast.LENGTH_LONG).show()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            ) {
+                                Text("打开无线调试配对")
+                            }
+                        }
+                    }
                     if (state.isAdbInstalling) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedButton(onClick = { viewModel.scanCurrentAndroidProject() }, modifier = Modifier.fillMaxWidth(), enabled = !state.isAdbInstalling) {
