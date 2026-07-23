@@ -114,7 +114,7 @@ def map_task_for_client(t):
     delegated = t.get("source") == "primary_ide" or metadata.get("delegated_by") == "primary_ide"
     t["task_origin"] = "agent" if delegated else "user"
     t["task_origin_label"] = "Agent任务" if delegated else "用户任务"
-    for field in ("test_result", "test_summary", "test_evidence", "test_ide", "tested_at"):
+    for field in ("test_result", "test_summary", "test_evidence", "test_ide", "test_task_id", "tested_at"):
         if field not in t and field in metadata:
             t[field] = metadata[field]
     t["allowed_actions"] = task_allowed_actions(t)
@@ -765,10 +765,6 @@ def api_tasks_assign(task_id):
     data = request.get_json(force=True)
 
     target_ide = data.get("target_ide", "").strip()
-    surface = str(data.get("surface") or "").strip().lower()
-    if surface not in {"android", "web", "windows"}:
-        surface = ""
-
     if not target_ide:
 
         return jsonify({"success": False, "message": "缺少 target_ide"}), 400
@@ -776,14 +772,6 @@ def api_tasks_assign(task_id):
 
 
     from shared_runtime import runtime
-
-    if surface:
-        current = runtime.get_task(task_id)
-        if not current:
-            return jsonify({"success": False, "message": f"任务 {task_id} 不存在"}), 404
-        metadata = dict(current.get("metadata") or {})
-        metadata["surface"] = surface
-        runtime.update_task(task_id, metadata=metadata)
 
     task = runtime.assign_task(task_id, target_ide)
 

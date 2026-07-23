@@ -181,6 +181,58 @@ internal fun taskTabAfterDispatch(currentTab: Int, success: Boolean): Int {
 }
 
 @Composable
+private fun ProjectPlatformBar(
+    capabilities: List<String>,
+    selectedSurface: String?,
+    onSurfaceClick: (String) -> Unit,
+) {
+    val platforms = capabilities
+        .map { it.trim().lowercase() }
+        .filter { it in setOf("android", "web", "windows") }
+        .distinct()
+    if (platforms.isEmpty()) return
+
+    val selectable = platforms.size > 1
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(1.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        platforms.forEach { surface ->
+            val active = if (selectable) selectedSurface == surface else true
+            val color = when (surface) {
+                "android" -> Color(0xFF35A853)
+                "web" -> Color(0xFF0867F2)
+                else -> Color(0xFF4B74C9)
+            }
+            Surface(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = selectable) { onSurfaceClick(surface) },
+                color = if (active) color.copy(alpha = 0.14f) else Color.Transparent,
+                contentColor = if (active) color else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = when (surface) {
+                            "android" -> Icons.Default.PhoneAndroid
+                            "web" -> Icons.Default.Language
+                            else -> Icons.Default.Computer
+                        },
+                        contentDescription = when (surface) {
+                            "android" -> "Android 平台"
+                            "web" -> "Web 平台"
+                            else -> "Windows 平台"
+                        },
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun TaskThreadPanel(
     task: AideTask,
     messages: List<ChatMessage>,
@@ -523,6 +575,15 @@ fun AideLinkChatScreen(
                     }
 
                     Spacer(modifier = Modifier.width(6.dp))
+
+                    // 与 Windows 浮窗复用同一套项目能力识别和平台选择语义。
+                    ProjectPlatformBar(
+                        capabilities = state.currentProjectCapabilities,
+                        selectedSurface = state.selectedSurface,
+                        onSurfaceClick = viewModel::selectSurface,
+                    )
+
+                    Spacer(modifier = Modifier.width(4.dp))
 
                     if (state.target == AideLinkChatViewModel.Target.AIDELINK) {
                         Box(

@@ -893,6 +893,19 @@ def api_adb_report():
 
         return jsonify({"ok": True, "message": f"Port reported and connecting: {ip}:{port}"})
 
+    # enabled=false：App 关闭了无线调试，清理服务端 ADB 死连接
+    if not enabled:
+        def _bg_disconnect():
+            # 断开 adb devices 中属于该 IP 的所有连接（含旧端口）
+            try:
+                devices = _adb_devices()
+                for device_id in devices:
+                    if device_id == ip or device_id.startswith(f"{ip}:"):
+                        _run_adb(["disconnect", device_id], timeout=3)
+            except Exception:
+                pass
+        threading.Thread(target=_bg_disconnect, daemon=True).start()
+
     return jsonify({"ok": True, "message": "Status received"})
 
 

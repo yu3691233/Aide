@@ -165,6 +165,13 @@ class TaskRuntimeTransitionTests(unittest.TestCase):
         self.assertEqual("pending_test", task["status"])
         self.assertEqual("commit:abc123", task["result_ref"])
 
+    def test_pending_test_can_be_redispatched_to_running(self):
+        runtime, _ = _make_runtime()
+        task_id = _create_task(runtime, status="pending_test")
+        task = runtime.mark_task_running(task_id, "trae_solo_cn")
+        self.assertEqual("running", task["status"])
+        self.assertEqual("trae_solo_cn", task["target_ide"])
+
     def test_merging_to_done_legal(self):
         """8. merging → done 合法（merge_daemon 自动合并路径）。"""
         runtime, _ = _make_runtime()

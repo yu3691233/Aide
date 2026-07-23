@@ -170,7 +170,7 @@ def _task_test_result(task):
     if status not in {"待测试", "超时"}:
         return ""
     result = str(task.get("test_result") or "").strip().lower()
-    return result if result in {"dispatched", "passed", "failed"} else ""
+    return result if result in {"queued", "dispatched", "passed", "failed"} else ""
 
 
 def _latest_task_id(tasks):
@@ -411,6 +411,8 @@ class FloatingWindowApp:
         self.surface_project_key = None
         self.active_tab = "tasks"
         self.expanded_task_id = None
+        self.test_selection_mode = False
+        self.selected_test_task_ids = set()
         self.collapsed_groups = set(DEFAULT_COLLAPSED_GROUPS)
         self.completed_display_limit = 5
         self.input_expanded = False
@@ -686,14 +688,18 @@ class FloatingWindowApp:
         canvas.bind("<Button-1>", lambda _event, key=ide["key"]: self.select_ide(key))
         return canvas
 
-    def _draw_group_header(self, canvas, width, fill, outline, fg, name, count, icon, collapsed=False):
+    def _draw_group_header(self, canvas, width, fill, outline, fg, name, count, icon, collapsed=False, show_chevron=True):
         canvas.delete("all")
         icon_image = self.icons.get(icon, 12, fg)
-        chevron_image = self.icons.get("chevron_down" if collapsed else "chevron_up", 12, "#526078")
-        canvas._header_images = (icon_image, chevron_image)
+        chevron_image = (
+            self.icons.get("chevron_down" if collapsed else "chevron_up", 12, "#526078")
+            if show_chevron else None
+        )
+        canvas._header_images = tuple(image for image in (icon_image, chevron_image) if image)
         canvas.create_image(9, 11, image=icon_image)
         canvas.create_text(21, 11, text=f"{name}  {count}", fill=fg, anchor="w", font=("Microsoft YaHei UI", 8, "bold"))
-        canvas.create_image(width - 10, 11, image=chevron_image)
+        if chevron_image:
+            canvas.create_image(width - 10, 11, image=chevron_image)
 
     def _draw_task_card(self, canvas, width, task, type_labels, latest_running=False):
         canvas.delete("all")
@@ -702,6 +708,8 @@ class FloatingWindowApp:
         test_result = _task_test_result(task)
         if _task_group_name(task) == "待派发":
             card_outline = "#9b7be3"
+        elif _task_group_name(task) == "待测试" and test_result == "queued":
+            card_outline = "#0867f2"
         elif _task_group_name(task) == "待测试" and test_result in {"dispatched", "passed"}:
             card_outline = "#2e9d55"
         elif _task_group_name(task) == "待测试" and test_result == "failed":
@@ -714,7 +722,19 @@ class FloatingWindowApp:
             card_outline = "#e1e6ed"
         self._draw_round_rect(canvas, 1, 1, width - 1, height - 1, 12, fill="#ffffff", outline=card_outline, tags="card-hit")
         body = _clean_task_text(task.get("text") or task.get("title")) or "无内容"
-        canvas.create_text(12, 9, text=body, fill="#20293a", anchor="nw", width=max(130, width - 52), font=("Microsoft YaHei UI", 9), tags="card-hit")
+        show_test_checkbox = (
+            _task_group_name(task) == "待测试"
+            and self.test_selection_mode
+        )
+        body_x = 32 if show_test_checkbox else 12
+        canvas.create_text(body_x, 9, text=body, fill="#20293a", anchor="nw", width=max(130, width - body_x - 40), font=("Microsoft YaHei UI", 9), tags="card-hit")
+        if show_test_checkbox:
+            selected = task.get("task_id") in self.selected_test_task_ids
+            tag = f"select-test-{task.get('task_id')}"
+            self._draw_round_rect(canvas, 10, 9, 25, 24, 4, fill="#0867f2" if selected else "#ffffff", outline="#0867f2", tags=tag)
+            if selected:
+                canvas.create_text(17.5, 16.5, text="✓", fill="#ffffff", font=("Microsoft YaHei UI", 9, "bold"), tags=tag)
+            canvas.tag_bind(tag, "<Button-1>", lambda _event, item=task: (self.toggle_test_selection(item.get("task_id")), "break")[-1])
 
         metadata_y = base_height - 16
         version = str(task.get("version") or "").strip()
@@ -723,6 +743,7 @@ class FloatingWindowApp:
         canvas.create_text(44, metadata_y, text=version_text[:12], fill="#657084", font=("Microsoft YaHei UI", 8), tags="card-hit")
         display_status = (
             "测试通过" if test_result == "passed"
+            else "测试排队中" if test_result == "queued"
             else "测试已派发" if test_result == "dispatched"
             else "测试未通过" if test_result == "failed"
             else task["status"]
@@ -733,8 +754,9 @@ class FloatingWindowApp:
             subtitle += f"  ·  {progress}%"
         canvas.create_text(84, metadata_y, text=subtitle, fill="#657084", anchor="w", font=("Microsoft YaHei UI", 8), tags="card-hit")
 
-        dispatch_action = "dispatch_test" if _task_group_name(task) == "待测试" else "dispatch"
-        dispatch_label = "派发测试" if dispatch_action == "dispatch_test" else "派发"
+        # 待测试卡片右侧图标是“原任务重新派发”；“派发测试”只放在展开操作里。
+        dispatch_action = "dispatch"
+        dispatch_label = "派发"
         actions = (
             (("复制", "copy", 14), ("已完成", "confirm_done", 36), (dispatch_label, dispatch_action, 58))
             if _task_group_name(task) == "待测试"
@@ -753,6 +775,13 @@ class FloatingWindowApp:
                     font=("Microsoft YaHei UI", 7, "bold"), tags=tag,
                 )
             else:
+                # 图标保持 12px，但给它一个稳定的 32x24 点击热区。
+                # 之前只有图标本身响应点击，点到右侧空白时会落到 card-hit，
+                # 表现为“没有进入派发流程”。
+                self._draw_round_rect(
+                    canvas, width - 34, center_y - 12, width - 2, center_y + 12, 7,
+                    fill="#ffffff", outline="", tags=tag,
+                )
                 icon_name = "copy" if action_name == "copy" else "dispatch"
                 action_image = self.icons.get(icon_name, 12, "#526078")
                 action_images.append(action_image)
@@ -854,10 +883,56 @@ class FloatingWindowApp:
                 if group_name == "已完成"
                 else len(group_tasks)
             )
-            header = tk.Canvas(self.task_frame, height=22, bg="#ffffff", highlightthickness=0)
-            header.pack(fill="x", pady=(0, 2))
-            header.bind("<Configure>", lambda event, canvas=header, bg=group_bg, border=group_border, fg=group_fg, name=group_name, count=header_count, symbol=icon, is_collapsed=collapsed: self._draw_group_header(canvas, event.width, bg, border, fg, name, count, symbol, is_collapsed))
+            header_row = tk.Frame(self.task_frame, bg="#ffffff", height=22)
+            header_row.pack(fill="x", pady=(0, 2))
+            header_row.pack_propagate(False)
+            header = tk.Canvas(header_row, height=22, bg="#ffffff", highlightthickness=0)
+            header.bind("<Configure>", lambda event, canvas=header, bg=group_bg, border=group_border, fg=group_fg, name=group_name, count=header_count, symbol=icon, is_collapsed=collapsed: self._draw_group_header(canvas, event.width, bg, border, fg, name, count, symbol, is_collapsed, name != "待测试"))
             header.bind("<Button-1>", lambda _event, name=group_name: self.toggle_group(name))
+            if group_name == "待测试":
+                selected_count = len(self.selected_test_task_ids)
+                chevron = tk.Canvas(
+                    header_row, width=20, height=22, bg="#ffffff",
+                    highlightthickness=0, cursor="hand2",
+                )
+                chevron_image = self.icons.get(
+                    "chevron_down" if collapsed else "chevron_up", 12, "#526078",
+                )
+                chevron._header_image = chevron_image
+                chevron.create_image(10, 11, image=chevron_image)
+                chevron.bind("<Button-1>", lambda _event: self.toggle_group("待测试"))
+                chevron.pack(side="right")
+                if self.test_selection_mode and selected_count >= 2:
+                    queue_button = tk.Button(
+                        header_row,
+                        text=f"排队测试（{selected_count}）",
+                        command=self.dispatch_selected_tests,
+                        relief="flat",
+                        bg="#0867f2",
+                        fg="#ffffff",
+                        cursor="hand2",
+                        font=("Microsoft YaHei UI", 7, "bold"),
+                        width=11,
+                        padx=2,
+                        pady=0,
+                    )
+                    queue_button.pack(side="right", padx=(3, 0))
+                tk.Button(
+                    header_row,
+                    text="取消" if self.test_selection_mode else "多选",
+                    command=self.toggle_test_selection_mode,
+                    relief="flat",
+                    bg="#f3f5f8",
+                    fg="#526078",
+                    cursor="hand2",
+                    font=("Microsoft YaHei UI", 7),
+                    width=4,
+                    padx=2,
+                    pady=0,
+                ).pack(side="right")
+            # 右侧操作先占据其请求宽度，标题画布最后填充剩余空间。
+            # 如果先 pack(expand=True) 标题，Tk 会把后加入的中文按钮压到约一个字宽。
+            header.pack(side="left", fill="both", expand=True)
             if collapsed:
                 continue
             visible_group_tasks = (
@@ -940,6 +1015,11 @@ class FloatingWindowApp:
         )
         self.root.title(model["title"])
         visible_tasks = [task for task in model["tasks"] if task.get("content_kind") != "inspiration"]
+        pending_ids = {
+            task.get("task_id") for task in visible_tasks
+            if _task_group_name(task) == "待测试" and task.get("task_id")
+        }
+        self.selected_test_task_ids.intersection_update(pending_ids)
         note_count = sum(1 for task in model["tasks"] if task.get("content_kind") == "inspiration")
         if self.active_tab == "tasks":
             grouped = (
@@ -1073,6 +1153,29 @@ class FloatingWindowApp:
             return platforms[0]
         return self.selected_surface if self.selected_surface in platforms else None
 
+    def _ensure_context_tools_visible(self):
+        """安全地让 context_tools_frame 可见，避免索引越界崩溃。"""
+        frame = self.context_tools_frame
+        if frame.winfo_manager():
+            return
+        # 尝试插在 tabs 之前；找不到就普通 pack
+        try:
+            siblings = frame.master.winfo_children()
+            # 找到第一个在 frame 之后创建的同级组件（tabs/任务列表等）作为锚点
+            anchor = None
+            for widget in siblings:
+                if widget is frame:
+                    continue
+                if widget.winfo_manager():
+                    anchor = widget
+                    break
+            if anchor is not None and anchor is not frame:
+                frame.pack(fill="x", pady=(0, 3), before=anchor)
+            else:
+                frame.pack(fill="x", pady=(0, 3))
+        except Exception:
+            frame.pack(fill="x", pady=(0, 3))
+
     def _render_context_tools(self, capabilities):
         self._clear_rows(self.context_tools_frame)
         surface = self._active_tool_surface(capabilities)
@@ -1094,8 +1197,7 @@ class FloatingWindowApp:
         if not tools:
             self.context_tools_frame.pack_forget()
             return
-        if not self.context_tools_frame.winfo_manager():
-            self.context_tools_frame.pack(fill="x", pady=(0, 3), before=self.context_tools_frame.master.winfo_children()[2])
+        self._ensure_context_tools_visible()
         for label, icon, command in tools:
             button = self._rounded_button(
                 self.context_tools_frame,
@@ -1128,8 +1230,7 @@ class FloatingWindowApp:
         [📷截图]：仅 AideLink 在线时可点（需要 SSE 推送）；仅 ADB 在线时置灰
         """
         frame = self.context_tools_frame
-        if not frame.winfo_manager():
-            frame.pack(fill="x", pady=(0, 3), before=frame.master.winfo_children()[2])
+        self._ensure_context_tools_visible()
 
         # 占位标签，等异步加载后替换
         loading = self.tk.Label(frame, text="正在读取设备…", bg="#ffffff", fg="#657084",
@@ -2228,6 +2329,49 @@ class FloatingWindowApp:
             self.collapsed_groups.add(group_name)
         self._render(self.current_model)
 
+    def toggle_test_selection(self, task_id):
+        if not task_id:
+            return
+        if task_id in self.selected_test_task_ids:
+            self.selected_test_task_ids.remove(task_id)
+        else:
+            self.selected_test_task_ids.add(task_id)
+        self._render(self.current_model)
+
+    def toggle_test_selection_mode(self):
+        self.test_selection_mode = not self.test_selection_mode
+        if self.test_selection_mode:
+            self.collapsed_groups.discard("待测试")
+        else:
+            self.selected_test_task_ids.clear()
+        self._render(self.current_model)
+
+    def dispatch_selected_tests(self):
+        task_ids = [
+            task.get("task_id") for task in self.current_model.get("tasks", [])
+            if task.get("task_id") in self.selected_test_task_ids
+        ]
+        if not task_ids:
+            return
+        if not self.selected_ide_key:
+            self._set_status("请先选择用于测试的运行中 IDE", "#b42318")
+            return
+        self._run_api(
+            "/api/tasks/test",
+            method="POST",
+            payload={"task_ids": task_ids, "test_ide": self.selected_ide_key},
+            on_success=lambda result: (
+                self.selected_test_task_ids.clear(),
+                setattr(self, "test_selection_mode", False),
+                self._set_status(
+                    f"已提交 {int(result.get('count') or len(task_ids))} 条排队测试",
+                    "#239957", 1800,
+                ),
+                self.refresh(),
+            ),
+            busy_text="正在提交排队测试…",
+        )
+
     def show_more_completed(self):
         self.completed_display_limit += 5
         self._render(self.current_model)
@@ -2589,12 +2733,11 @@ class FloatingWindowApp:
                 busy_text="正在保存任务…",
             )
             return
-        # 浮窗创建任务时分配到当前选中的 IDE；只有没选中运行中的 IDE 时
-        # 才回退到 "auto"（服务端会标记为未分配 draft）。
-        selected_ide_key = getattr(self, "selected_ide_key", None)
+        # 创建任务只进入“待派发”；当前选中的 IDE 仅用于下一步点击派发时
+        # 作为默认目标，不能在创建阶段把任务写成 queued/进行中。
         payload = {
             "text": text,
-            "target_ide": selected_ide_key or "auto",
+            "target_ide": "auto",
             "auto_dispatch": False,
             "source": "floating_window",
         }
@@ -2609,8 +2752,8 @@ class FloatingWindowApp:
                 "title": text[:60] or "无标题任务",
                 "text": text,
                 "task_id": task_id,
-                "status": "排队中" if selected_ide_key else "待派发",
-                "target_ide": selected_ide_key or "未分配",
+                "status": "待派发",
+                "target_ide": "未分配",
                 "surface": _task_surface(
                     {"title": text, "text": text, "metadata": {"surface": selected_surface}},
                     current_model.get("capabilities") or ["general"],
@@ -2796,9 +2939,6 @@ class FloatingWindowApp:
             else:
                 path = "/api/tasks/dispatch"
                 payload = {"task_ids": [task_id], "target_ide": self.selected_ide_key}
-            selected_surface = getattr(self, "selected_surface", None)
-            if selected_surface in {"android", "web", "windows"}:
-                payload["surface"] = selected_surface
             self._run_api(
                 path,
                 method="POST",

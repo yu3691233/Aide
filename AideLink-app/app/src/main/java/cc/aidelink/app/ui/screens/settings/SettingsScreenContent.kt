@@ -443,7 +443,7 @@ internal fun LazyListScope.tabToolsItems(
                 val s = cc.aidelink.app.service.WirelessAdbManager.detectStatus(context)
                 adbStatus.value = s
                 if (s.wirelessAdbEnabled) viewModel.reportAdbStatus(s.deviceIp, s.adbPort, true)
-                else viewModel.reportAdbStatus("", 0, false)
+                else if (s.deviceIp.isNotBlank()) viewModel.reportAdbStatus(s.deviceIp, 0, false)
             }
         }
         LaunchedEffect(Unit) {
@@ -503,8 +503,11 @@ internal fun LazyListScope.tabToolsItems(
                     scope.launch {
                         try {
                             val r = cc.aidelink.app.service.WirelessAdbManager.disableWirelessAdb(context)
-                            updateAdbStatus()
                             if (r.isSuccess) {
+                                // 立即回报服务端清理旧端口死连接
+                                val ip = adbStatus.value?.deviceIp ?: ""
+                                if (ip.isNotBlank()) viewModel.reportAdbStatus(ip, 0, false)
+                                updateAdbStatus()
                                 Toast.makeText(context, "已关闭无线调试", Toast.LENGTH_SHORT).show()
                             } else {
                                 Toast.makeText(context, "关闭失败: ${r.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()

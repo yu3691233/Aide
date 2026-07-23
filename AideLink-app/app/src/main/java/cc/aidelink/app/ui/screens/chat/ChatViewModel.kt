@@ -63,6 +63,8 @@ import javax.inject.Inject
 
 import java.util.UUID
 
+private val PROJECT_SURFACES = setOf("android", "web", "windows")
+
 
 
 enum class PromptAction(val label: String, val emoji: String) {
@@ -309,6 +311,10 @@ class AideLinkChatViewModel @Inject constructor(
         val currentProjectName: String = "",
 
         val projects: List<BridgeApi.ProjectInfo> = emptyList(),
+
+        val currentProjectCapabilities: List<String> = emptyList(),
+
+        val selectedSurface: String? = null,
 
         // ─── 任务管理状态 ───
 
@@ -3054,11 +3060,23 @@ class AideLinkChatViewModel @Inject constructor(
         val projPath = rawPath.replace('/', '\\')
 
         val name = if (projPath.isNotBlank()) projPath.substringAfterLast('\\') else ""
+        val projects = projectResponse?.projects ?: _state.value.projects
+        val currentProject = projects.firstOrNull {
+            it.path.replace('/', '\\').trimEnd('\\').equals(projPath.trimEnd('\\'), ignoreCase = true)
+        }
+        val capabilities = currentProject?.capabilities.orEmpty()
+            .map { it.trim().lowercase() }
+            .filter { it in PROJECT_SURFACES }
+            .distinct()
+        val previousSurface = _state.value.selectedSurface
+        val selectedSurface = previousSurface?.takeIf { it in capabilities && capabilities.size > 1 }
 
         _state.value = _state.value.copy(
             currentProjectPath = projPath,
             currentProjectName = name,
-            projects = projectResponse?.projects ?: _state.value.projects,
+            projects = projects,
+            currentProjectCapabilities = capabilities,
+            selectedSurface = selectedSurface,
         )
         loadOfflineTasks()
 
@@ -3071,6 +3089,14 @@ class AideLinkChatViewModel @Inject constructor(
                 loadTasks()
             }
         }
+    }
+
+    fun selectSurface(surface: String) {
+        val available = _state.value.currentProjectCapabilities
+        if (available.size <= 1 || surface !in available) return
+        _state.value = _state.value.copy(
+            selectedSurface = if (_state.value.selectedSurface == surface) null else surface,
+        )
     }
 
 
@@ -3319,6 +3345,7 @@ class AideLinkChatViewModel @Inject constructor(
                         text = text,
                         title = title,
                         targetIde = target.ifBlank { null },
+                        surface = _state.value.selectedSurface,
                     )
                 }.getOrDefault(false)
 
@@ -3415,6 +3442,7 @@ class AideLinkChatViewModel @Inject constructor(
             _state.value.currentProjectPath,
             status,
             taskType = if (isInspiration) "inspiration" else "code",
+            surface = _state.value.selectedSurface,
         )
         _state.value = _state.value.copy(
             sending = false,

@@ -835,6 +835,8 @@ class BridgeApi(
         val path: String = "",
         val name: String = "",
         val last_used: String = "",
+        val capabilities: List<String> = emptyList(),
+        val preferred_surface: String = "general",
         val android: AndroidProjectInfo = AndroidProjectInfo(),
     )
 
@@ -1277,6 +1279,7 @@ class BridgeApi(
         title: String? = null,
         targetIde: String? = null,
         autoDispatch: Boolean = false,
+        surface: String? = null,
     ): Boolean {
         return try {
             val body = buildJsonObject {
@@ -1284,6 +1287,7 @@ class BridgeApi(
                 title?.let { put("title", it) }
                 targetIde?.let { put("target_ide", it) }
                 put("auto_dispatch", autoDispatch)
+                surface?.takeIf { it.isNotBlank() }?.let { put("surface", it) }
                 put("app_version", cc.aidelink.app.BuildConfig.VERSION_NAME)
             }
             val resp = client.post("$baseUrl/api/tasks/create") {
@@ -1378,18 +1382,24 @@ class BridgeApi(
         targetIp: String? = null,
     ): Boolean {
         return try {
-            val body = mutableMapOf<String, Any>("ip" to ip, "port" to port, "ok" to ok, "error" to (error ?: ""))
-            if (method != null) body["method"] = method
-            if (!requestId.isNullOrBlank()) body["request_id"] = requestId
-            if (!targetIp.isNullOrBlank()) body["target_ip"] = targetIp
+            val body = buildJsonObject {
+                put("ip", ip)
+                put("port", port)
+                put("ok", ok)
+                put("error", error ?: "")
+                if (method != null) put("method", method)
+                if (!requestId.isNullOrBlank()) put("request_id", requestId)
+                if (!targetIp.isNullOrBlank()) put("target_ip", targetIp)
+            }
             val resp = client.post("$baseUrl/api/adb/wireless-result") {
                 contentType(ContentType.Application.Json)
                 setBody(body)
-            }
-            resp.status.isSuccess()
-        } catch (e: Exception) {
-            false
-        }
+            }
+            resp.status.isSuccess()
+        } catch (e: Exception) {
+            android.util.Log.e("BridgeApi", "reportWirelessResult failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            false
+        }
     }
 
     suspend fun completeTask(taskId: String): Boolean {

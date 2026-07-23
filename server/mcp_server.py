@@ -945,7 +945,7 @@ def get_tool_definitions():
                             "description": "可选；目标设备无线调试端口，默认 5555"},
                 "project_path": {"type": "string", "description": "目标项目路径，默认走 settings.current_project"},
                 "apk_path": {"type": "string", "description": "可选 APK 绝对路径；省略时取 project 下 primary_apk"},
-                "timeout": {"type": "integer", "minimum": 15, "maximum": 60, "default": 45,
+                "timeout": {"type": "integer", "minimum": 10, "maximum": 60, "default": 10,
                             "description": "等待 enable-wireless + adb connect + install 的总超时（秒）。App 回报后最多重试 connect 5 次，通常 10-20s 即可完成"},
                 "user_confirmed": {"type": "boolean", "description": "高风险写操作必须 ===true"},
             }, "required": ["user_confirmed"]},

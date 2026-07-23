@@ -114,6 +114,23 @@ def _record_test_result(runtime, test_task_id, outcome, summary, evidence=""):
     return parent_task_id, report
 
 
+def _deliver_test_result_to_development_ide(runtime, parent_task_id, report):
+    """把测试报告送回原开发 IDE；父任务仍由主 IDE 或用户决定是否完成。"""
+    parent_task = runtime.get_task(parent_task_id) or {}
+    target_ide = str(parent_task.get("target_ide") or "").strip().lower()
+    if not target_ide:
+        return False, "原任务没有开发 IDE"
+    outcome_label = "通过" if report["result"] == "passed" else "未通过"
+    feedback = (
+        f"[AideLink 测试结果] 原任务 {parent_task_id}\n"
+        f"结论：{outcome_label}\n摘要：{report['summary']}"
+    )
+    if report.get("evidence"):
+        feedback += f"\n证据：{report['evidence']}"
+    feedback += "\n请据此判断继续修复，或由用户确认任务完成。"
+    return _inject_to_ide(target_ide, feedback, parent_task_id)
+
+
 @task_bp.route("/api/tasks/test-result", methods=["POST"])
 def api_tasks_test_result():
     """测试 IDE 回传验证结果，并写回原待测试任务。"""
@@ -136,6 +153,15 @@ def api_tasks_test_result():
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
 
+    delivered, delivery_detail = _deliver_test_result_to_development_ide(
+        runtime, parent_task_id, report,
+    )
+    parent = runtime.get_task(parent_task_id) or {}
+    parent_metadata = dict(parent.get("metadata") or {})
+    parent_metadata["test_result_delivered"] = bool(delivered)
+    parent_metadata["test_result_delivery_detail"] = str(delivery_detail or "")
+    runtime.update_task(parent_task_id, metadata=parent_metadata)
+
     test_task = runtime.get_task(test_task_id) or {}
     test_ide = test_task.get("target_ide") or ""
     try:
@@ -154,7 +180,6 @@ def api_tasks_test_result():
                 if item.get("task_id") != test_task_id
             ]
             _save_queue(queue_file, queue)
-            runtime.set_ide_status(test_ide, "idle", current_task_id=None)
     except Exception as exc:
         logger.warning("Test result recorded but child cleanup failed: %s", exc)
 
@@ -162,6 +187,7 @@ def api_tasks_test_result():
         "success": True,
         "parent_task_id": parent_task_id,
         "test_result": report["result"],
+        "delivered_to_development_ide": bool(delivered),
         "message": "测试结果已写回原任务",
     })
 
@@ -170,18 +196,21 @@ def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callba
     orig_message = orig_task.get("message", "")
     orig_title = orig_task.get("title", task_id)
     now = datetime.now().isoformat()
-    test_task_id = f"test-{task_id}-{int(time.time())}"
+    test_task_id = f"test-{task_id}-{time.time_ns()}"
     test_message = (
-        f"## 测试任务（请勿修改代码）\n\n"
-        f"请验证以上任务是否已正确完成。仅检查代码、运行测试并报告结果；"
-        f"不要修改代码，也不要提交任何变更。\n\n"
+        f"## 测试任务\n\n"
+        f"请验证以上任务是否已正确完成。可以按需要运行测试、创建或调整测试代码、"
+        f"测试脚本和测试配置；保持生产/业务代码及原功能不变。\n\n"
         f"### 原始需求\n\n{orig_message}\n\n"
         f"### 测试要求\n\n"
         f"1. 请检查上述修改是否正确实现\n"
         f"2. 运行相关测试验证功能\n"
         f"3. 如发现问题，记录具体位置和现象\n"
-        f"4. **不要修改任何代码**，只做验证\n\n"
-        f"测试完成后，直接在聊天中报告测试结果。"
+        f"4. 记录测试命令、结果，以及测试过程中新增或修改的测试文件\n\n"
+        f"测试完成后，先在聊天中报告测试结果，并调用以下接口把结果返回主 IDE：\n"
+        f"POST {callback_url}\n"
+        f'JSON: {{"test_task_id":"{test_task_id}","result":"passed 或 failed",'
+        f'"summary":"结论摘要","evidence":"测试命令与结果"}}'
     )
 
     parent_full_task = runtime.get_task(task_id) or {}
@@ -194,6 +223,15 @@ def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callba
     runtime.update_task(task_id, metadata=parent_metadata, updated_at=now)
 
     tasks = runtime.read_tasks()
+    test_metadata = {
+        "source_task_id": task_id,
+        "is_test": True,
+    }
+    original_surface = str(parent_metadata.get("surface") or "").strip().lower()
+    if original_surface in _SURFACE_LABELS:
+        # surface 是任务目标平台，不是测试任务要注入的 IDE；测试子任务继承它。
+        test_metadata["surface"] = original_surface
+
     tasks.append({
         "task_id": test_task_id,
         "parent_task_id": task_id,
@@ -209,7 +247,7 @@ def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callba
         "result_ref": None,
         "summary": None,
         "error": None,
-        "metadata": {"source_task_id": task_id, "is_test": True},
+        "metadata": test_metadata,
         "created_at": now,
         "updated_at": now,
         "queued_at": now,
@@ -220,11 +258,12 @@ def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callba
 
     queue_file = BASE_DIR / "state" / f"task_queue_{test_ide}.json"
     queue = _load_queue(queue_file)
-    # 清理队列中已不存在或已终止的任务条目，防止 stale 条目堵塞新派发
-    _VALID_QUEUE_STATUSES = {"queued", "running", "dispatched", "pending_test", "merging"}
     all_tasks = {t["task_id"]: t for t in runtime.read_tasks()}
-    queue = [q for q in queue if q["task_id"] in all_tasks
-             and (all_tasks[q["task_id"]].get("status") or "") in _VALID_QUEUE_STATUSES]
+    queue = [
+        item for item in queue
+        if item.get("task_id") in all_tasks
+        and (all_tasks[item["task_id"]].get("status") or "") in {"queued", "running", "dispatched"}
+    ]
     queue.append({
         "task_id": test_task_id,
         "title": f"[测试] {orig_title}",
@@ -233,26 +272,21 @@ def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callba
     })
     _save_queue(queue_file, queue)
 
-    if len(queue) == 1:
+    ide_available = runtime.is_ide_available(test_ide) if hasattr(runtime, "is_ide_available") else True
+    queued = len(queue) > 1 or not ide_available
+    if not queued:
         inject_ok, inject_detail = _inject_to_ide(test_ide, test_message, test_task_id)
         if inject_ok:
             runtime.mark_task_running(test_task_id, test_ide)
             runtime.set_ide_status(test_ide, "busy", current_task_id=test_task_id)
         else:
-            runtime.update_task(
-                test_task_id,
-                status="failed",
-                error=inject_detail,
-                updated_at=now,
-            )
-            return {
-                "success": False,
-                "message": f"测试任务派发失败: {inject_detail}",
-            }, 500
+            runtime.update_task(test_task_id, status="failed", error=inject_detail, updated_at=now)
+            _save_queue(queue_file, [item for item in queue if item.get("task_id") != test_task_id])
+            return {"success": False, "message": f"测试任务派发失败: {inject_detail}"}, 500
 
     dispatched_metadata = dict(parent_metadata)
     dispatched_metadata.update({
-        "test_result": "dispatched",
+        "test_result": "queued" if queued else "dispatched",
         "test_ide": test_ide,
         "test_task_id": test_task_id,
         "tested_at": now,
@@ -263,7 +297,11 @@ def _create_and_dispatch_test_task(runtime, task_id, test_ide, orig_task, callba
         "success": True,
         "test_task_id": test_task_id,
         "parent_task_id": task_id,
-        "message": f"测试任务 {test_task_id} 已派发到 {test_ide.upper()}",
+        "queued": queued,
+        "message": (
+            f"测试任务 {test_task_id} 已加入 {test_ide.upper()} 队列"
+            if queued else f"测试任务 {test_task_id} 已派发到 {test_ide.upper()}"
+        ),
     }, 200
 
 
@@ -275,9 +313,6 @@ def api_tasks_dispatch():
     task_ids = data.get("task_ids", [])
     target_ide = data.get("target_ide")
     print(f"[TRACE] target_ide={target_ide!r}, workbuddy? {target_ide == 'workbuddy'}", flush=True)
-    selected_surface = str(data.get("surface") or "").strip().lower()
-    if selected_surface not in _SURFACE_LABELS:
-        selected_surface = ""
     if not task_ids or not target_ide:
         print(f"[DEBUG] api_tasks_dispatch missing params. task_ids={task_ids}, target_ide={target_ide}", flush=True)
         return jsonify({"success": False, "message": "缺少任务ID或目标 IDE"})
@@ -299,8 +334,6 @@ def api_tasks_dispatch():
             errors.append(f"任务 {tid} 未找到")
             continue
         metadata = dict(task_data.get("metadata") or {})
-        if selected_surface:
-            metadata["surface"] = selected_surface
         dispatch_items.append({
             "task_id": tid,
             "title": task_data.get("title", tid),
@@ -334,8 +367,13 @@ def api_tasks_dispatch():
         try:
             current = runtime.get_task(tid) or {}
             metadata = dict(current.get("metadata") or {})
-            if selected_surface:
-                metadata["surface"] = selected_surface
+            if current.get("status") == "pending_test":
+                # 普通“派发”代表原任务重试，不应沿用上一次测试结果。
+                for field in (
+                    "test_result", "test_summary", "test_evidence",
+                    "test_ide", "test_task_id", "tested_at",
+                ):
+                    metadata.pop(field, None)
             metadata["merged_dispatch_ids"] = merged_ids
             metadata["merged_dispatch_representative"] = representative["task_id"]
             runtime.update_task(
@@ -715,27 +753,41 @@ def api_tasks_edit():
 def api_tasks_test():
     """派发测试任务到另一个 IDE（不修改代码，只验证）"""
     data = request.get_json(force=True)
-    task_id = data.get("task_id", "").strip()
+    task_id = str(data.get("task_id") or "").strip()
+    task_ids = data.get("task_ids") or ([task_id] if task_id else [])
+    task_ids = list(dict.fromkeys(str(item).strip() for item in task_ids if str(item).strip()))
     test_ide = data.get("test_ide", "").strip().lower()
-    if not task_id or not test_ide:
+    if not task_ids or not test_ide:
         return jsonify({"success": False, "message": "缺少任务ID或测试 IDE"})
 
     from task_runtime import TaskRuntime
 
     runtime = TaskRuntime(BASE_DIR)
-    orig_task = _read_task_data(task_id, runtime)
-    if not orig_task:
-        return jsonify({"success": False, "message": f"任务 {task_id} 不存在"})
-
+    results = []
     try:
-        result, status_code = _create_and_dispatch_test_task(
-            runtime,
-            task_id,
-            test_ide,
-            orig_task,
-            request.host_url.rstrip("/") + "/api/tasks/test-result",
-        )
+        for current_task_id in task_ids:
+            orig_task = _read_task_data(current_task_id, runtime)
+            if not orig_task:
+                return jsonify({"success": False, "message": f"任务 {current_task_id} 不存在"}), 404
+            development_ide = str(orig_task.get("target_ide") or "").strip().lower()
+            if development_ide and development_ide == test_ide:
+                return jsonify({
+                    "success": False,
+                    "message": f"任务 {current_task_id} 的测试 IDE 不能与开发 IDE 相同",
+                }), 400
+            result, status_code = _create_and_dispatch_test_task(
+                runtime, current_task_id, test_ide, orig_task,
+                request.host_url.rstrip("/") + "/api/tasks/test-result",
+            )
+            results.append(result)
+            if status_code >= 400:
+                return jsonify({"success": False, "results": results, "message": result.get("message")}), status_code
     except Exception as e:
         logger.error(f"Failed to register test task: {e}")
         return jsonify({"success": False, "message": f"测试任务派发失败: {e}"}), 500
-    return jsonify(result), status_code
+    return jsonify({
+        "success": True,
+        "results": results,
+        "count": len(results),
+        "message": f"已向 {test_ide.upper()} 提交 {len(results)} 条排队测试",
+    }), 200

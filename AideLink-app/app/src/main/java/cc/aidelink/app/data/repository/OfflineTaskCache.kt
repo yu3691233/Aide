@@ -32,6 +32,7 @@ object OfflineTaskCache {
         var synced: Boolean = false,
         val status: String = "pending_upload",
         val taskType: String = "inspiration",
+        val surface: String = "",
     )
 
     private fun getPrefs(context: Context): SharedPreferences {
@@ -97,6 +98,7 @@ object OfflineTaskCache {
         projectPath: String = "",
         status: String = "pending_upload",
         taskType: String = "inspiration",
+        surface: String? = null,
     ): CachedTask {
         val task = CachedTask(
             title = title,
@@ -104,6 +106,7 @@ object OfflineTaskCache {
             projectPath = projectPath,
             status = status,
             taskType = taskType,
+            surface = surface.orEmpty(),
         )
         val tasks = loadAll(context)
         tasks.add(task)
@@ -203,6 +206,7 @@ object OfflineTaskCache {
                     text = task.message,
                     title = task.title,
                     targetIde = null,
+                    surface = task.surface.takeIf { it.isNotBlank() },
                 )
                 if (ok) {
                     markSynced(context, task.id)
@@ -229,6 +233,7 @@ object OfflineTaskCache {
             title = task.title,
             targetIde = targetIde,
             autoDispatch = true,
+            surface = task.surface.takeIf { it.isNotBlank() },
         )
         if (ok) remove(context, taskId)
         ok

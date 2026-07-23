@@ -35,7 +35,7 @@ class ManualTaskCompleteTests(unittest.TestCase):
         self.assertEqual("[测试任务-Windows]", _dispatch_prefix([test_windows]))
         self.assertEqual("[测试任务]", _dispatch_prefix([test_unspecified]))
 
-    def test_dispatch_surface_overrides_task_metadata_before_injection(self):
+    def test_dispatch_preserves_task_surface_before_injection(self):
         app = Flask(__name__)
         runtime = Mock()
         runtime.get_task.return_value = {
@@ -71,9 +71,9 @@ class ManualTaskCompleteTests(unittest.TestCase):
             response = api_tasks_dispatch()
 
         self.assertTrue(response.get_json()["success"])
-        self.assertTrue(injected["message"].startswith("[派发任务-Web]\n"))
+        self.assertTrue(injected["message"].startswith("[派发任务-Android]\n"))
         updated_metadata = runtime.update_task.call_args.kwargs["metadata"]
-        self.assertEqual("web", updated_metadata["surface"])
+        self.assertEqual("android", updated_metadata["surface"])
 
     def test_manual_complete_confirms_even_when_pending_transition_is_invalid(self):
         app = Flask(__name__)

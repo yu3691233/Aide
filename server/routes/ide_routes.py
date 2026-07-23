@@ -1541,28 +1541,40 @@ def api_ide_install_mcp():
             success = False
             message = "MiniMax Code 当前未验证支持第三方 MCP，请使用 Skill 与人工任务转发模式。"
 
-        elif key in ("antigravity_ide", "mimo"):
-            # VSCode 内核系 IDE：统一写入 User/mcp.json（Trae 官方格式）
-            key_to_appdata_name = {
-                "antigravity_ide":        ["Antigravity IDE", "Antigravity"],
-                "trae_solo":  ["TRAE SOLO"],
-                "mimo":       ["MiMo Code", "MiMoCode"],
-            }
-            dir_names = key_to_appdata_name.get(key, [])
-            appdata = os.environ.get("APPDATA", "")
-            injected = 0
-            for dn in dir_names:
-                user_dir = Path(appdata) / dn
-                if user_dir.exists() and _inject_mcp_json(user_dir):
-                    _cleanup_storage_mcp(user_dir / "User" / "globalStorage" / "storage.json")
-                    injected += 1
-            if injected > 0:
-                success, message = True, f"已将 MCP 配置写入 {key} 的 mcp.json（共 {injected} 个实例，重启后生效）"
-            else:
-                message = f"未找到 {key} 的已初始化配置目录"
+        elif key == "oc_web":
+            # Web 类型 IDE 运行在浏览器，无本地 mcp.json 可写。
+            success = False
+            message = "OpenCode Web 是浏览器端 IDE，无需安装本地 MCP。"
 
         else:
-            message = f"暂不支持自动配置 {key} 的 MCP，请手动配置"
+            # 通用 VSCode 内核 IDE：统一写入 %APPDATA%\<IDE>\User\mcp.json（Trae 官方格式）。
+            # 覆盖 antigravity_ide / cursor / vscode / opencode / mimo / mimocode 等。
+            # 每个 key 给出可能的 appdata 目录名（不同版本/分发渠道目录名可能不同）。
+            key_to_appdata_name = {
+                "antigravity_ide": ["Antigravity IDE", "Antigravity"],
+                "cursor":          ["Cursor"],
+                "vscode":          ["Code", "Code - Insiders", "VSCodium"],
+                "opencode":        ["OpenCode", "ai.opencode.desktop"],
+                "oc":              ["OpenCode", "ai.opencode.desktop"],
+                "mimo":            ["MiMo Code", "MiMoCode"],
+                "mimocode":        ["MiMo Code", "MiMoCode"],
+            }
+            dir_names = key_to_appdata_name.get(key, [])
+            if not dir_names:
+                success = False
+                message = f"暂不支持自动配置 {key} 的 MCP，请手动配置"
+            else:
+                appdata = os.environ.get("APPDATA", "")
+                injected = 0
+                for dn in dir_names:
+                    user_dir = Path(appdata) / dn
+                    if user_dir.exists() and _inject_mcp_json(user_dir):
+                        _cleanup_storage_mcp(user_dir / "User" / "globalStorage" / "storage.json")
+                        injected += 1
+                if injected > 0:
+                    success, message = True, f"已将 MCP 配置写入 {key} 的 mcp.json（共 {injected} 个实例，重启后生效）"
+                else:
+                    message = f"未找到 {key} 的已初始化配置目录（尝试过: {', '.join(dir_names)}）"
     except Exception as e:
         success, message = False, f"配置 MCP 失败: {e}"
 

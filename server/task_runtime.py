@@ -57,7 +57,7 @@ _ALLOWED_TRANSITIONS = {
     "queued":        {"running", "dispatched", "failed", "timeout", "cancelled", "draft"},
     "dispatched":    {"running", "pending_test", "failed", "timeout", "cancelled"},
     "running":       {"pending_test", "failed", "timeout", "cancelled", "dispatched"},
-    "pending_test":  {"merging", "failed", "test_failed", "merge_conflict", "timeout", "cancelled"},
+    "pending_test":  {"running", "merging", "failed", "test_failed", "merge_conflict", "timeout", "cancelled"},
     "merging":       {"done", "pending_test", "failed", "test_failed", "merge_conflict", "timeout", "cancelled"},
     "test_failed":   {"running", "queued", "failed", "pending_test", "merging", "timeout", "cancelled"},
     "merge_conflict":{"failed", "pending_test", "merging", "timeout", "cancelled"},
@@ -584,13 +584,27 @@ class TaskRuntime:
         with self._lock:
             task = self.get_task(task_id)
             dispatched_at = task.get("dispatched_at") if task else None
-            return self.update_task(
+            updated = self.update_task(
                 task_id,
                 target_ide=ide,
                 status="running",
                 dispatched_at=dispatched_at or _now_iso(),
                 started_at=_now_iso(),
             )
+            metadata = dict((task or {}).get("metadata") or {})
+            if metadata.get("is_test"):
+                parent_task_id = (task or {}).get("parent_task_id") or metadata.get("source_task_id")
+                parent = self.get_task(parent_task_id) if parent_task_id else None
+                if parent:
+                    parent_metadata = dict(parent.get("metadata") or {})
+                    parent_metadata.update({
+                        "test_result": "dispatched",
+                        "test_ide": ide,
+                        "test_task_id": task_id,
+                        "tested_at": _now_iso(),
+                    })
+                    self.update_task(parent_task_id, metadata=parent_metadata)
+            return updated
 
     def reopen_task_as_draft(self, task_id, text, title=None):
         """编辑已派发任务并退回待派发，同时释放原 IDE 和租约。"""

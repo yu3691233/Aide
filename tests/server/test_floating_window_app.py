@@ -234,6 +234,10 @@ class FloatingWindowAppModelTests(unittest.TestCase):
             "status": "待测试",
             "test_result": "dispatched",
         }))
+        self.assertEqual("queued", fwa._task_test_result({
+            "status": "待测试",
+            "test_result": "queued",
+        }))
         self.assertEqual("failed", fwa._task_test_result({
             "status": "pending_test",
             "test_result": "failed",
@@ -391,8 +395,8 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         app.create_task()
         self.assertEqual("/api/tasks/create", app._run_api.call_args.args[0])
         self.assertFalse(app._run_api.call_args.kwargs["payload"]["auto_dispatch"])
-        # 浮窗创建任务时应当分配到当前选中的 IDE，而不是 "auto"
-        self.assertEqual("codex", app._run_api.call_args.kwargs["payload"]["target_ide"])
+        # 创建任务只进入待派发，点击任务卡片的派发按钮时才使用选中的 IDE。
+        self.assertEqual("auto", app._run_api.call_args.kwargs["payload"]["target_ide"])
         self.assertEqual("floating_window", app._run_api.call_args.kwargs["payload"]["source"])
 
         # 没有选中运行中的 IDE 时回退到 "auto"（未分配）
@@ -416,7 +420,7 @@ class FloatingWindowAppModelTests(unittest.TestCase):
         payload = app._run_api.call_args.kwargs["payload"]
         self.assertEqual("windows", payload["surface"])
 
-    def test_dispatch_existing_task_includes_selected_surface(self):
+    def test_dispatch_existing_task_does_not_override_task_surface(self):
         app = object.__new__(fwa.FloatingWindowApp)
         app.selected_ide_key = "codex"
         app.selected_surface = "web"
@@ -429,7 +433,6 @@ class FloatingWindowAppModelTests(unittest.TestCase):
             {
                 "task_ids": ["task-1"],
                 "target_ide": "codex",
-                "surface": "web",
             },
             app._run_api.call_args.kwargs["payload"],
         )
@@ -612,6 +615,38 @@ class FloatingWindowAppModelTests(unittest.TestCase):
             {"task_id": "task-1", "test_ide": "trae"},
             app._run_api.call_args.kwargs["payload"],
         )
+
+    def test_dispatch_selected_tests_uses_batch_test_route(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.selected_ide_key = "trae"
+        app.selected_test_task_ids = {"task-1", "task-2"}
+        app.current_model = {"tasks": [{"task_id": "task-2"}, {"task_id": "task-1"}]}
+        app._run_api = Mock()
+        app._set_status = Mock()
+
+        app.dispatch_selected_tests()
+
+        self.assertEqual("/api/tasks/test", app._run_api.call_args.args[0])
+        payload = app._run_api.call_args.kwargs["payload"]
+        self.assertEqual({"task-1", "task-2"}, set(payload["task_ids"]))
+        self.assertEqual(["task-2", "task-1"], payload["task_ids"])
+        self.assertEqual("trae", payload["test_ide"])
+
+    def test_test_checkboxes_only_enter_through_multi_select_mode(self):
+        app = object.__new__(fwa.FloatingWindowApp)
+        app.test_selection_mode = False
+        app.selected_test_task_ids = {"task-1"}
+        app.collapsed_groups = {"待测试"}
+        app.current_model = {}
+        app._render = Mock()
+
+        app.toggle_test_selection_mode()
+        self.assertTrue(app.test_selection_mode)
+        self.assertNotIn("待测试", app.collapsed_groups)
+
+        app.toggle_test_selection_mode()
+        self.assertFalse(app.test_selection_mode)
+        self.assertEqual(set(), app.selected_test_task_ids)
 
     def test_window_signal_sends_requested_command(self):
         received = []
